@@ -46,6 +46,12 @@ server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url, `http://${request.headers.host}`);
     // const token = url.searchParams.get("token");
 
+    // 限制 WebSocket 路径为 /ws，方便上线时的 Nginx 转发
+    if (url.pathname !== '/ws') {
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        return socket.destroy();
+    }
+
     // 从 headers 中获取 token
     const token = request.headers['sec-websocket-protocol'];
 
@@ -166,6 +172,14 @@ wss.on("connection", (ws, req, decoded) => {
 
         room.clients.delete(ws);
         Logger.wsEvent("left", ws.userName, ws.userId, ws.roomId);
+
+        // 如果房间内已经没有任何人，并且不是默认的保留房间，直接解散
+        if (room.clients.size === 0 && ws.roomId !== config.DEFAULT_ROOM_ID) {
+            Logger.info(`Empty room deleted: ${ws.roomId}`);
+            roomService.deleteRoom(ws.roomId);
+            return; // 已经解散的房间，不需要再往下广播了
+        }
+
         // 广播更新
         room.clients.forEach((c) => {
             if (c.readyState === WebSocket.OPEN) {
