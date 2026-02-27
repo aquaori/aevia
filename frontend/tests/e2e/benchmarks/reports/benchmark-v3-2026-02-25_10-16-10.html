@@ -1,0 +1,184 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>协同画板 Benchmark 综合分析报表 (V3)</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #1f2937; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 40px; padding: 30px; background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+        .header h1 { margin: 0; color: #111827; font-size: 32px; font-weight: 800; letter-spacing: -0.5px; }
+        .meta { color: #6b7280; margin-top: 10px; font-size: 14px; }
+        .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-bottom: 24px; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); padding: 24px; transition: transform 0.2s; }
+        .card:hover { box-shadow: 0 10px 15px rgba(0,0,0,0.05); }
+        .card.full-width { grid-column: span 2; }
+        .card h3 { margin-top: 0; color: #374151; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+        .card p { color: #6b7280; font-size: 13px; margin-bottom: 20px; line-height: 1.5; }
+        .chart { width: 100%; height: 350px; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
+        th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
+        th { background-color: #f9fafb; color: #4b5563; font-weight: 600; }
+        .badge { padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+        .badge-success { background: #def7ec; color: #03543f; }
+        .badge-error { background: #fde8e8; color: #9b1c1c; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 协同画板全链路性能评估基准 (V3)</h1>
+            <div class="meta">
+                <span>生成时间：2026/2/25 18:16:10</span> | 
+                <span>涵盖模型：Render / Latency / Stress / Collision / Chaos</span>
+            </div>
+        </div>
+
+        <div class="card full-width">
+            <h3>🛡️ CRDT 终态一致性与冲突裁决</h3>
+            <p>基于 Hash 特征对比以及多端 Canvas 绘制哨兵校验。任何 FAIL 意味着在极端恶劣情况下发生了不可逆的数据破损。</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>硬件环境组别</th>
+                        <th>交叉碰撞阻截 (Collision Auto-Healing)</th>
+                        <th>10万点洪流极速排污对账 (100k Stress Sync)</th>
+                        <th>弱网掉线无损重连 (Chaos Emulation)</th>
+                    </tr>
+                </thead>
+                <tbody id="consistencyTableBody">
+                    <!-- 动态注入 -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <h3>📈 O(N) 重绘管线耗时曲线 (Render Latency)</h3>
+                <p>横轴为画板内累计点数规模。过陡的折线代表系统在海量历史元素下面临渲染瘫痪风险。</p>
+                <div id="renderChart" class="chart"></div>
+            </div>
+
+            <div class="card">
+                <h3>🧠 V8 内存增长轨迹 (Memory Leak Profiling)</h3>
+                <p>观测内部 Commands 数组和组件树随着绘制复杂度的攀升带来的内存驻留 (MB)。</p>
+                <div id="memoryChart" class="chart"></div>
+            </div>
+
+            <div class="card">
+                <h3>⚡ 端到端与本地起笔响应延迟 (Responsiveness Ms)</h3>
+                <p>衡量“手眼是否同步”。低于 16ms 为极致跟手，30-50ms 为流畅，>100ms 则能明显感知发虚。</p>
+                <div id="latencyChart" class="chart"></div>
+            </div>
+
+            <div class="card">
+                <h3>🔥 开闸洪峰下的 UI 阻塞分析 (Main Thread Blocking)</h3>
+                <p>模拟两个疯狂的用户同时狂绘 10万笔。检测 rAF (Request Animation Frame) 掉帧和系统假死时长。</p>
+                <div id="stressChart" class="chart"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 渲染一致性表格
+        const labels = ['GPU+极速', 'GPU+降频', '软渲染+极速', '软渲染+降频'];
+        const collRes = [true,true,true,true];
+        const consRes = [true,true,true,true];
+        // Chaos recovery success uses actualReconnectionTimeMs > 0 check in this template
+        const chaosTimes = [0,0,0,0];
+        
+        const tbody = document.getElementById('consistencyTableBody');
+        let html = '';
+        for(let i=0; i<4; i++) {
+            const passColl = collRes[i] ? '<span class="badge badge-success">✅ PASS (触发拦截)</span>' : '<span class="badge badge-error">❌ FAIL (穿透)</span>';
+            const passCons = consRes[i] ? '<span class="badge badge-success">✅ PASS (Hash 对齐)</span>' : '<span class="badge badge-error">❌ FAIL (数据破损)</span>';
+            const passChaos = chaosTimes[i] > 0 ? '<span class="badge badge-success">✅ PASS ('+ chaosTimes[i].toFixed(0) +'ms 追平)</span>' : '<span class="badge badge-error">❌ FAIL (掉线)</span>';
+            html += `<tr>
+                <td><strong>${labels[i]}</strong></td>
+                <td>${passColl}</td>
+                <td>${passCons}</td>
+                <td>${passChaos}</td>
+            </tr>`;
+        }
+        tbody.innerHTML = html;
+
+
+        // 图表初始化公共调色盘
+        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
+
+        // 1. 渲染耗时折线图
+        const renderChart = echarts.init(document.getElementById('renderChart'));
+        renderChart.setOption({
+            color: colors, tooltip: { trigger: 'axis' }, legend: { data: labels, bottom: 0 },
+            grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
+            xAxis: { type: 'category', boundaryGap: false, data: [10000,50000,100000] },
+            yAxis: { type: 'value', name: 'ms' },
+            series: [
+                { name: 'GPU+极速', type: 'line', data: [52.9,245.9,460.1], smooth: true, areaStyle: {opacity: 0.1} },
+                { name: 'GPU+降频', type: 'line', data: [247.3,1070.9,2060.2], smooth: true, areaStyle: {opacity: 0.1} },
+                { name: '软渲染+极速', type: 'line', data: [54.1,340.4,649.6], smooth: true },
+                { name: '软渲染+降频', type: 'line', data: [221.1,1442.9,2890.4], smooth: true }
+            ]
+        });
+
+        // 2. 内存占用折线图
+        const memoryChart = echarts.init(document.getElementById('memoryChart'));
+        memoryChart.setOption({
+            color: colors, tooltip: { trigger: 'axis' }, legend: { data: labels, bottom: 0 },
+            grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
+            xAxis: { type: 'category', boundaryGap: false, data: [10000,50000,100000] },
+            yAxis: { type: 'value', name: 'MB' },
+            series: [
+                { name: 'GPU+极速', type: 'line', data: [19.37,25.28,58.54], smooth: true },
+                { name: 'GPU+降频', type: 'line', data: [19.36,38.09,58.09], smooth: true },
+                { name: '软渲染+极速', type: 'line', data: [19.37,38.32,58.48], smooth: true },
+                { name: '软渲染+降频', type: 'line', data: [19.4,38.08,58.05], smooth: true }
+            ]
+        });
+
+        // 3. 延迟柱状图
+        const latencyChart = echarts.init(document.getElementById('latencyChart'));
+        const lData = {"categories":["GPU+极速","GPU+降频","软渲染+极速","软渲染+降频"],"firstDrawMs":[-1,-1,-1,-1],"e2eSyncMs":[3,8,2,6]};
+        latencyChart.setOption({
+            color: ['#0ea5e9', '#6366f1'], tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+            legend: { data: ['本地起笔延迟 (FirstDraw)', '跨端网络协同 (E2ESync)'], bottom: 0 },
+            grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
+            xAxis: { type: 'category', data: lData.categories },
+            yAxis: { type: 'value', name: 'ms' },
+            series: [
+                { name: '本地起笔延迟 (FirstDraw)', type: 'bar', data: lData.firstDrawMs, barGap: 0 },
+                { name: '跨端网络协同 (E2ESync)', type: 'bar', data: lData.e2eSyncMs }
+            ]
+        });
+
+        // 4. 阻塞掉帧混合图 (左 Y: 卡死毫秒, 右 Y: 掉帧数量)
+        const stressChart = echarts.init(document.getElementById('stressChart'));
+        const sData = {"labels":["GPU+极速","GPU+降频","软渲染+极速","软渲染+降频"],"blocks":[0,0,0,0],"drops":[0,0,0,0]};
+        stressChart.setOption({
+            color: ['#f43f5e', '#8b5cf6'], tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+            legend: { data: ['最长假死锁定时长', '丢帧突变数 (>32ms)'], bottom: 0 },
+            grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
+            xAxis: { type: 'category', data: sData.labels },
+            yAxis: [
+                { type: 'value', name: '假死耗时(ms)', position: 'left' },
+                { type: 'value', name: '丢帧次数', position: 'right' }
+            ],
+            series: [
+                { name: '最长假死锁定时长', type: 'bar', data: sData.blocks },
+                { name: '丢帧突变数 (>32ms)', type: 'line', yAxisIndex: 1, data: sData.drops, smooth: true, symbolSize: 10 }
+            ]
+        });
+
+        window.addEventListener('resize', () => {
+            renderChart.resize();
+            memoryChart.resize();
+            latencyChart.resize();
+            stressChart.resize();
+        });
+    </script>
+</body>
+</html>
+    

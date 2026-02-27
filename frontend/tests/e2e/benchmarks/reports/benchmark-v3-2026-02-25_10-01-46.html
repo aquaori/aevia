@@ -1,0 +1,73 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>协同画板 Benchmark 分析报表 (V3)</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { text-align: center; margin-bottom: 40px; }
+        .card { background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); padding: 24px; margin-bottom: 30px; }
+        .chart { width: 100%; height: 400px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎨 协同画板 Benchmark 综合性能分析报告</h1>
+            <p>生成时间：2026/2/25 18:01:46</p>
+        </div>
+
+        <div class="card">
+            <h3>📈 全量重绘渲染耗时曲线 (Render Latency vs Operations)</h3>
+            <p>评估基于 CRDT 增量或全量快照恢复时，图形管线的承受能力。较低且平缓的曲线更佳。</p>
+            <div id="renderChart" class="chart"></div>
+        </div>
+
+        <div class="card">
+            <h3>🧠 V8 引擎内存驻留曲线 (Memory Usage vs Operations)</h3>
+            <p>量化分析内部 State (Commands 数组与组件实例) 是否符合理想的 O(N) 线性膨胀坡度。</p>
+            <div id="memoryChart" class="chart"></div>
+        </div>
+    </div>
+
+    <script>
+        const scales = [10000,50000,100000];
+        const renderData = {"gpu_cpuHigh":[51.2,244.1,482.3],"gpu_cpuLow":[239.5,1068.3,2118.3],"noGpu_cpuHigh":[50.1,326.2,633.9],"noGpu_cpuLow":[221.1,1448.9,2890.8]};
+        const memoryData = {"gpu_cpuHigh":[19.29,25.25,58.78],"gpu_cpuLow":[19.31,38.07,58.18],"noGpu_cpuHigh":[19.39,38.37,58.64],"noGpu_cpuLow":[19.3,38.11,58.23]};
+
+        // 1. 渲染耗时折线图
+        const renderChart = echarts.init(document.getElementById('renderChart'));
+        renderChart.setOption({
+            tooltip: { trigger: 'axis' },
+            legend: { data: ['GPU 开启 + CPU满血', 'GPU 开启 + CPU降速(4x)', 'GPU 关闭 + CPU满血', 'GPU 关闭 + CPU降速(4x)'] },
+            xAxis: { type: 'category', data: scales, name: '文档复杂度 (点数)' },
+            yAxis: { type: 'value', name: '纯渲染耗时 (ms)' },
+            series: [
+                { name: 'GPU 开启 + CPU满血', type: 'line', data: renderData.gpu_cpuHigh, smooth: true },
+                { name: 'GPU 开启 + CPU降速(4x)', type: 'line', data: renderData.gpu_cpuLow, smooth: true },
+                { name: 'GPU 关闭 + CPU满血', type: 'line', data: renderData.noGpu_cpuHigh, smooth: true },
+                { name: 'GPU 关闭 + CPU降速(4x)', type: 'line', data: renderData.noGpu_cpuLow, smooth: true }
+            ]
+        });
+
+        // 2. 内存占用折线图
+        const memoryChart = echarts.init(document.getElementById('memoryChart'));
+        memoryChart.setOption({
+            tooltip: { trigger: 'axis' },
+            legend: { data: ['GPU 开启 + CPU满血', 'GPU 开启 + CPU降速(4x)', 'GPU 关闭 + CPU满血', 'GPU 关闭 + CPU降速(4x)'] },
+            xAxis: { type: 'category', data: scales, name: '文档复杂度 (点数)' },
+            yAxis: { type: 'value', name: 'JS 堆内存排它占用 (MB)' },
+            series: [
+                { name: 'GPU 开启 + CPU满血', type: 'line', data: memoryData.gpu_cpuHigh, smooth: true },
+                { name: 'GPU 开启 + CPU降速(4x)', type: 'line', data: memoryData.gpu_cpuLow, smooth: true },
+                { name: 'GPU 关闭 + CPU满血', type: 'line', data: memoryData.noGpu_cpuHigh, smooth: true },
+                { name: 'GPU 关闭 + CPU降速(4x)', type: 'line', data: memoryData.noGpu_cpuLow, smooth: true }
+            ]
+        });
+    </script>
+</body>
+</html>
+    

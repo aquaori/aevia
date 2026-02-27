@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@custom-variant hsm (@media (min-height: 450px));
+@custom-variant hmd (@media (min-height: 650px));
+@custom-variant hlg (@media (min-height: 850px));
+
+@theme {
+  --animate-gradient-xy: gradient-xy 15s ease infinite;
+
+  @keyframes gradient-xy {
+    0%, 100% {
+      background-size: 400% 400%;
+      background-position: left center;
+    }
+    50% {
+      background-size: 400% 400%;
+      background-position: right center;
+    }
+  }
+}
+
+@layer base {
+  body {
+    @apply antialiased text-slate-900 bg-slate-50;
+  }
+}
