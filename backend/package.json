@@ -1,0 +1,27 @@
+{
+  "name": "collaborative-whiteboard-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "boxen": "^5.1.2",
+    "chalk": "^4.1.2",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "gradient-string": "^2.0.2",
+    "ioredis": "^5.9.2",
+    "jsonwebtoken": "^9.0.3",
+    "terminal-link": "^2.1.1",
+    "uuid": "^13.0.0",
+    "ws": "^8.19.0"
+  }
+}
