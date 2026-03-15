@@ -125,8 +125,20 @@ const handlers = {
         broadcastToOthers(ws.roomId, ws, { type: "cmd-batch-update", data });
     },
 
-    "box-selecting": (ws, data) => {
-        broadcastToOthers(ws.roomId, ws, { type: "box-selecting", data });
+    "cmd-batch-stop": (ws, data) => {
+        const room = roomService.getRoom(ws.roomId);
+        data.updates.forEach((update) => {
+            const cmd = room.commands?.find((cmd) => cmd && cmd.id === update.cmdId);
+            if (cmd) {
+                cmd.points = update.points;
+                cmd.box = update.boxes;
+            }
+        });
+        broadcastToOthers(ws.roomId, ws, { type: "cmd-batch-stop", data });
+    },
+
+    "box-selection": (ws, data) => {
+        broadcastToOthers(ws.roomId, ws, { type: "box-selection", data });
     },
 
     "cmd-page-add": (ws, data) => {

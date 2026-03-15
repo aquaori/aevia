@@ -101,8 +101,10 @@ export const runStressSuite = async (
     await new Promise(r => setTimeout(r, 3000));
 
     const stats = await page1.evaluate(() => (window as any).__stressStats);
-    // 计算真实渲染 FPS (按实际运行时间)
-    const averageFps = (stats.frameCount / (stats.totalRunningMs / 1000));
+    // 计算真实渲染 FPS (按实际运行时间)，增加安全检查避免 NaN
+    const averageFps = stats && stats.totalRunningMs > 0 
+        ? (stats.frameCount / (stats.totalRunningMs / 1000))
+        : 0;
 
     // [CRDT 指标验证] State Equivalence Check - 终态一致性对账
     const getCommandsDigest = async (p: Page) => {
