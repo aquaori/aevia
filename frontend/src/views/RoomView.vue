@@ -28,92 +28,32 @@
 	import axios from "axios";
 	import { v4 as uuidv4 } from "uuid";
 	import { useUserStore } from "../store/userStore";
+	import { useCommandStore } from "../store/commandStore";
+	import { useWorkerStore } from "../store/workerStore";
+	import { storeToRefs } from "pinia";
+	import { reRenderDirtyRect, bufferDirtyPoint } from "../utils/dirtyRedraw";
+	import { getCommandBoundingBox, getGroupBoundingBox } from "../utils/geometry";
+	import {
+		canvasRef,
+		uiCanvasRef,
+		ctx,
+		uiCtx,
+		renderIncrementPoint,
+		renderPageContentFromPoints,
+	} from "../service/canvas";
+	import type { Point, FlatPoint, Command, RemoteCursor, LastWidthInfo } from "../utils/type";
 
-	// --- Worker 初始化 ---
-	let canvasWorker: Worker | null = null;
-	const initWorker = () => {
-		// 使用 Vite 的 Worker 导入语法
-		canvasWorker = new Worker(new URL("../workers/canvasWorker.ts", import.meta.url), {
-			type: "module",
-		});
+	const workerStore = useWorkerStore();
+	const { canvasWorker } = storeToRefs(workerStore);
 
-		canvasWorker.onmessage = (e) => {
-			const { type, points, rects, requestId } = e.data;
-			if (type === "flat-points-result") {
-				// 1. 如果有特定的异步回调 (如预览图)，则执行回调
-				if (requestId && pendingRenderCallbacks.has(requestId)) {
-					const cb = pendingRenderCallbacks.get(requestId);
-					cb!(points);
-					pendingRenderCallbacks.delete(requestId);
-					return;
-				}
-
-				// 2. 否则视为当前主页面的全量更新
-				lastSortedPoints.value = points;
-				renderWithPoints(points);
-			} else if (type === "merge-dirty-rects-result") {
-				// 处理 Worker 返回的合并后的脏矩形
-				rects.forEach((rect: any) => {
-					window.dispatchEvent(
-						new CustomEvent("point-collision", {
-							detail: { rect },
-						})
-					);
-				});
-			}
-		};
-
-		// 监听点位添加事件，用于脏矩形合并（DSU 优化）
-		window.addEventListener("point-added", ((e: CustomEvent) => {
-			const { point } = e.detail;
-			bufferDirtyPoint(point);
-		}) as any);
-	};
-
-	let dirtyPointBuffer: any[] = [];
-	let dirtyBufferTimer: any = null;
-
-	const bufferDirtyPoint = (point: any) => {
-		dirtyPointBuffer.push(point);
-		if (!dirtyBufferTimer) {
-			dirtyBufferTimer = setTimeout(() => {
-				processDirtyBuffer();
-				dirtyBufferTimer = null;
-			}, 16); // 缩短至 16ms (1帧) 以降低交互延迟
-		}
-	};
-
-	const processDirtyBuffer = () => {
-		if (dirtyPointBuffer.length === 0 || !canvasWorker) return;
-
-		// 计算每个点的包围盒
-		const rects = dirtyPointBuffer.map((pt) => {
-			const maxThickness = Math.max(pt.size, pt.lastWidth || pt.size);
-			const padding = maxThickness / 2;
-			const minX = Math.min(pt.lastX || pt.x, pt.x);
-			const maxX = Math.max(pt.lastX || pt.x, pt.x);
-			const minY = Math.min(pt.lastY || pt.y, pt.y);
-			const maxY = Math.max(pt.lastY || pt.y, pt.y);
-
-			return {
-				minX: minX - padding,
-				minY: minY - padding,
-				maxX: maxX + padding,
-				maxY: maxY + padding,
-			};
-		});
-
-		// 发送给 Worker 进行 DSU 合并
-		canvasWorker.postMessage({
-			type: "merge-dirty-rects",
-			data: { rects },
-		});
-
-		dirtyPointBuffer = [];
-	};
+	// 监听点位添加事件，用于脏矩形合并（DSU 优化）
+	window.addEventListener("point-added", ((e: CustomEvent) => {
+		const { point } = e.detail;
+		bufferDirtyPoint(point);
+	}) as any);
 
 	onMounted(() => {
-		initWorker();
+		workerStore.initWorker();
 		startUILoop();
 		const dpr = window.devicePixelRatio || 1;
 		if (canvasRef.value && ctx.value) {
@@ -142,8 +82,8 @@
 	});
 
 	onUnmounted(() => {
-		if (canvasWorker) {
-			canvasWorker.terminate();
+		if (canvasWorker.value) {
+			canvasWorker.value.terminate();
 		}
 	});
 
@@ -247,14 +187,7 @@
 		localStorage.setItem("wb_toolbar_collapsed", val.toString());
 	});
 
-	// --- 画布核心状态 (Canvas State) ---
-	// Canvas DOM元素引用
-	const canvasRef = ref<HTMLCanvasElement | null>(null);
-	const uiCanvasRef = ref<HTMLCanvasElement | null>(null); // UI层 Canvas
-
-	// Canvas 2D 渲染上下文
-	const ctx = ref<CanvasRenderingContext2D | null>(null);
-	const uiCtx = ref<CanvasRenderingContext2D | null>(null); // UI层 Context
+	// --- 画布核心状态 (Canvas State已解耦至 service/canvas.ts) ---
 
 	// 标记是否正在绘画中 (鼠标/手指按下状态)
 	const isDrawing = ref(false);
@@ -290,76 +223,16 @@
 	const socket = ref<WebSocket | null>(null);
 
 	// --- 撤销/历史记录系统 (命令模式) ---
-	// 定义命令结构
-	interface Point {
-		x: number; // 归一化坐标 (0-1)
-		y: number; // 归一化坐标 (0-1)
-		p: number; // 压力 (0-1)
-		lamport: number; // Lamport时钟
-	}
 
-	// 展开后的点集
-	interface FlatPoint extends Point {
-		cmdId: string;
-		userId: string;
-		tool: "pen" | "eraser";
-		color: string;
-		size: number;
-		isDeleted: boolean;
-	}
-
-	interface Command {
-		id: string; // 命令唯一ID
-		type: "path" | "clear"; // 命令类型
-		tool?: "pen" | "eraser"; // 工具类型
-		color?: string; // 颜色值 (如：#ff0000)
-		size?: number; // 基础线宽
-		points?: Point[]; // 路径点数组 (如：[{x:0.5,y:0.5,p:0.5},...]，x、y均为归一化坐标，p为压感)
-		timestamp: number; // 时间戳
-		userId: string; // 用户归属
-		roomId: string; // 房间归属
-		pageId: number; // 页面归属
-		isDeleted: boolean; // 软删除标记
-		lamport: number; // Lamport时钟
-		box: {
-			minX: number;
-			minY: number;
-			maxX: number;
-			maxY: number;
-			width: number;
-			height: number;
-		}; // 包围盒
-	}
-
-	interface RemoteCursor {
-		userId: string;
-		userName: string;
-		x: number; // 0-1
-		y: number; // 0-1
-		pageId: number; // 解决多页面光标穿透乱飞的幽灵隔离问题
-		color?: string; // 光标颜色
-		lastUpdate: number; // 最后更新时间，用于超时清除
-	}
-
-	interface LastWidthInfo {
-		lastWidth: number;
-	}
-
-	// 命令队列
-	const commands = ref<Command[]>([]);
-	// 辅助 Map：用于实现 O(1) 命令查找 (不具备响应性，仅用于索引)
-	const commandMap = new Map<string, Command>();
-
-	// 缓存 Worker 返回的已排序点集，用于局部重绘的同步查询
-	const lastSortedPoints = ref<FlatPoint[]>([]);
-	// 存储异步渲染请求的回调 (用于处理预览图等)
-	const pendingRenderCallbacks = new Map<string, (points: FlatPoint[]) => void>();
-
-	// 待处理的更新点
-	const pendingUpdates = ref<Map<string, Point[]>>(new Map());
-
-	// 当前命令指针，用于非线性历史管理
-	const currentCommandIndex = ref(-1);
+	const commandStore = useCommandStore();
+	// 统一使用 Store 中的状态，并通过 storeToRefs 保持响应性
+	const { commands, lastSortedPoints, pendingUpdates, currentCommandIndex } =
+		storeToRefs(commandStore);
+	const commandMap = commandStore.commandMap;
+	const pendingRenderCallbacks = commandStore.pendingRenderCallbacks;
+	const updateLastSortedPoints = commandStore.updateLastSortedPoints;
+	const insertCommand = commandStore.insertCommand;
+	const clearClearedCommands = commandStore.clearClearedCommands;
 
 	// 当次绘画的临时路径点存储
 	let currentPathPoints: Point[] = [];
@@ -439,187 +312,24 @@
 		"#ffffff",
 	];
 
-	// --- 核心逻辑区 ---W
-
-	/**
-	 * 渲染单个命令 (核心重绘逻辑)
-	 * @param cmd 命令对象
-	 * @param ctx Canavs上下文
-	 * @param width 画布宽度
-	 * @param height 画布高度
-	 */
-
-	/**
-	 * 增量更新渲染函数 (Incremental Render)
-	 * 专门用于渲染实时更新的点，模仿draw函数的渲染逻辑
-	 */
-	const renderIncrementPoint = (
-		cmd: Command,
-		points: Point[],
-		ctx: CanvasRenderingContext2D,
-		width: number,
-		height: number,
-		skipQueue: boolean = false
-	) => {
-		if (cmd.type !== "path" || !points || points.length === 0) {
-			return;
-		}
-		const color = cmd.tool === "eraser" ? "#ffffff" : cmd.color || "#000000";
-		const op = cmd.tool === "eraser" ? "destination-out" : "source-over";
-		const baseSize = cmd.size || 3;
-
-		ctx.globalCompositeOperation = op;
-		ctx.strokeStyle = color;
-		ctx.fillStyle = color;
-
-		const startIndex = (cmd.points?.length || 0) - points.length;
-
-		// 起始点 context
-		let lastX: number, lastY: number, lastWidth: number;
-
-		if (startIndex > 0) {
-			const prevPoint = cmd.points![startIndex - 1];
-			if (prevPoint === undefined) return;
-			lastX = prevPoint.x * width;
-			lastY = prevPoint.y * height;
-			if (cmd.id && lastWidths[cmd.id]?.lastWidth !== undefined) {
-				lastWidth = lastWidths[cmd.id]!.lastWidth;
-			} else {
-				lastWidth = baseSize * (prevPoint.p * 2);
-				if (cmd.tool === "eraser") lastWidth = baseSize;
-			}
-		} else {
-			// startIndex === 0，表示从第一个点开始
-			const p0 = points[0];
-			if (!p0) return;
-			lastX = p0.x * width;
-			lastY = p0.y * height;
-			lastWidth = baseSize * (p0.p * 2);
-			if (cmd.tool === "eraser") lastWidth = baseSize;
-		}
-
-		// 移除未使用的 dpr 声明
-
-		// 渲染新增的点
-		for (let i = 0; i < points.length; i++) {
-			// 如果是该命令的起点，且没有其它点与之相连，我们可以先画一个圆点作为落笔
-			if (startIndex === 0 && i === 0) {
-				const pt = points[i];
-				if (!pt) continue;
-				const x = pt.x * width;
-				const y = pt.y * height;
-				let w = baseSize * (pt.p * 2);
-				if (cmd.tool === "eraser") w = baseSize;
-
-				ctx.beginPath();
-				ctx.arc(x, y, w / 2, 0, Math.PI * 2);
-				ctx.fill();
-				continue;
-			}
-
-			const pt = points[i];
-			if (!pt) continue;
-			const x = pt.x * width;
-			const y = pt.y * height;
-
-			const dist = Math.hypot(x - lastX, y - lastY);
-			const velocityFactor = Math.max(0.4, 1 - dist / 120);
-			let targetWidth = baseSize;
-
-			if (cmd.tool === "pen") {
-				targetWidth = baseSize * (pt.p * 2) * velocityFactor;
-				if (width < 500) {
-					targetWidth *= Math.max(0.2, width / 1000);
-				}
-			} else {
-				targetWidth = baseSize;
-			}
-
-			const clamp = (num: number, min: number, max: number) =>
-				Math.min(Math.max(num, min), max);
-			const newWidth = clamp(lastWidth * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
-
-			if (cmd.tool === "eraser") {
-				// 压入队列（脏区域重绘时跳过，避免 render→queue→collision→render 死循环）
-				if (!skipQueue) {
-					useLamportStore().pushToQueue({
-						x: x,
-						y: y,
-						p: pt.p,
-						lamport: pt.lamport,
-						lastX: lastX,
-						lastY: lastY,
-						cmdId: cmd.id,
-						userId: cmd.userId,
-						tool: cmd.tool,
-						color: cmd.color || "",
-						size: baseSize || 0,
-						isDeleted: cmd.isDeleted,
-						lastWidth: lastWidth,
-					});
-				}
-				ctx.beginPath();
-				ctx.moveTo(lastX, lastY);
-				ctx.lineTo(x, y);
-				ctx.lineWidth = baseSize;
-				ctx.stroke();
-			} else {
-				const midX = (lastX + x) / 2;
-				const midY = (lastY + y) / 2;
-
-				// 压入队列（脏区域重绘时跳过，避免死循环）
-				if (!skipQueue) {
-					useLamportStore().pushToQueue({
-						x: x,
-						y: y,
-						p: pt.p,
-						lamport: pt.lamport,
-						lastX: lastX,
-						lastY: lastY,
-						cmdId: cmd.id,
-						userId: cmd.userId,
-						tool: cmd.tool ?? "pen",
-						color: cmd.color || "",
-						size: newWidth || 0,
-						isDeleted: cmd.isDeleted,
-						lastWidth: lastWidth,
-					});
-				}
-				ctx.beginPath();
-				ctx.moveTo(lastX, lastY);
-				ctx.quadraticCurveTo(midX, midY, x, y);
-				ctx.lineWidth = newWidth;
-				ctx.stroke();
-			}
-
-			lastX = x;
-			lastY = y;
-			lastWidth = newWidth;
-
-			if (cmd?.id) {
-				lastWidths[cmd.id] = { lastWidth: newWidth };
-			}
-		}
-
-		// 专门为 Benchmark 端到端测算准备的全局钩子
-	};
+	// --- 核心逻辑区 ---
 
 	/**
 	 * 完整重绘画布 (Re-render)
 	 * 遍历命令队列，重新执行绘制
 	 */
 	const renderCanvas = () => {
-		if (!canvasRef.value || !ctx.value || !canvasWorker) return;
+		if (!canvasRef.value || !ctx.value || !canvasWorker.value) return;
 
 		// 向 Worker 发送请求，计算排好序的点集
 		// 关键点：使用 JSON 序列化进行“深度脱敏”，防止 Vue 3 响应式对象（Proxy/Symbol）
 		// 在 postMessage 时触发 DataCloneError。虽然有性能损耗，但在当前架构下是解决阻塞报错的方案。
-		const rawCommands = toRaw(commands.value).map((c) => ({
+		const rawCommands = toRaw(commands.value).map((c: Command) => ({
 			...c,
-			points: toRaw(c.points),
+			points: c.points ? toRaw(c.points) : [],
 		}));
 
-		canvasWorker.postMessage({
+		canvasWorker.value.postMessage({
 			type: "flat-points",
 			data: JSON.parse(
 				JSON.stringify({
@@ -630,108 +340,6 @@
 				})
 			),
 		});
-	};
-
-	const renderWithPoints = (sortedPoints: FlatPoint[]) => {
-		if (!canvasRef.value || !ctx.value) return;
-		const _renderStart = performance.now();
-
-		const dpr = window.devicePixelRatio || 1;
-		const physicalWidth = canvasRef.value.width;
-		const physicalHeight = canvasRef.value.height;
-		const logicalWidth = physicalWidth / dpr;
-		const logicalHeight = physicalHeight / dpr;
-
-		ctx.value.save();
-		ctx.value.setTransform(1, 0, 0, 1, 0, 0);
-		ctx.value.clearRect(0, 0, physicalWidth, physicalHeight);
-		ctx.value.restore();
-
-		renderPageContentFromPoints(
-			ctx.value,
-			logicalWidth,
-			logicalHeight,
-			sortedPoints,
-			false,
-			_renderStart
-		);
-	};
-
-	const renderPageContentFromPoints = (
-		ctx: CanvasRenderingContext2D,
-		width: number,
-		height: number,
-		points: FlatPoint[],
-		isDirtyRender: boolean = false,
-		startTime?: number
-	) => {
-		const _renderStart = startTime || performance.now();
-		if (!points) return;
-
-		// 记录每个命令的最后状态，用于绘制线段
-		const lastPointsMap: Record<string, { x: number; y: number; width: number }> = {};
-
-		points.forEach((pt) => {
-			if (pt.isDeleted) return;
-
-			const color = pt.tool === "eraser" ? "#ffffff" : pt.color || "#000000";
-			const op = pt.tool === "eraser" ? "destination-out" : "source-over";
-			const baseSize = pt.size || 3;
-
-			ctx.globalCompositeOperation = op;
-			ctx.strokeStyle = color;
-			ctx.fillStyle = color;
-			ctx.lineCap = "round";
-			ctx.lineJoin = "round";
-
-			const x = pt.x * width;
-			const y = pt.y * height;
-			const prev = lastPointsMap[pt.cmdId];
-
-			if (!prev) {
-				// 起始点逻辑：计算初始宽度并绘制圆点
-				const initialWidth = pt.tool === "eraser" ? baseSize : baseSize * (pt.p * 2);
-				ctx.beginPath();
-				ctx.arc(x, y, initialWidth / 2, 0, Math.PI * 2);
-				ctx.fill();
-				lastPointsMap[pt.cmdId] = { x, y, width: initialWidth };
-			} else {
-				// 后续点逻辑：恢复速度感应和宽度平滑系数
-				const dist = Math.hypot(x - prev.x, y - prev.y);
-				const velocityFactor = Math.max(0.4, 1 - dist / 120);
-				let targetWidth = baseSize;
-
-				if (pt.tool === "pen") {
-					targetWidth = baseSize * (pt.p * 2) * velocityFactor;
-					// 移动端/小屏幕适配
-					if (width < 500) {
-						targetWidth *= Math.max(0.2, width / 1000);
-					}
-				}
-
-				// 关键：宽度平滑算法 (Exponential Moving Average)
-				const clamp = (num: number, min: number, max: number) =>
-					Math.min(Math.max(num, min), max);
-				const newWidth = clamp(prev.width * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
-
-				const midX = (prev.x + x) / 2;
-				const midY = (prev.y + y) / 2;
-
-				ctx.beginPath();
-				ctx.moveTo(prev.x, prev.y);
-				ctx.quadraticCurveTo(midX, midY, x, y);
-				ctx.lineWidth = newWidth;
-				ctx.stroke();
-
-				lastPointsMap[pt.cmdId] = { x, y, width: newWidth };
-			}
-		});
-
-		const _renderEnd = performance.now();
-		const logPrefix = isDirtyRender ? "[局部重绘完成]" : "[全量渲染完成]";
-		console.log(
-			`${logPrefix} 点数=${points.length} 耗时=${(_renderEnd - _renderStart).toFixed(2)}ms`
-		);
 	};
 
 	// flatPoints 逻辑已全面移至 Web Worker，主线程不再保留同步计算函数
@@ -805,7 +413,7 @@
 		}
 		// type 为start时，告诉服务器有一条新的命令将要被执行
 		if (type === "start") {
-			if (!commands.value.find((cmd) => cmd.id === cmdPartial.id)) {
+			if (!commands.value.find((cmd: Command) => cmd.id === cmdPartial.id)) {
 				insertCommand(cmdPartial as Command);
 				currentCommandIndex.value = commands.value.length - 1;
 			}
@@ -876,7 +484,7 @@
 				})
 			);
 			console.log("send push command message:", cmd.id);
-			if (!commands.value.find((cmd) => cmd.id === cmdPartial.id)) {
+			if (!commands.value.find((cmd: Command) => cmd.id === cmdPartial.id)) {
 				insertCommand(cmdPartial as Command);
 			}
 			// 更新当前命令指针
@@ -1000,24 +608,7 @@
 		currentCommandIndex.value = commands.value.length === 0 ? 0 : commands.value.length - 1;
 	};
 
-	const clearClearedCommands = (clearCmd: Command, username = "有用户") => {
-		const clearCmdIndex = commands.value.findIndex((c) => c.id === clearCmd.id);
-		if (clearCmdIndex !== -1) {
-			// 同步更新 commandMap
-			const toRemove = commands.value.slice(0, clearCmdIndex + 1);
-			toRemove.forEach((c) => {
-				if (c.pageId === clearCmd.pageId) {
-					commandMap.delete(c.id);
-				}
-			});
-
-			// 类 v8 GC 机制：过滤删除清屏操作前的、属于本页的所有旧命令
-			commands.value = commands.value.filter((c, index) => {
-				return index > clearCmdIndex || c.pageId !== clearCmd.pageId;
-			});
-			toast.info(`${username} 在 页面${clearCmd.pageId + 1} 执行了清屏操作`);
-		}
-	};
+	// 已迁移至 store
 
 	// Pointer Events for Drawing (Fixes discontinuity)
 	// 统一获取指针坐标和压感数据
@@ -1030,69 +621,6 @@
 			y: e.clientY - rect.top,
 			// 获取压感
 			pressure: e.pressure || 0.5,
-		};
-	};
-
-	// 计算单个命令包围盒
-	const getCommandBoundingBox = (cmd: Command, padding = 0) => {
-		if (!cmd.points || cmd.points.length === 0) return null;
-		let minX = Infinity,
-			minY = Infinity,
-			maxX = -Infinity,
-			maxY = -Infinity;
-		for (const p of cmd.points) {
-			if (p.x < minX) minX = p.x;
-			if (p.x > maxX) maxX = p.x;
-			if (p.y < minY) minY = p.y;
-			if (p.y > maxY) maxY = p.y;
-		}
-		return {
-			minX: minX - padding,
-			minY: minY - padding,
-			maxX: maxX + padding,
-			maxY: maxY + padding,
-			width: maxX - minX + padding * 2,
-			height: maxY - minY + padding * 2,
-		};
-	};
-
-	// 计算多个命令的联合包围盒
-	const getGroupBoundingBox = (cmdIds: Set<string>) => {
-		if (cmdIds.size === 0) return null;
-		let minX = Infinity,
-			minY = Infinity,
-			maxX = -Infinity,
-			maxY = -Infinity;
-		let hasValid = false;
-
-		cmdIds.forEach((id) => {
-			const cmd = commands.value.find((c) => c.id === id);
-			if (
-				cmd &&
-				!cmd.isDeleted &&
-				cmd.pageId === currentPageId.value &&
-				cmd.points &&
-				cmd.points.length > 0
-			) {
-				const box = getCommandBoundingBox(cmd);
-				if (box) {
-					hasValid = true;
-					if (box.minX < minX) minX = box.minX;
-					if (box.minY < minY) minY = box.minY;
-					if (box.maxX > maxX) maxX = box.maxX;
-					if (box.maxY > maxY) maxY = box.maxY;
-				}
-			}
-		});
-
-		if (!hasValid) return null;
-		return {
-			minX,
-			minY,
-			maxX,
-			maxY,
-			width: maxX - minX,
-			height: maxY - minY,
 		};
 	};
 
@@ -1115,7 +643,11 @@
 			let actionTarget = "none"; // 'group' | 'new-single' | 'none'
 
 			// 1. 优先检查当前【已有选区】的控制柄 (Handles)
-			const currentGroupBox = getGroupBoundingBox(selectedCommandIds.value);
+			const currentGroupBox = getGroupBoundingBox(
+				selectedCommandIds.value,
+				commands.value,
+				currentPageId.value
+			);
 
 			if (currentGroupBox && selectedCommandIds.value.size > 0) {
 				// Check Handles
@@ -1218,14 +750,18 @@
 
 				// 缓存所有选中物体的原始状态
 				initialCmdsState.value.clear();
-				selectedCommandIds.value.forEach((id) => {
-					const cmd = commands.value.find((c) => c.id === id);
+				selectedCommandIds.value.forEach((id: string) => {
+					const cmd = commands.value.find((c: Command) => c.id === id);
 					if (cmd && cmd.points) {
 						initialCmdsState.value.set(id, JSON.parse(JSON.stringify(cmd.points)));
 					}
 				});
 				// 重新计算并缓存 GroupBox
-				initialGroupBox.value = getGroupBoundingBox(selectedCommandIds.value);
+				initialGroupBox.value = getGroupBoundingBox(
+					selectedCommandIds.value,
+					commands.value,
+					currentPageId.value
+				);
 
 				// 注意：这里去除了原本“立即触发抠图”的逻辑。
 				// 我们将这部分逻辑延迟到了 draw() 中，当用户产生了实际的移动或缩放距离时才触发。
@@ -1401,22 +937,27 @@
 					const dpr = window.devicePixelRatio || 1;
 					const cw = canvasRef.value!.width / dpr;
 					const ch = canvasRef.value!.height / dpr;
-					reRenderDirtyRect({
-						minX: initialBox.minX * cw,
-						minY: initialBox.minY * ch,
-						maxX: initialBox.maxX * cw,
-						maxY: initialBox.maxY * ch,
-						width: initialBox.width * cw,
-						height: initialBox.height * ch,
-					});
+					reRenderDirtyRect(
+						{
+							minX: initialBox.minX * cw,
+							minY: initialBox.minY * ch,
+							maxX: initialBox.maxX * cw,
+							maxY: initialBox.maxY * ch,
+							width: initialBox.width * cw,
+							height: initialBox.height * ch,
+						},
+						ctx.value!,
+						canvasRef.value!,
+						transformingCmdIds.value
+					);
 				} else {
 					return; // 还没有微小位移，维持原状，什么也不画
 				}
 			}
 
 			// 遍历所有选中的物体进行变换
-			selectedCommandIds.value.forEach((cmdId) => {
-				const cmd = commands.value.find((c) => c.id === cmdId);
+			selectedCommandIds.value.forEach((cmdId: string) => {
+				const cmd = commands.value.find((c: Command) => c.id === cmdId);
 				const initialPoints = initialCmdsState.value.get(cmdId);
 				if (!cmd || !initialPoints) return;
 
@@ -1681,20 +1222,9 @@
 		transformingCmdIds.value.clear();
 		transformAnim.value = null;
 
-		const newBox = getGroupBoundingBox(idsToDrop);
-		if (newBox) {
-			const dpr = window.devicePixelRatio || 1;
-			const cw = canvasRef.value!.width / dpr;
-			const ch = canvasRef.value!.height / dpr;
-			reRenderDirtyRect({
-				minX: newBox.minX * cw,
-				minY: newBox.minY * ch,
-				maxX: newBox.maxX * cw,
-				maxY: newBox.maxY * ch,
-				width: newBox.width * cw,
-				height: newBox.height * ch,
-			});
-		}
+		// 落地时，不再仅仅使用局部重绘，因为点位 buffer 此时可能还是旧的
+		// 触发一次 renderCanvas() 启动 Worker 同步，它会完成最新的扁平化并触发全量重绘
+		renderCanvas();
 	};
 
 	const stopDrawing = (e: PointerEvent) => {
@@ -1744,7 +1274,7 @@
 
 					selectedCommandIds.value.clear();
 
-					commands.value.forEach((cmd) => {
+					commands.value.forEach((cmd: Command) => {
 						if (
 							cmd.isDeleted ||
 							cmd.pageId !== currentPageId.value ||
@@ -1779,8 +1309,8 @@
 					// 无论是移动还是缩放，结束时都统一发送全量 Points
 					// 这解决了实时增量导致的偏移累积问题，并方便后端直接存库
 					const updates = Array.from(selectedCommandIds.value)
-						.map((id) => {
-							const cmd = commands.value.find((c) => c.id === id);
+						.map((id: string) => {
+							const cmd = commands.value.find((c: Command) => c.id === id);
 							return cmd ? { cmdId: id, points: cmd.points } : null;
 						})
 						.filter(Boolean);
@@ -1895,52 +1425,7 @@
 		}
 	};
 
-	// 专门写一个命令按顺序插入函数，用于二分插入乱序lamport时间戳的命令，并判断是否需要重绘
-	const insertCommand = (cmd: Command) => {
-		const cmds: Command[] = commands.value;
-
-		// 性能优化：使用 markRaw 标记点位数组，防止 Vue 递归包装海量点位对象
-		if (cmd.points) {
-			cmd.points = markRaw(cmd.points);
-		}
-
-		// 【新增防线】：CRDT 幂等性去重，防止接收端由于乱序导致同一条线段被拆分插入多次
-		if (commandMap.has(cmd.id)) {
-			return;
-		}
-
-		commandMap.set(cmd.id, cmd);
-
-		// 1. 检查是否需要重绘
-		if (resolveConflict(cmd, cmds[cmds.length - 1] ?? cmd) === cmd) {
-			reRenderDirtyRect(cmd.box);
-			// 2. 二分查找 (双向夹逼、自然收敛法则)
-			let left = 0;
-			let right = cmds.length - 1;
-
-			// 当 left > right 时，上下界重合，left 就是唯一合法的插入点
-			while (left <= right) {
-				const mid = left + ((right - left) >> 1); // 位运算取中间值，提升效率防溢出
-				const c = cmds[mid];
-
-				// 如果 cmd 应该排在 c 前面，说明插入点在左侧或当前 mid 的位置
-				if (resolveConflict(cmd, c!) === cmd) {
-					// 【下界左压】：当前 mid 是合法备选，但我们逼迫下界向左移，寻找更极限的位置
-					right = mid - 1;
-				} else {
-					// 【上界右推】：当前 mid 完全不合格，连同它左边的都要全部抛弃，上界向右推
-					left = mid + 1;
-				}
-			}
-			if (left === cmds.length) {
-				commands.value.push(cmd);
-			} else {
-				commands.value.splice(left, 0, cmd);
-			}
-		} else {
-			commands.value.push(cmd);
-		}
-	};
+	// 已迁移至 store
 
 	// 该函数用于对两个命令进行排序，lamport时间戳小的在前，如果时间戳相同，则比较cmdId的ascii码
 	// 返回的是lamport时间戳较小（排序靠前）的那个命令
@@ -2175,8 +1660,8 @@
 				uiCtx.value.shadowOffsetY = 6;
 			}
 
-			transformingCmdIds.value.forEach((cmdId) => {
-				const cmd = commands.value.find((c) => c.id === cmdId);
+			transformingCmdIds.value.forEach((cmdId: string) => {
+				const cmd = commands.value.find((c: Command) => c.id === cmdId);
 				if (!cmd || !cmd.points || cmd.points.length === 0) return;
 				renderIncrementPoint(cmd, cmd.points, uiCtx.value!, width, height, true);
 			});
@@ -2187,7 +1672,11 @@
 		// --- 绘制选中框 (Selection Box / Group Box) ---
 		if (selectedCommandIds.value.size > 0) {
 			// 计算整个组的包围盒
-			const groupBox = getGroupBoundingBox(selectedCommandIds.value);
+			const groupBox = getGroupBoundingBox(
+				selectedCommandIds.value,
+				commands.value,
+				currentPageId.value
+			);
 			if (groupBox) {
 				const bx = groupBox.minX * width;
 				const by = groupBox.minY * height;
@@ -2221,7 +1710,7 @@
 					{ x: bx - padding, y: by + bh + padding }, // BL
 				];
 
-				corners.forEach((p) => {
+				corners.forEach((p: { x: number; y: number }) => {
 					uiCtx.value!.beginPath();
 					uiCtx.value!.rect(
 						p.x - handleSize / 2,
@@ -2240,7 +1729,7 @@
 		}
 
 		// Draw Remote Cursors
-		remoteCursors.value.forEach((cursor) => {
+		remoteCursors.value.forEach((cursor: RemoteCursor) => {
 			// Skip current user (handled by OS)
 			if (cursor.userId === userId.value) return;
 
@@ -2369,16 +1858,16 @@
 
 			// 使用逻辑尺寸进行渲染：改为主线程发请求给 Worker，异步获取点位
 			const requestId = `preview-page-${index}-${Date.now()}`;
-			pendingRenderCallbacks.set(requestId, (points) => {
+			pendingRenderCallbacks.set(requestId, (points: FlatPoint[]) => {
 				renderPageContentFromPoints(ctx, rect.width, rect.height, points);
 			});
 
-			const rawCommands = toRaw(commands.value).map((c) => ({
+			const rawCommands = (toRaw(commands.value) as Command[]).map((c: Command) => ({
 				...c,
-				points: toRaw(c.points),
+				points: c.points ? toRaw(c.points) : [],
 			}));
 
-			canvasWorker!.postMessage({
+			canvasWorker.value!.postMessage({
 				type: "flat-points",
 				data: JSON.parse(
 					JSON.stringify({
@@ -2707,10 +2196,11 @@
 										useLamportStore().syncLamport(msg.data.lamport);
 									}
 									// 处理待处理的更新点
-									if (pendingUpdates.value.has(cmd.id)) {
-										const points = pendingUpdates.value.get(cmd.id) || [];
+									if (commandStore.pendingUpdates.has(cmd.id)) {
+										const points =
+											commandStore.pendingUpdates.get(cmd.id) || [];
 										cmd.points = markRaw([...(cmd.points || []), ...points]);
-										pendingUpdates.value.delete(cmd.id);
+										commandStore.pendingUpdates.delete(cmd.id);
 									}
 									insertCommand(cmd);
 									if (cmd.pageId != currentPageId.value) {
@@ -2751,7 +2241,7 @@
 									]);
 								} else {
 									// 如果找不到本地命令，说明可能是新命令，添加到待处理的更新点中
-									pendingUpdates.value.set(cmdId, points);
+									commandStore.pendingUpdates.set(cmdId, points);
 									return;
 								}
 								if (localCmd.pageId != currentPageId.value) {
@@ -3050,71 +2540,13 @@
 		if (!dirtyRafId) {
 			dirtyRafId = requestAnimationFrame(() => {
 				if (pendingDirtyRect) {
-					reRenderDirtyRect(pendingDirtyRect);
+					reRenderDirtyRect(pendingDirtyRect, ctx.value!, canvasRef.value!);
 					console.log("接收到重绘事件，正在重绘区域:", pendingDirtyRect);
 				}
 				pendingDirtyRect = null;
 				dirtyRafId = null;
 			});
 		}
-	};
-
-	const reRenderDirtyRect = (dirtyRect: any) => {
-		if (!ctx.value || !canvasRef.value || !dirtyRect || typeof dirtyRect.minX === "undefined") {
-			return;
-		}
-		const dpr = window.devicePixelRatio || 1;
-		const canvasW = canvasRef.value.width / dpr;
-		const canvasH = canvasRef.value.height / dpr;
-
-		// dirtyRect 是像素坐标，clip 也用像素坐标
-		const { minX, minY, width, height } = dirtyRect;
-
-		// clip 区域加 padding 防止 anti-aliasing 白边
-		const padding = 10;
-		ctx.value.save();
-		ctx.value.beginPath();
-		ctx.value.rect(minX - padding, minY - padding, width + padding * 2, height + padding * 2);
-		ctx.value.clip();
-
-		// 将像素坐标的 dirtyRect 转换为归一化坐标 (0-1)，以便与 cmd.box 比较
-		// const normMinX = (minX - padding) / canvasW;
-		// const normMinY = (minY - padding) / canvasH;
-		// const normMaxX = (maxX + padding) / canvasW;
-		// const normMaxY = (maxY + padding) / canvasH;
-
-		// const commandList: Command[] = [];
-		// for (const cmd of commands.value) {
-		//     if (cmd.isDeleted) continue;
-		//     if (!cmd.box) continue;
-
-		//     // AABB 不相交判断（归一化坐标 vs 归一化坐标）
-		//     if (normMaxX < cmd.box.minX || normMinX > cmd.box.maxX ||
-		//         normMaxY < cmd.box.minY || normMinY > cmd.box.maxY) {
-		//         continue;
-		//     }
-		//     commandList.push(cmd);
-		// }
-
-		// 性能优化：直接从缓存的 lastSortedPoints 中同步筛选点位，不再触发全量扁平化计算
-		// const commandList = commands.value.filter((cmd) => !cmd.isDeleted);
-		const filteredPoints = lastSortedPoints.value.filter((pt) => {
-			// 如果点位本身已被标记删除，则跳过
-			if (pt.isDeleted) return false;
-
-			// 这里可以额外做一次 AABB 过滤，但因为已经是 FlatPoint，检查起来非常快
-			const x = pt.x * canvasW;
-			const y = pt.y * canvasH;
-			return (
-				x >= minX - padding &&
-				x <= minX + width + padding &&
-				y >= minY - padding &&
-				y <= minY + height + padding
-			);
-		});
-
-		renderPageContentFromPoints(ctx.value, canvasW, canvasH, filteredPoints, true);
-		ctx.value.restore();
 	};
 
 	onMounted(() => {
@@ -3577,7 +3009,7 @@
 								<div
 									v-if="
 										Array.from(remoteCursors.values()).filter(
-											(c) => c.pageId === i - 1
+											(c: RemoteCursor) => c.pageId === i - 1
 										).length > 3
 									"
 									class="w-3 h-3 hmd:w-4 hmd:h-4 bg-slate-200 text-slate-500 rounded-full border-2 border-white shadow-sm flex items-center justify-center text-[7px] font-bold relative z-0"

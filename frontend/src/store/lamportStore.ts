@@ -1,21 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-
-interface QueuePoint {
-	x: number;
-	y: number;
-	p: number;
-	lamport: number;
-	cmdId: string;
-	userId: string;
-	tool: "pen" | "eraser";
-	color: string;
-	size: number;
-	isDeleted: boolean;
-	lastX: number;
-	lastY: number;
-	lastWidth: number;
-}
+import type { QueuePoint } from "../utils/type";
 
 export const useLamportStore = defineStore("lamport", () => {
 	const lamport = ref(0);
