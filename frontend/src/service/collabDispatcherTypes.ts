@@ -1,0 +1,32 @@
+import type { Ref } from "vue";
+import type { Command, Point, RemoteCursor } from "../utils/type";
+
+export interface CollabMessageDispatcherOptions {
+	userId: Ref<string>;
+	roomId: Ref<string>;
+	username: Ref<string>;
+	roomName: Ref<string>;
+	onlineCount: Ref<number>;
+	totalPages: Ref<number>;
+	currentPageId: Ref<number>;
+	currentTool: Ref<"pen" | "eraser" | "cursor">;
+	commands: Ref<Command[]>;
+	currentCommandIndex: Ref<number>;
+	pendingUpdates: Ref<Map<string, Point[]>>;
+	commandMap: Map<string, Command>;
+	memberList: Ref<[string, string][]>;
+	remoteCursors: Ref<Map<string, RemoteCursor>>;
+	remoteSelectionRects: Ref<Map<string, { x: number; y: number; w: number; h: number }>>;
+	renderCanvas: () => void;
+	goToPage: (page: number) => void;
+	setTool: (tool: "pen" | "eraser" | "cursor") => void;
+	insertCommand: (cmd: Command) => void;
+	clearClearedCommands: (cmd: Command) => boolean;
+	onInitConnectionState: () => void;
+}
+
+export interface CollabIncomingMessage {
+	type: string;
+	data: any;
+	pushType?: string;
+}

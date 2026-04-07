@@ -1,6 +1,6 @@
 # Aevia - 实时协同白板系统
 
-![Aevia](https://img.shields.io/badge/Aevia-Collaborative_Whiteboard-5e6ad2?style=for-the-badge) ![Vue 3](https://img.shields.io/badge/Vue.js-35495E?style=for-the-badge&logo=vuedotjs&logoColor=4FC08D) ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white) 
+![Aevia](https://img.shields.io/badge/Aevia-Collaborative_Whiteboard-5e6ad2?style=for-the-badge) ![Vue 3](https://img.shields.io/badge/Vue.js-35495E?style=for-the-badge&logo=vuedotjs&logoColor=4FC08D) ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)
 
 ## 介绍
 
@@ -21,14 +21,16 @@
 
 ## 系统特性
 
-###  协同交互层
+### 协同交互层
+
 - **实时渲染算法**：实时拟合用户输入，使用贝塞尔曲线、速度及压感调优路径轨迹，使笔迹、笔锋更加自然。
 - **多端光标追踪同步**：通过 WebSocket 提供低延迟的对等协作端实时光标位置投射。
 - **无损撤销与重做树机制**：基于软删除标记位与 AABB 脏矩形检测的高效局部分布式撤销重做，严格保证互不交叉的线段渲染层级解耦。
 - **全局分页调度机制**：支持无限页面的动态扩容与切换，并提供全局跨页面的多端活跃监控态热力分布。
 - **多线程调度**：使用Web Worker实现多线程合作，将计算密集型操作交给异步线程处理，避免阻塞主线程。
 
-###  会话与状态管理
+### 会话与状态管理
+
 - **轻量用户校验**：允许终端用户提供匿名并申请临时唯一标识符（UUID）快捷接入协作区域。
 - **实时状态流**：通过WebSocket实时更新用户状态、操作事件及UI变化。
 
@@ -37,6 +39,7 @@
 ## 技术栈组成
 
 ### 前端
+
 - **核心框架**：Vue 3 + TypeScript
 - **构建流**：Vite
 - **状态同步组件**：Pinia + Vue Router
@@ -46,8 +49,9 @@
 - **角色定位**：负责承担画板主要职责，包括画布交互、协同同步和数据处理等。
 
 ### 后端
+
 - **核心运行时**：Express.js
-- **通信**：WebSocket 
+- **通信**：WebSocket
 - **角色定位**：采用“通道留痕模式”的设计理念，因 CRDT 逻辑完全在端侧实现解耦，该服务端主要负责多端链接维系、按房间 ID 和用户 ID 进行广播分发，以及基础会话准入控制等职责，无重型数据库负担，实现近似**去中心化**的运行模式。
 
 ---
@@ -57,21 +61,24 @@
 ```text
 aevia-workspace/
 ├── frontend/    # 前端
-│   ├── src/                     
-│   │   ├── components/          # Vue 局部状态组件
+│   ├── src/
+│   │   ├── components/          # Vue UI 与受控组件
 │   │   ├── views/               # 主业务视图容器
+│   │   ├── service/             # 核心逻辑编排与控制
+│   │   ├── router/              # Vue 路由层
+│   │   ├── utils/               # 工具与事件基建层
 │   │   ├── stores/              # Pinia 状态层
 │   │   └── App.vue              # 入口文件
-│   └── package.json
+│   └── package.json             # node 配置文件
 │
-└── backend/       # 后端
+└── backend/     # 后端
     ├── src/
     │   ├── config/              # 配置文件
     │   ├── controllers/         # 房间/会话控制器
     │   ├── services/            # 业务服务层
     │   ├── websocket/           # Websocket 事件监听
     │   └── app.js               # 入口文件
-    └── package.json
+    └── package.json             # node 配置文件
 ```
 
 ---
@@ -83,6 +90,7 @@ Aevia采用前后端分离的设计模式，启动项目时，你需要分别启
 ### 1. 后端 (Backend)
 
 需确保宿主机安装 `Node.js (LTS)`。
+
 ```bash
 cd backend
 npm install
@@ -120,6 +128,7 @@ npm run preview
 ### 实时绘制
 
 任何一笔完整的线条在本地和网络中都会经历三个阶段的生命周期流转：
+
 - **起点 (start)**：当笔尖落下时，立刻在本地初始化一个全新的命令对象（Command），生成唯一的 ID 并打上当前的逻辑时间戳，记录起点坐标，随后立刻把这仅仅包含一个点的信息放入本地队列，并通知其他客户端笔刷落下的发源信息。
 
 - **增量 (update)**：随着画笔移动，系统会不断收集达到距离阈值的“关键点”。为了兼顾实时反馈和网络压力，这些点会被收集到一个暂存的批处理队列中。当一次性收集的点数达到设定的阈值时，系统才会把这批点作为一个更新包分发出去。本地画板会直接将新点位追加到命令队列中指定的命令对象上，并在画板上向后不断延长线段；远端接收到更新包后，也能通过相同的算法处理，实时看到一条正在一点一点不断延长的墨迹。
@@ -177,7 +186,6 @@ const newWidth = clamp(lastWidth * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
 **延迟检测**：当一个时间戳远小于当前队列中其它数据的时间戳的点进入队列，系统会立刻察觉到这个异常，并判断有可能是一个点因为网络延迟或其它原因，在传输过程中逗留了过长的时间才到达，而此时由于与它时间戳相近的点早已被渲染到画布上了，因此会直接触发事件（`point-collision`）进行局部重绘，将这个乱序的点插入到命令队列中正确的位置，并将其所处的区域进行一次局部重绘。
 这套极致轻量的设计，将原本高达 O(N²) 的碰撞遍历运算强行压制在了常数级 O(1) 的微观视阀内，即完成了精准的区域时空碰撞检测，又绝不会产生内存膨胀。
 
-
 ### 脏区域局部重绘
 
 前面提到了用来兜底纠错的“全量重绘”，但如果仅仅因为某人撤回了一条小弧线，或者因为一次网络延迟导致数据乱序，就要清空屏幕把几万条全部重新画一遍，这种消耗极不划算，将导致画板性能灾难性下滑。脏区域重绘就是为此诞生的终极优化方案。
@@ -196,7 +204,6 @@ const newWidth = clamp(lastWidth * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
 ### 总结
 
 所以，回看一条普通的协同笔迹：从用户的指尖接触屏幕起，它便被创建并带着 Lamport 时钟并发送到服务器上（start），随后不断拼凑起达到物理阈值的点阵、并接受自然笔锋指数平滑的计算（update），最终在分离时算出自己的包围盒并定格归档（stop）。期间若遭遇网络延迟，它在接收端会被二分法精准押解至对应的历史车厢段重新排位；若它或者周边的邻居后来不幸由于撤回操作而隐藏，底层的脏区裁剪又会像手术刀一样单独掏出那一块局部面积，使所有用户看到的状态最终一致。
-
 
 ---
 
@@ -225,11 +232,11 @@ const newWidth = clamp(lastWidth * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
 ### 操作响应延迟 (ms)
 
 | 环境              | 本地渲染跟手性 | 跨端分发展示均值 |
-| ----------------- | ------------------- | --------------------- |
-| 开启GPU+CPU满频   | -1.0                | 3.0                   |
-| 开启GPU+CPU4x降频 | -1.0                | 7.0                   |
-| 关闭GPU+CPU满频   | -1.0                | 2.0                   |
-| 关闭GPU+CPU4x降频 | -1.0                | 6.0                   |
+| ----------------- | -------------- | ---------------- |
+| 开启GPU+CPU满频   | -1.0           | 3.0              |
+| 开启GPU+CPU4x降频 | -1.0           | 7.0              |
+| 关闭GPU+CPU满频   | -1.0           | 2.0              |
+| 关闭GPU+CPU4x降频 | -1.0           | 6.0              |
 
 ### 高并发渲染延迟
 

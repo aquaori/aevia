@@ -1,10 +1,6 @@
 import type { FlatPoint } from "./type";
 import { useCommandStore } from "../store/commandStore";
 import { renderPageContentFromPoints } from "../service/canvas";
-import { useWorkerStore } from "../store/workerStore";
-
-let dirtyPointBuffer: any[] = [];
-let dirtyBufferTimer: number | null = null;
 
 /**
  * 局部区域重绘函数
@@ -74,43 +70,4 @@ const reRenderDirtyRect = (
 	ctx.restore();
 };
 
-const bufferDirtyPoint = (point: any) => {
-	dirtyPointBuffer.push(point);
-	if (!dirtyBufferTimer) {
-		dirtyBufferTimer = setTimeout(() => {
-			processDirtyBuffer();
-			dirtyBufferTimer = null;
-		}, 16); // 缩短至 16ms (1帧) 以降低交互延迟
-	}
-};
-
-const processDirtyBuffer = () => {
-	if (dirtyPointBuffer.length === 0 || !useWorkerStore().canvasWorker) return;
-
-	// 计算每个点的包围盒
-	const rects = dirtyPointBuffer.map((pt) => {
-		const maxThickness = Math.max(pt.size, pt.lastWidth || pt.size);
-		const padding = maxThickness / 2;
-		const minX = Math.min(pt.lastX || pt.x, pt.x);
-		const maxX = Math.max(pt.lastX || pt.x, pt.x);
-		const minY = Math.min(pt.lastY || pt.y, pt.y);
-		const maxY = Math.max(pt.lastY || pt.y, pt.y);
-
-		return {
-			minX: minX - padding,
-			minY: minY - padding,
-			maxX: maxX + padding,
-			maxY: maxY + padding,
-		};
-	});
-
-	// 发送给 Worker 进行 DSU 合并
-	useWorkerStore().canvasWorker?.postMessage({
-		type: "merge-dirty-rects",
-		data: { rects },
-	});
-
-	dirtyPointBuffer = [];
-};
-
-export { reRenderDirtyRect, bufferDirtyPoint };
+export { reRenderDirtyRect };

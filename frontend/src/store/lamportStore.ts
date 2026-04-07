@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import { emitDirtyPointAdded } from "../service/dirtyPointBus";
 import type { QueuePoint } from "../utils/type";
 
 export const useLamportStore = defineStore("lamport", () => {
@@ -38,20 +39,9 @@ export const useLamportStore = defineStore("lamport", () => {
 				}
 				pointQueue[newLamport].push(point);
 
-				// 【性能优化】不再在主线程执行 O(N^2) 的碰撞检测
-				// 发送事件通知 RoomView 将脏点加入待合并队列
-				window.dispatchEvent(
-					new CustomEvent("point-added", {
-						detail: { point },
-					})
-				);
+				emitDirtyPointAdded(point);
 			} else {
-				// 处理过时的点（通常发生在网络延迟极高时）
-				window.dispatchEvent(
-					new CustomEvent("point-added", {
-						detail: { point },
-					})
-				);
+				emitDirtyPointAdded(point);
 				return;
 			}
 		}
