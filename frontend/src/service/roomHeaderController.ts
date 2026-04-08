@@ -1,3 +1,4 @@
+// File role: header actions such as naming, share-link copying, and fullscreen control.
 import axios from "axios";
 import { toast } from "vue-sonner";
 import type { Ref } from "vue";
@@ -29,7 +30,7 @@ export const createRoomHeaderController = (options: RoomHeaderControllerOptions)
 			if (response.data.code !== 200) return;
 
 			const url = `${window.location.origin}/invite/${response.data.data.token}`;
-			const copyStr = `${options.username.value} 邀请你加入协同画板房间：${options.roomName.value} ( ID: ${options.roomId.value} )，点击链接加入：${url}${response.data.data.password ? "，房间密码：" + response.data.data.password : ""}`;
+			const copyStr = `${options.username.value} 邀请你加入协同画板房间: ${options.roomName.value} ( ID: ${options.roomId.value} )，点击链接加入：${url}${response.data.data.password ? "，房间密码：" + response.data.data.password : ""}`;
 			await navigator.clipboard.writeText(copyStr);
 			options.hasCopied.value = true;
 			toast.success("复制成功");
@@ -40,7 +41,7 @@ export const createRoomHeaderController = (options: RoomHeaderControllerOptions)
 			console.error("Copy failed", error);
 			toast.error(
 				error?.response?.data?.msg
-					? `生成分享链接失败：${error.response.data.msg}`
+					? `生成分享链接失败: ${error.response.data.msg}`
 					: "复制失败"
 			);
 		}
@@ -67,3 +68,4 @@ export const createRoomHeaderController = (options: RoomHeaderControllerOptions)
 		syncFullscreenState,
 	};
 };
+

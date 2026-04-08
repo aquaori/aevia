@@ -1,4 +1,6 @@
+// File role: page navigation and page-creation orchestration for the whiteboard room.
 import type { Ref } from "vue";
+import type { EditorHookMap } from "../utils/editorTypes";
 
 interface RoomPageServiceOptions {
 	currentPageId: Ref<number>;
@@ -10,6 +12,7 @@ interface RoomPageServiceOptions {
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	currentTool: Ref<"pen" | "eraser" | "cursor">;
 	send: (type: string, data: unknown) => boolean;
+	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
 export const createRoomPageService = (options: RoomPageServiceOptions) => {
@@ -22,12 +25,14 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		options.currentPageId.value = index;
 		options.closeOverview();
 		resetViewportState();
+		options.emitHook?.("page:changed", { pageId: index });
 	};
 
 	const prevPage = () => {
 		if (options.currentPageId.value <= 0) return;
 		options.currentPageId.value -= 1;
 		resetViewportState();
+		options.emitHook?.("page:changed", { pageId: options.currentPageId.value });
 	};
 
 	const nextPage = () => {
@@ -42,6 +47,7 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 
 		options.currentPageId.value += 1;
 		resetViewportState();
+		options.emitHook?.("page:changed", { pageId: options.currentPageId.value });
 	};
 
 	const addPageAndOpenLast = () => {
@@ -56,3 +62,4 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		addPageAndOpenLast,
 	};
 };
+

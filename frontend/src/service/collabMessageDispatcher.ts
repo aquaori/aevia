@@ -1,3 +1,4 @@
+// File role: routes incoming collaboration messages to command and presence handlers.
 import { createCollabCommandHandlers } from "./collabCommandHandlers";
 import { createCollabPresenceHandlers } from "./collabPresenceHandlers";
 import type { CollabIncomingMessage, CollabMessageDispatcherOptions } from "./collabDispatcherTypes";
@@ -66,3 +67,4 @@ export const createCollabMessageDispatcher = (options: CollabMessageDispatcherOp
 		handleMessage,
 	};
 };
+

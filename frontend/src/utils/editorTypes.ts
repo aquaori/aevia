@@ -1,3 +1,4 @@
+// File role: shared editor host, hook, selection, and session type definitions.
 import type { ComputedRef, Ref } from "vue";
 import type { Command, RemoteCursor } from "./type";
 import type { TypedEventBus } from "./editorEventBus";
@@ -35,11 +36,16 @@ export interface EditorHookMap {
 	"render:after": { reason: "full" | "incremental" | "overlay" };
 }
 
-export interface WhiteboardSession {
+export interface EditorHost {
 	state: Readonly<WhiteboardSessionState>;
 	canUndo: ComputedRef<boolean>;
 	canRedo: ComputedRef<boolean>;
 	events: TypedEventBus<EditorHookMap>;
+	hooks: TypedEventBus<EditorHookMap>;
+	emitHook<K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]): void;
+}
+
+export interface WhiteboardSession extends EditorHost {
 	mountCanvas(input: { canvas: HTMLCanvasElement; uiCanvas: HTMLCanvasElement }): void;
 	unmount(): void;
 	connect(): void;
@@ -53,3 +59,4 @@ export interface WhiteboardSession {
 	requestRender(reason?: "full" | "incremental" | "overlay"): void;
 	requestOverlayRender(): void;
 }
+

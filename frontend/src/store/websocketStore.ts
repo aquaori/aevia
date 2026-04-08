@@ -1,3 +1,4 @@
+// File role: legacy websocket store kept for compatibility while transport logic lives in services.
 import { defineStore } from "pinia";
 import { ref, markRaw, type Ref } from "vue";
 import { toast } from "vue-sonner";

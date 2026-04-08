@@ -1,3 +1,4 @@
+// File role: session host that exposes the room editor lifecycle, render requests, and typed hooks.
 import { readonly, type ComputedRef, type Ref } from "vue";
 import { canvasRef, ctx, uiCanvasRef, uiCtx } from "./canvas";
 import { createEventBus } from "../utils/editorEventBus";
@@ -94,6 +95,8 @@ export const createWhiteboardSession = (
 		canUndo: options.canUndo,
 		canRedo: options.canRedo,
 		events,
+		hooks: events,
+		emitHook: emit,
 		mountCanvas,
 		unmount,
 		connect: options.connect,
@@ -108,3 +111,4 @@ export const createWhiteboardSession = (
 		requestOverlayRender: () => requestRender("overlay"),
 	};
 };
+

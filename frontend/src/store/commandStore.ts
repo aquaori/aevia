@@ -1,3 +1,4 @@
+// File role: command-state store for command collections, indexes, and pending remote updates.
 import { defineStore } from "pinia";
 import { markRaw, ref, shallowRef } from "vue";
 import type { Command, FlatPoint, Point } from "../utils/type";
@@ -101,3 +102,4 @@ export const useCommandStore = defineStore("command", () => {
 		clearClearedCommands,
 	};
 });
+

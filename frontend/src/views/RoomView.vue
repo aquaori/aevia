@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 	import {
 		ref,
 		onMounted,
@@ -9,7 +9,6 @@
 		type ComponentPublicInstance,
 	} from "vue";
 	import { useRouter } from "vue-router";
-	import { useLamportStore } from "../store/lamportStore";
 	import {
 		RotateCcw,
 	} from "lucide-vue-next";
@@ -37,6 +36,10 @@
 	import { createRoomKeyboardController } from "../service/roomKeyboardController";
 	import { createRoomToolController } from "../service/roomToolController";
 	import { createRoomPanelController } from "../service/roomPanelController";
+	import { createRoomEditorState } from "../service/roomEditorState";
+	import { createRoomEditorController } from "../service/roomEditorController";
+	import { createRoomSessionState } from "../service/roomSessionState";
+	import { createRoomLifecycleController } from "../service/roomLifecycleController";
 	import {
 		createRoomInteractionState,
 	} from "../service/roomInteractionState";
@@ -48,32 +51,24 @@
 	import RoomConnectionOverlays from "../components/RoomConnectionOverlays.vue";
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
-	import type { SelectionState } from "../utils/editorTypes";
-	import type { Command, RemoteCursor } from "../utils/type";
+	import type { EditorHookMap, SelectionState } from "../utils/editorTypes";
+	import type { Command } from "../utils/type";
 
 	// 路由钩子，获取URL中的token参数
 	const router = useRouter();
 	const userStore = useUserStore();
 
 	// --- 断线重连状态 (Reconnection State) ---
-	const reconnectFailed = ref(false);
-
-	// --- 状态管理 (State) ---
-
-	// 用户名：优先从本地存储获取，没有则为空
-	const username = ref(localStorage.getItem("wb_username") || "");
-	// 房间ID：优先从路由中获取，如果没有则为空
-	const roomId = ref("");
-	// 房间名：优先从路由中获取，没有则为空
-	const roomName = ref("");
-	// token：优先从Pinia中获取，没有则为空
-	const token = ref(userStore.token || "");
-	// 是否显示名字输入弹窗：如果本地没有用户名，则显示弹窗
-	const showNamePrompt = ref(!username.value);
-	// 新名字的临时变量
-	const newName = ref("");
-	// 在线人数
-	const onlineCount = ref(0);
+	const {
+		username,
+		roomId,
+		roomName,
+		token,
+		showNamePrompt,
+		newName,
+		onlineCount,
+		reconnectFailed,
+	} = createRoomSessionState(userStore.token || "");
 
 	// --- UI状态控制 (UI State) ---
 	// 当前激活的菜单 (画笔设置 / 橡皮设置 / 颜色盘 / 更多菜单)
@@ -89,33 +84,16 @@
 		isToolbarCollapsed,
 	} = createRoomUiState();
 
-	// --- 协作成员列表状态 ---
-	const memberList = ref<[string, string][]>([]); // [userId, userName]
-
-	// --- 画布核心状态 (Canvas State已解耦至 service/canvas.ts) ---
-
-	// 当前选中的工具 (画笔 / 橡皮 / 鼠标)
-	const currentTool = ref<"pen" | "eraser" | "cursor">("pen");
-	// 当前画笔颜色
-	const currentColor = ref("#000000");
-
-	// --- 工具尺寸管理 (Tool Size) ---
-	// 分开管理画笔和橡皮的粗细，避免切换工具时互相干扰
-	const penSize = ref(5); // 默认画笔粗细
-	const eraserSize = ref(15); // 默认橡皮粗细
-	// 计算属性：当前激活工具对应的粗细，支持 v-model 修改
-	const currentSize = computed({
-		get: () => (currentTool.value === "eraser" ? eraserSize.value : penSize.value),
-		set: (val) => {
-			if (currentTool.value === "eraser") eraserSize.value = val;
-			else penSize.value = val;
-		},
-	});
-
-	// 画布状态标识
-	const userId = ref(""); // Mock User ID
-	const currentPageId = ref(0); // Mock Page ID
-	const totalPages = ref(1); // 总页数
+	const {
+		memberList,
+		currentTool,
+		currentColor,
+		currentSize,
+		userId,
+		currentPageId,
+		totalPages,
+		remoteCursors,
+	} = createRoomEditorState();
 
 	const commandStore = useCommandStore();
 	// 统一使用 Store 中的状态，并通过 storeToRefs 保持响应性
@@ -123,9 +101,6 @@
 	const commandMap = commandStore.commandMap;
 	const insertCommand = commandStore.insertCommand;
 	const clearClearedCommands = commandStore.clearClearedCommands;
-
-	const remoteCursors = ref<Map<string, RemoteCursor>>(new Map());
-
 	const {
 		cursorX,
 		cursorY,
@@ -152,22 +127,11 @@
 	} = createRoomInteractionState();
 
 	// 预设颜色列表
-	const colors = [
-		"#000000",
-		"#ef4444",
-		"#f97316",
-		"#fbbf24",
-		"#84cc16",
-		"#22c55e",
-		"#06b6d4",
-		"#3b82f6",
-		"#6366f1",
-		"#a855f7",
-		"#ec4899",
-		"#ffffff",
-	];
 
 	const interactionController = createInteractionController();
+	let emitHostHook:
+		| (<K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void)
+		| undefined;
 
 	const renderCanvas = () => {
 		if (!canvasRef.value) return;
@@ -188,7 +152,7 @@
 
 	const canvasRuntime = createCanvasRuntime({
 		requestRender: renderCanvas,
-		syncToolState: () => setTool(currentTool.value),
+		syncToolState: () => roomEditorController.setTool(currentTool.value),
 		requestMergeDirtyRects: (payload) => workerBridge.requestMergeDirtyRects(payload),
 	});
 
@@ -200,43 +164,23 @@
 		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects as any),
 	});
 
-	let roomPointerController: ReturnType<typeof createRoomPointerController> | null = null;
+	const roomPointerControllerRef = ref<ReturnType<typeof createRoomPointerController> | null>(null);
+	const roomEditorController = createRoomEditorController({
+		pointerController: roomPointerControllerRef,
+		currentTool,
+		currentColor,
+		activeMenu,
+		transformingCmdIds,
+		transformAnim,
+		renderCanvas,
+		selectionRect,
+		interactionMode,
+		emitHook: (event, payload) => emitHostHook?.(event, payload),
+	});
 
-	const setTool = (tool: "pen" | "eraser" | "cursor") => {
-		if (roomPointerController) {
-			roomPointerController.setTool(tool);
-			return;
-		}
-		currentTool.value = tool;
-		activeMenu.value = null;
-	};
-
-	const setColor = (color: string) => {
-		if (roomPointerController) {
-			roomPointerController.setColor(color);
-			return;
-		}
-		currentColor.value = color;
-		activeMenu.value = null;
-	};
-
-	const finalizeDrop = () => {
-		if (roomPointerController) {
-			roomPointerController.finalizeDrop();
-			return;
-		}
-		transformingCmdIds.value.clear();
-		transformAnim.value = null;
-		renderCanvas();
-	};
-
-	const startDrawing = (e: PointerEvent) => roomPointerController?.startDrawing(e);
-	const draw = (e: PointerEvent) => roomPointerController?.draw(e);
-	const stopDrawing = (e: PointerEvent) => roomPointerController?.stopDrawing(e);
-
-	const renderUICanvas = () => roomCanvasOverlay.render();
-
-	const startUILoop = () => roomCanvasOverlay.startLoop();
+	const startDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.startDrawing(e);
+	const draw = (e: PointerEvent) => roomPointerControllerRef.value?.draw(e);
+	const stopDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.stopDrawing(e);
 
 	const renderPreviewCanvas = (
 		el: Element | ComponentPublicInstance | null,
@@ -266,14 +210,13 @@
 		remoteSelectionRects,
 		renderCanvas,
 		goToPage,
-		setTool,
+		setTool: roomEditorController.setTool,
 		insertCommand,
 		clearClearedCommands,
+		emitHook: (event, payload) => emitHostHook?.(event, payload),
 	});
 	const isReconnecting = roomCollabTransport.isReconnecting;
 	const reconnectCount = roomCollabTransport.reconnectCount;
-	const MAX_RECONNECT = roomCollabTransport.MAX_RECONNECT;
-	const retryReconnect = roomCollabTransport.retryReconnect;
 	const localCommandService = createLocalCommandService({
 		commands,
 		currentCommandIndex,
@@ -285,17 +228,14 @@
 		insertCommand,
 		clearClearedCommands,
 		renderCanvas,
-		setTool,
+		setTool: roomEditorController.setTool,
 		send: roomCollabTransport.send,
 	});
 	const roomCommandController = createRoomCommandController({
 		localCommandService,
 		activeMenu,
+		emitHook: (event, payload) => emitHostHook?.(event, payload),
 	});
-	const pushCommand = roomCommandController.pushCommand;
-	const undo = roomCommandController.undo;
-	const redo = roomCommandController.redo;
-	const clearCanvas = roomCommandController.clearCanvas;
 
 	const roomPageService = createRoomPageService({
 		currentPageId,
@@ -306,20 +246,18 @@
 			showPageOverview.value = false;
 		},
 		renderCanvas,
-		setTool,
+		setTool: roomEditorController.setTool,
 		currentTool,
 		send: roomCollabTransport.send,
+		emitHook: (event, payload) => emitHostHook?.(event, payload),
 	});
 	const roomToolController = createRoomToolController({
 		activeMenu,
 		currentTool,
 		currentSize: currentSize as unknown as Ref<number>,
 		showSizePreview,
-		setTool,
+		setTool: roomEditorController.setTool,
 	});
-	const toggleMenu = roomToolController.toggleMenu;
-	const updateCurrentSize = roomToolController.updateCurrentSize;
-	const setSizePreview = roomToolController.setSizePreview;
 	const roomPanelController = createRoomPanelController({
 		activeMenu,
 		showShortcuts,
@@ -338,20 +276,16 @@
 		isFullscreen,
 	});
 
-	const copyLink = roomHeaderController.copyLink;
-	const toggleFullscreen = roomHeaderController.toggleFullscreen;
-	const saveName = roomHeaderController.saveName;
-
 	const roomKeyboardController = createRoomKeyboardController({
-		undo,
-		redo,
-		setTool,
+		undo: roomCommandController.undo,
+		redo: roomCommandController.redo,
+		setTool: roomEditorController.setTool,
 		openColorMenu: roomToolController.openColorMenu,
 		toggleShortcuts: roomPanelController.toggleShortcuts,
-		toggleFullscreen,
+		toggleFullscreen: roomHeaderController.toggleFullscreen,
 	});
 
-	roomPointerController = createRoomPointerController({
+	roomPointerControllerRef.value = createRoomPointerController({
 		currentTool,
 		currentColor,
 		currentSize,
@@ -385,7 +319,7 @@
 		interactionController,
 		canvasRuntime,
 		send: roomCollabTransport.send,
-		pushCommand,
+		pushCommand: roomCommandController.pushCommand,
 		renderCanvas,
 		getCommandBoundingBox,
 		getGroupBoundingBox,
@@ -402,7 +336,7 @@
 		currentPageId,
 		remoteCursors,
 		userId,
-		finalizeDrop,
+		finalizeDrop: roomEditorController.finalizeDrop,
 		getGroupBoundingBox,
 		requestFlatPoints: workerBridge.requestFlatPoints,
 	});
@@ -429,55 +363,32 @@
 		},
 		connect: roomCollabTransport.connect,
 		disconnect: roomCollabTransport.disconnect,
-		setTool,
-		undo,
-		redo,
+		setTool: roomEditorController.setTool,
+		undo: roomCommandController.undo,
+		redo: roomCommandController.redo,
 		goToPage,
 		resize: canvasRuntime.resize,
 		requestDirtyRender: canvasRuntime.requestDirtyRender,
 		requestRender: renderCanvas,
-		requestOverlayRender: renderUICanvas,
+		requestOverlayRender: roomCanvasOverlay.render,
+	});
+	emitHostHook = session.emitHook;
+	const roomLifecycleController = createRoomLifecycleController({
+		session,
+		commands,
+		currentColor,
+		roomCanvasOverlay,
+		roomKeyboardController,
+		roomHeaderController,
+		interactionController,
+		send: roomCollabTransport.send,
+		userId,
+		username,
+		selectedCommandIds,
 	});
 
-	onMounted(() => {
-		if (typeof window !== "undefined") {
-			(window as any).__benchmarkCommands = commands;
-			(window as any).__benchmarkLamportStore = useLamportStore();
-			(window as any).__benchmarkCurrentColor = currentColor;
-		}
-
-		if (canvasRef.value && uiCanvasRef.value) {
-			session.mountCanvas({
-				canvas: canvasRef.value,
-				uiCanvas: uiCanvasRef.value,
-			});
-		}
-		session.connect();
-
-		startUILoop();
-
-		window.addEventListener("resize", session.resize);
-		roomKeyboardController.mount();
-
-		canvasRef.value?.addEventListener("pointerleave", () => {
-			interactionController.notifyPointerLeave(roomCollabTransport.send, {
-				userId: userId.value,
-				userName: username.value,
-			});
-		});
-		document.addEventListener("fullscreenchange", roomHeaderController.syncFullscreenState);
-	});
-
-	onUnmounted(() => {
-		roomCanvasOverlay.stopLoop();
-		session.unmount();
-		window.removeEventListener("resize", session.resize);
-		roomKeyboardController.unmount();
-		document.removeEventListener(
-			"fullscreenchange",
-			roomHeaderController.syncFullscreenState
-		);
-	});
+	onMounted(roomLifecycleController.mount);
+	onUnmounted(roomLifecycleController.unmount);
 </script>
 
 <template>
@@ -491,12 +402,12 @@
 				<h3 class="text-xl font-bold mb-4">请输入你的名字</h3>
 				<input
 					v-model="newName"
-					@keyup.enter="saveName"
+					@keyup.enter="roomHeaderController.saveName"
 					class="w-full px-4 py-2 border rounded-xl mb-4 focus:ring-2 focus:ring-indigo-500 outline-none"
 					placeholder="你的名字"
 				/>
 				<button
-					@click="saveName"
+					@click="roomHeaderController.saveName"
 					class="w-full py-2 bg-indigo-600 text-white rounded-xl font-medium"
 				>
 					开始绘画
@@ -507,9 +418,9 @@
 		<RoomConnectionOverlays
 			:is-reconnecting="isReconnecting"
 			:reconnect-count="reconnectCount"
-			:max-reconnect="MAX_RECONNECT"
+			:max-reconnect="roomCollabTransport.MAX_RECONNECT"
 			:reconnect-failed="reconnectFailed"
-			:on-retry-reconnect="retryReconnect"
+			:on-retry-reconnect="roomCollabTransport.retryReconnect"
 			:on-back-home="() => router.push('/')"
 		/>
 		<RoomSizePreview
@@ -558,7 +469,7 @@
 			:online-count="onlineCount"
 			:has-copied="hasCopied"
 			:on-toggle-more="roomPanelController.toggleMoreMenu"
-			:on-copy-link="copyLink"
+			:on-copy-link="roomHeaderController.copyLink"
 			:on-open-member-list="roomPanelController.openMemberList"
 			:on-toggle-shortcuts="roomPanelController.toggleShortcuts"
 		/>
@@ -617,16 +528,15 @@
 			:current-size="currentSize"
 			:is-fullscreen="isFullscreen"
 			:is-toolbar-collapsed="isToolbarCollapsed"
-			:colors="colors"
-			:toggle-fullscreen="toggleFullscreen"
-			:toggle-menu="toggleMenu"
-			:set-tool="setTool"
-			:set-color="setColor"
-			:clear-canvas="clearCanvas"
-			:undo="undo"
-			:redo="redo"
-			:update-current-size="updateCurrentSize"
-			:set-size-preview="setSizePreview"
+			:toggle-fullscreen="roomHeaderController.toggleFullscreen"
+			:toggle-menu="roomToolController.toggleMenu"
+			:set-tool="roomEditorController.setTool"
+			:set-color="roomEditorController.setColor"
+			:clear-canvas="roomCommandController.clearCanvas"
+			:undo="roomCommandController.undo"
+			:redo="roomCommandController.redo"
+			:update-current-size="roomToolController.updateCurrentSize"
+			:set-size-preview="roomToolController.setSizePreview"
 			:on-toggle-collapsed="(collapsed) => (isToolbarCollapsed = collapsed)"
 		/>
 	</div>

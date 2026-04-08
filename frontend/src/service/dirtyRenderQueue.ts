@@ -1,3 +1,4 @@
+// File role: batches dirty-rect redraw requests to keep incremental rendering stable.
 import { reRenderDirtyRect } from "../utils/dirtyRedraw";
 
 interface DirtyRect {
@@ -70,3 +71,4 @@ export const createDirtyRenderQueue = (
 		dispose,
 	};
 };
+

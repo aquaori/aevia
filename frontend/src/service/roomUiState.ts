@@ -1,3 +1,4 @@
+// File role: page-scoped UI state for menus, dialogs, fullscreen, and lightweight view flags.
 import { ref, watch } from "vue";
 
 export const createRoomUiState = () => {
@@ -27,3 +28,4 @@ export const createRoomUiState = () => {
 		isToolbarCollapsed,
 	};
 };
+

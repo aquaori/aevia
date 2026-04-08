@@ -1,3 +1,4 @@
+// File role: shared canvas refs plus low-level drawing helpers used by render paths.
 import { ref } from "vue";
 import type { FlatPoint } from "../utils/type";
 import type { Command, Point } from "../utils/type";
@@ -6,11 +7,11 @@ import type { LastWidthInfo } from "../utils/type";
 
 // Canvas DOM元素引用
 const canvasRef = ref<HTMLCanvasElement | null>(null);
-const uiCanvasRef = ref<HTMLCanvasElement | null>(null); // UI层 Canvas
+const uiCanvasRef = ref<HTMLCanvasElement | null>(null); // UICanvas
 
 // Canvas 2D 渲染上下文
 const ctx = ref<CanvasRenderingContext2D | null>(null);
-const uiCtx = ref<CanvasRenderingContext2D | null>(null); // UI层 Context
+const uiCtx = ref<CanvasRenderingContext2D | null>(null); // UIContext
 
 // 记录所有没画完的点的上一点的lastWidth信息
 const lastWidths: Record<string, LastWidthInfo> = {};
@@ -36,7 +37,7 @@ const renderIncrementPoint = (
 
 	const startIndex = (cmd.points?.length || 0) - points.length;
 
-	// 起始点 context
+	// 起始点context
 	let lastX: number, lastY: number, lastWidth: number;
 
 	if (startIndex > 0) {
@@ -64,7 +65,7 @@ const renderIncrementPoint = (
 
 	// 渲染新增的点
 	for (let i = 0; i < points.length; i++) {
-		// 如果是该命令的起点，且没有其它点与之相连，我们可以先画一个圆点作为落笔
+		// 如果是该命令的起点，且没有其它点与之相连，我们可以先画一个圆点作为落点
 		if (startIndex === 0 && i === 0) {
 			const pt = points[i];
 			if (!pt) continue;
@@ -162,7 +163,6 @@ const renderIncrementPoint = (
 		}
 	}
 
-	// 专门为 Benchmark 端到端测算准备的全局钩子
 };
 
 const renderPageContentFromPoints = (
@@ -211,13 +211,13 @@ const renderPageContentFromPoints = (
 
 			if (pt.tool === "pen") {
 				targetWidth = baseSize * (pt.p * 2) * velocityFactor;
-				// 移动端/小屏幕适配
+				// 移动端小屏幕适配
 				if (width < 500) {
 					targetWidth *= Math.max(0.2, width / 1000);
 				}
 			}
 
-			// 关键：宽度平滑算法 (Exponential Moving Average)
+			// 关键：宽度平滑算法
 			const clamp = (num: number, min: number, max: number) =>
 				Math.min(Math.max(num, min), max);
 			const newWidth = clamp(prev.width * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
@@ -277,3 +277,4 @@ export {
 	renderWithPoints,
 	renderIncrementPoint,
 };
+

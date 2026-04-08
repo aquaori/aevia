@@ -1,3 +1,4 @@
+// File role: remote collaboration handlers for presence, cursors, selections, and member state.
 import { toast } from "vue-sonner";
 import type { CollabIncomingMessage, CollabMessageDispatcherOptions } from "./collabDispatcherTypes";
 

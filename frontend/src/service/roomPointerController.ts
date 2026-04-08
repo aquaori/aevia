@@ -1,3 +1,4 @@
+// File role: pointer-event orchestration that ties interaction state, commands, transport, and rendering together.
 import { v4 as uuidv4 } from "uuid";
 import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
@@ -484,3 +485,4 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		finalizeDrop,
 	};
 };
+

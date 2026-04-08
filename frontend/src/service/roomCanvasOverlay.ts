@@ -1,3 +1,4 @@
+// File role: renders overlay canvas content such as selections, cursors, previews, and transform visuals.
 import { toRaw, type Ref, type ComponentPublicInstance } from "vue";
 import { uiCanvasRef, uiCtx, renderIncrementPoint, renderPageContentFromPoints } from "./canvas";
 import type { Command, FlatPoint, RemoteCursor } from "../utils/type";
@@ -299,3 +300,4 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 		renderPreviewCanvas,
 	};
 };
+

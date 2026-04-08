@@ -1,3 +1,4 @@
+<!-- File role: transient brush or eraser size preview overlay. -->
 <script setup lang="ts">
 	const props = defineProps<{
 		visible: boolean;
@@ -36,3 +37,4 @@
 		</div>
 	</transition>
 </template>
+

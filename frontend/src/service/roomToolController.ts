@@ -1,3 +1,4 @@
+// File role: toolbar behavior controller for tool menus, color menu, and size-preview toggles.
 import type { Ref } from "vue";
 
 type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
@@ -45,3 +46,4 @@ export const createRoomToolController = (options: RoomToolControllerOptions) => 
 		openColorMenu,
 	};
 };
+

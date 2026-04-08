@@ -1,3 +1,4 @@
+// File role: remote collaboration handlers for command-related websocket messages.
 import { markRaw } from "vue";
 import { toast } from "vue-sonner";
 import { canvasRef, ctx, lastWidths, renderIncrementPoint } from "./canvas";
@@ -66,6 +67,13 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const cmd = msg.data.cmd as Command;
 		const pushType = msg.pushType as "normal" | "start" | "update" | "stop";
 
+		if ((pushType === "normal" || pushType === "start") && cmd) {
+			options.emitHook?.("command:before-apply", {
+				command: cmd,
+				source: "remote",
+			});
+		}
+
 		if (pushType === "normal" || pushType === "start") {
 			if (cmd.userId === options.userId.value) {
 				options.currentCommandIndex.value = options.commands.value.length - 1;
@@ -80,12 +88,16 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 				if (cmd.type === "clear") {
 					if (options.clearClearedCommands(cmd)) {
 						toast.info(
-							`${msg.data.username ?? "有用户"} 在页面 ${cmd.pageId + 1} 执行了清屏操作`
+							`${msg.data.username ? msg.data.username : "有用户"}  在页面${cmd.pageId + 1} 执行了清屏操作`
 						);
 					}
 					options.currentCommandIndex.value = 0;
 				}
 				options.renderCanvas();
+				options.emitHook?.("command:applied", {
+					command: cmd,
+					source: "remote",
+				});
 				return;
 			}
 
@@ -97,6 +109,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 			options.insertCommand(cmd);
 			renderIncrement(cmd, cmd.points ?? []);
+			options.emitHook?.("command:applied", {
+				command: cmd,
+				source: "remote",
+			});
 			return;
 		}
 
@@ -138,11 +154,19 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 				}
 			} else if (msg.data.cmd) {
 				const fallbackCmd = msg.data.cmd as Command;
+				options.emitHook?.("command:before-apply", {
+					command: fallbackCmd,
+					source: "remote",
+				});
 				if (stopPoints.length > 0) {
 					fallbackCmd.points = stopPoints;
 				}
 				options.insertCommand(fallbackCmd);
 				options.renderCanvas();
+				options.emitHook?.("command:applied", {
+					command: fallbackCmd,
+					source: "remote",
+				});
 			}
 
 			if (localCmd?.type === "path" && localCmd.points?.length === 1) {
@@ -190,7 +214,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	const handlePageAdd = (msg: CollabIncomingMessage) => {
 		const { totalPages: newTotalPages } = msg.data;
 		if (newTotalPages > options.totalPages.value) {
-			toast.info(`${msg.data.username} 创建了页面 ${msg.data.totalPages}`, {
+			toast.info(`${msg.data.username ? msg.data.username : "有用户"} 创建了页面${msg.data.totalPages}`, {
 				action: {
 					label: "前往",
 					onClick: () => options.goToPage(msg.data.totalPages - 1),

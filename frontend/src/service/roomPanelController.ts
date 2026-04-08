@@ -1,3 +1,4 @@
+// File role: controls modal and panel visibility for shortcuts, members, overview, and menus.
 import type { Ref } from "vue";
 
 type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
@@ -52,3 +53,4 @@ export const createRoomPanelController = (options: RoomPanelControllerOptions) =
 		toggleMoreMenu,
 	};
 };
+

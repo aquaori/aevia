@@ -1,5 +1,7 @@
+// File role: websocket transport for room collaboration, reconnection, and raw message intake.
 import { ref, type Ref } from "vue";
 import { toast } from "vue-sonner";
+import type { EditorHookMap } from "../utils/editorTypes";
 import type { Command, Point, RemoteCursor } from "../utils/type";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
 
@@ -26,7 +28,7 @@ interface RoomCollabTransportOptions {
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
-	emitHook?: (event: "collab:connected" | "collab:message", payload: any) => void;
+	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
 export const createRoomCollabTransport = (options: RoomCollabTransportOptions) => {
@@ -58,6 +60,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		setTool: options.setTool,
 		insertCommand: options.insertCommand,
 		clearClearedCommands: options.clearClearedCommands,
+		emitHook: options.emitHook,
 		onInitConnectionState: () => {
 			if (isReconnecting.value) {
 				toast.success("重连成功");

@@ -1,3 +1,4 @@
+// File role: mutable interaction state for drawing, selection, dragging, resizing, and transform previews.
 import { ref } from "vue";
 import type { Point } from "../utils/type";
 
@@ -70,3 +71,4 @@ export const createRoomInteractionState = () => {
 		lastWidth,
 	};
 };
+

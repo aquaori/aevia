@@ -1,3 +1,4 @@
+// File role: request-response bridge between the main thread and canvas worker.
 import type { Command, FlatPoint } from "../utils/type";
 
 interface RenderWorkerBridgeOptions {
@@ -88,3 +89,4 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		requestMergeDirtyRects,
 	};
 };
+

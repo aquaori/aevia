@@ -1,6 +1,7 @@
+// File role: core shared business types for commands, points, boxes, and collaboration models.
 interface Point {
-	x: number; // 归一化坐标 (0-1)
-	y: number; // 归一化坐标 (0-1)
+	x: number; // 归一化坐标(0-1)
+	y: number; // 归一化坐标(0-1)
 	p: number; // 压力 (0-1)
 	lamport: number; // Lamport时钟
 }
@@ -19,9 +20,9 @@ interface Command {
 	id: string; // 命令唯一ID
 	type: "path" | "clear"; // 命令类型
 	tool?: "pen" | "eraser"; // 工具类型
-	color?: string; // 颜色值 (如：#ff0000)
+	color?: string; // 颜色(如：#ff0000)
 	size?: number; // 基础线宽
-	points?: Point[]; // 路径点数组 (如：[{x:0.5,y:0.5,p:0.5},...]，x、y均为归一化坐标，p为压感)
+	points?: Point[]; // 路径点数(如：[{x:0.5,y:0.5,p:0.5},...]，x、y均为归一化坐标，p为压感
 	timestamp: number; // 时间戳
 	userId: string; // 用户归属
 	roomId: string; // 房间归属
@@ -78,3 +79,4 @@ interface QueuePoint {
 }
 
 export type { Point, FlatPoint, Command, RemoteCursor, LastWidthInfo, aabbBox, QueuePoint };
+

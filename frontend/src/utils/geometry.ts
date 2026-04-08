@@ -1,3 +1,4 @@
+// File role: reusable geometry helpers for boxes, hit testing, and command bounds.
 import type { Command } from "./type";
 
 // 计算单个命令包围盒
@@ -64,3 +65,4 @@ const getGroupBoundingBox = (cmdIds: Set<string>, commands: Command[], currentPa
 };
 
 export { getCommandBoundingBox, getGroupBoundingBox };
+

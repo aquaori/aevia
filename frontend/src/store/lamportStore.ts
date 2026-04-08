@@ -1,3 +1,4 @@
+// File role: Lamport clock store and point ordering state for collaborative command streams.
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { emitDirtyPointAdded } from "../service/dirtyPointBus";
@@ -52,8 +53,6 @@ export const useLamportStore = defineStore("lamport", () => {
 		}
 	};
 
-	// 移除了冗余的 getGroupBoundingBox 和 compareSameLamportPoints
-	// 逻辑已迁移至 Worker
-
 	return { lamport, pointQueue, getNextLamport, syncLamport, pushToQueue };
 });
+

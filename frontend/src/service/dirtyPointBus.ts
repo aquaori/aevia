@@ -1,3 +1,4 @@
+// File role: lightweight event bridge for dirty-point notifications between layers.
 import { createEventBus } from "../utils/editorEventBus";
 import type { QueuePoint } from "../utils/type";
 
@@ -13,3 +14,4 @@ export const emitDirtyPointAdded = (point: QueuePoint) => {
 
 export const onDirtyPointAdded = (handler: (point: QueuePoint) => void) =>
 	dirtyPointBus.on("point:added", handler);
+

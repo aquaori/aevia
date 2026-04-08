@@ -1,3 +1,4 @@
+// File role: typed event bus primitive used by editor hooks and internal event channels.
 type EventHandler<T> = (payload: T) => void;
 
 export interface TypedEventBus<EventMap extends Record<string, any>> {
@@ -44,3 +45,4 @@ export const createEventBus = <EventMap extends Record<string, any>>(): TypedEve
 		clear,
 	};
 };
+

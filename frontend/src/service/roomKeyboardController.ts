@@ -1,3 +1,4 @@
+// File role: keyboard shortcut controller for editor commands and UI toggles.
 interface RoomKeyboardControllerOptions {
 	undo: () => void;
 	redo: () => void;
@@ -57,3 +58,4 @@ export const createRoomKeyboardController = (options: RoomKeyboardControllerOpti
 		unmount,
 	};
 };
+

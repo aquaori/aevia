@@ -1,3 +1,4 @@
+// File role: authenticated user store for token and basic user session data.
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 

@@ -1,3 +1,4 @@
+<!-- File role: toolbar UI plus local toolbar-only interactions like dragging, sliders, and color picking. -->
 <script setup lang="ts">
 	import { ref, onMounted, onUnmounted } from "vue";
 	import {
@@ -15,6 +16,20 @@
 	} from "lucide-vue-next";
 	type Tool = "pen" | "eraser" | "cursor";
 	type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
+	const COLORS = [
+		"#000000",
+		"#ef4444",
+		"#f97316",
+		"#fbbf24",
+		"#84cc16",
+		"#22c55e",
+		"#06b6d4",
+		"#3b82f6",
+		"#6366f1",
+		"#a855f7",
+		"#ec4899",
+		"#ffffff",
+	] as const;
 
 	const props = defineProps<{
 		activeMenu: ActiveMenu;
@@ -23,7 +38,6 @@
 		currentSize: number;
 		isFullscreen: boolean;
 		isToolbarCollapsed: boolean;
-		colors: string[];
 		toggleFullscreen: () => void;
 		toggleMenu: (menu: "pen" | "eraser" | "color" | "more") => void;
 		setTool: (tool: Tool) => void;
@@ -309,7 +323,7 @@
 							class="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 p-2 hmd:p-3 bg-white/90 backdrop-blur-sm border border-white rounded-xl shadow-xl w-48 hmd:w-64 origin-bottom grid grid-cols-6 gap-1.5 hmd:gap-2"
 						>
 							<button
-								v-for="c in props.colors"
+								v-for="c in COLORS"
 								:key="c"
 								@click="props.setColor(c)"
 								class="w-6 h-6 cursor-pointer hmd:w-8 hmd:h-8 rounded-full border border-slate-100 shadow-sm hover:scale-110 transition-transform relative"

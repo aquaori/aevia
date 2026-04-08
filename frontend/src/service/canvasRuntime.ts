@@ -1,3 +1,4 @@
+// File role: main canvas runtime for resize, dirty renders, and render scheduling.
 import { reRenderDirtyRect } from "../utils/dirtyRedraw";
 import { canvasRef, ctx, uiCanvasRef, uiCtx } from "./canvas";
 import { createDirtyRenderQueue } from "./dirtyRenderQueue";
@@ -125,3 +126,4 @@ export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 		dispose,
 	};
 };
+

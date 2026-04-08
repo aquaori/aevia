@@ -1,3 +1,4 @@
+// File role: pure interaction calculations for coordinates, selection, hit testing, and transforms.
 import type { Command, Point, aabbBox } from "../utils/type";
 
 interface PointerCoordinates {
@@ -771,3 +772,4 @@ export const createInteractionController = () => {
 		getCursorStopState,
 	};
 };
+

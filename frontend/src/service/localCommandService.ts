@@ -1,9 +1,17 @@
+// File role: applies local command actions and coordinates local history with transport updates.
 import { v4 as uuidv4 } from "uuid";
 import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
 import type { Command } from "../utils/type";
 
 type PushCommandType = "normal" | "start" | "update" | "stop";
+
+export interface CommandActionResult {
+	ok: boolean;
+	error?: string;
+	command?: Command;
+	notice?: string;
+}
 
 interface LocalCommandServiceOptions {
 	commands: Ref<Command[]>;
@@ -47,7 +55,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 	const pushCommand = (
 		cmdPartial: Partial<Command>,
 		type: PushCommandType = "normal"
-	): { ok: boolean; error?: string } => {
+	): CommandActionResult => {
 		pruneDeletedCommandsAfterPointer();
 
 		if (type === "start") {
@@ -61,7 +69,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				cmd: cmdPartial,
 				lamport: useLamportStore().lamport,
 			});
-			return { ok: true };
+			return { ok: true, command: cmdPartial as Command };
 		}
 
 		if (type === "update" && cmdPartial.id && cmdPartial.points) {
@@ -81,7 +89,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				points: cmdPartial.points || [],
 				box: cmdPartial.box || null,
 			});
-			return { ok: true };
+			return { ok: true, command: cmdPartial as Command };
 		}
 
 		if (type === "normal") {
@@ -107,7 +115,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				}
 				options.currentCommandIndex.value = options.commands.value.length - 1;
 				options.renderCanvas();
-				return { ok: true };
+				return { ok: true, command };
 			} catch (error: any) {
 				return { ok: false, error: error?.message || "Failed to create command" };
 			}
@@ -116,7 +124,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		return { ok: false, error: "Unsupported command type" };
 	};
 
-	const undo = (): { ok: boolean; error?: string } => {
+	const undo = (): CommandActionResult => {
 		for (let index = options.commands.value.length - 1; index >= 0; index -= 1) {
 			const command = options.commands.value[index];
 			if (!command) continue;
@@ -126,7 +134,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				!command.isDeleted
 			) {
 				if (command.type === "clear") {
-					return { ok: false, error: "清屏操作无法撤回" };
+					return { ok: false, error: "Clear commands cannot be undone" };
 				}
 
 				options.currentCommandIndex.value = index;
@@ -134,14 +142,14 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				command.isDeleted = true;
 				options.renderCanvas();
 				options.setTool(options.currentTool.value);
-				return { ok: true };
+				return { ok: true, command };
 			}
 		}
 
 		return { ok: false };
 	};
 
-	const redo = (): { ok: boolean } => {
+	const redo = (): CommandActionResult => {
 		let lastVisibleIndex = -1;
 
 		for (let index = options.commands.value.length - 1; index >= 0; index -= 1) {
@@ -170,14 +178,14 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				command.isDeleted = false;
 				options.renderCanvas();
 				options.setTool(options.currentTool.value);
-				return { ok: true };
+				return { ok: true, command };
 			}
 		}
 
 		return { ok: false };
 	};
 
-	const clearCanvas = (): { ok: boolean; notice?: string } => {
+	const clearCanvas = (): CommandActionResult => {
 		const clearCommand: Command = {
 			id: uuidv4(),
 			type: "clear",
@@ -211,7 +219,8 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 
 		return {
 			ok: true,
-			notice: cleared ? `${userName} 在页面 ${clearCommand.pageId + 1} 执行了清屏操作` : undefined,
+			command: clearCommand,
+			notice: cleared ? `${userName} cleared page ${clearCommand.pageId + 1}` : undefined,
 		};
 	};
 
@@ -222,3 +231,4 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		clearCanvas,
 	};
 };
+

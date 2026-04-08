@@ -1,4 +1,6 @@
+// File role: shared types for collaboration transport and message dispatching.
 import type { Ref } from "vue";
+import type { EditorHookMap } from "../utils/editorTypes";
 import type { Command, Point, RemoteCursor } from "../utils/type";
 
 export interface CollabMessageDispatcherOptions {
@@ -23,6 +25,7 @@ export interface CollabMessageDispatcherOptions {
 	insertCommand: (cmd: Command) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
 	onInitConnectionState: () => void;
+	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
 export interface CollabIncomingMessage {
@@ -30,3 +33,4 @@ export interface CollabIncomingMessage {
 	data: any;
 	pushType?: string;
 }
+

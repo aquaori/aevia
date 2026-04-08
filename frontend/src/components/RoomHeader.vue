@@ -1,3 +1,4 @@
+<!-- File role: room header UI for room info, sharing, and collaboration entry points. -->
 <script setup lang="ts">
 	import { Monitor, Users, Copy, Check, Keyboard } from "lucide-vue-next";
 
@@ -134,8 +135,7 @@
 									<div class="flex-1">
 										<div class="text-[11px] hmd:text-sm font-bold text-slate-700">在线人数</div>
 										<div class="hidden hmd:block text-[10px] text-slate-400">
-											{{ props.onlineCount }} 人正在协作
-										</div>
+											{{ props.onlineCount }} 人正在协作										</div>
 									</div>
 								</button>
 
@@ -149,7 +149,7 @@
 										<Keyboard class="w-3 h-3 hmd:w-4 hmd:h-4" />
 									</div>
 									<div class="flex-1">
-										<div class="text-[11px] hmd:text-sm font-bold text-slate-700">快捷键指南</div>
+										<div class="text-[11px] hmd:text-sm font-bold text-slate-700">快捷键指令</div>
 										<div class="hidden hmd:block text-[10px] text-slate-400">
 											查看常用快捷操作
 										</div>
@@ -163,3 +163,4 @@
 		</div>
 	</transition>
 </template>
+
