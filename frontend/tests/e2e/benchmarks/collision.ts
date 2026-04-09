@@ -1,89 +1,111 @@
-import { chromium, type Page, type Browser } from 'playwright';
-import { CONFIG, createRoom, joinRoom } from './utils';
+import type { Browser, Page } from "playwright";
+import type { BenchmarkRunSample } from "./core-types";
+import {
+	bootstrapRoomPage,
+	compareCanvasDataUrls,
+	createContextAndPage,
+	createRoomWithUsers,
+	getCanvasDataUrls,
+	readBenchmarkRuntime,
+} from "./suite-helpers";
 
 export interface CollisionReport {
-    success: boolean;
-    collisionDetected: boolean;
-    durationMs: number;
+	collisionTriggerDetected: boolean;
+	dirtyRedrawCount: number;
+	convergedVisually: boolean;
+	settleTimeMs: number;
 }
 
+const drawLine = async (
+	page: Page,
+	startX: number,
+	startY: number,
+	endX: number,
+	endY: number,
+	steps = 15
+) => {
+	await page.mouse.move(startX, startY);
+	await page.mouse.down();
+	for (let i = 1; i <= steps; i += 1) {
+		const progress = i / steps;
+		await page.mouse.move(startX + (endX - startX) * progress, startY + (endY - startY) * progress);
+		await page.waitForTimeout(20);
+	}
+	await page.mouse.up();
+};
+
 export const runCollisionSuite = async (
-    browser: Browser,
-    throttleCpu: boolean = false
+	browser: Browser,
+	throttleCpu = false
 ): Promise<CollisionReport> => {
+	const { creds } = await createRoomWithUsers("CollisionAuto", ["UserA", "UserB"]);
+	const { context: contextA, page: pageA } = await createContextAndPage(browser, throttleCpu);
+	const { context: contextB, page: pageB } = await createContextAndPage(browser, throttleCpu);
 
-    const roomId = String(Math.floor(100000 + Math.random() * 900000));
-    await createRoom(roomId, `CollisionAuto`);
+	await Promise.all([
+		bootstrapRoomPage(pageA, { token: creds[0]!.token, userName: "UserA" }),
+		bootstrapRoomPage(pageB, { token: creds[1]!.token, userName: "UserB" }),
+	]);
 
-    const tokenA = await joinRoom(roomId, 'UserA');
-    const tokenB = await joinRoom(roomId, 'UserB');
-    if (!tokenA || !tokenB) throw new Error("Join room failed");
+	let collisionTriggerDetected = false;
+	const watchConsole = (msg: any) => {
+		const text = msg.text();
+		if (text.includes("需要重绘") || text.includes("接收到重绘事件") || text.includes("局部重绘完成")) {
+			collisionTriggerDetected = true;
+		}
+	};
+	pageA.on("console", watchConsole);
+	pageB.on("console", watchConsole);
 
-    const context1 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const context2 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const pageA = await context1.newPage();
-    const pageB = await context2.newPage();
+	const startedAt = performance.now();
+	await Promise.all([
+		drawLine(pageA, 500, 300, 700, 400),
+		drawLine(pageB, 700, 300, 500, 400),
+	]);
+	await pageA.waitForTimeout(2500);
+	await pageB.waitForTimeout(2500);
+	const settleTimeMs = performance.now() - startedAt;
 
-    if (throttleCpu) {
-        const clientA = await context1.newCDPSession(pageA);
-        await clientA.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-        const clientB = await context2.newCDPSession(pageB);
-        await clientB.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-    }
+	const [runtimeA, runtimeB, canvasAList, canvasBList] = await Promise.all([
+		readBenchmarkRuntime(pageA),
+		readBenchmarkRuntime(pageB),
+		getCanvasDataUrls(pageA),
+		getCanvasDataUrls(pageB),
+	]);
 
-    let collisionDetected = false;
-    const watchConsole = (msg: any) => {
-        const text = msg.text();
-        if (text.includes('需要重绘') || text.includes('接收到重绘事件')) {
-            collisionDetected = true;
-        }
-    };
-    pageA.on('console', watchConsole);
-    pageB.on('console', watchConsole);
+	await contextA.close();
+	await contextB.close();
 
-    const setupPage = async (page: Page, observer: any) => {
-        await page.goto(CONFIG.FRONTEND_URL);
-        await page.evaluate(({ t, name }: { t: string; name: string }) => {
-            sessionStorage.setItem('user', JSON.stringify({ token: t, userId: '', username: name }));
-            localStorage.setItem('wb_username', name);
-        }, { t: observer.token, name: observer.userName });
-        await page.goto(`${CONFIG.FRONTEND_URL}/room`);
-        await page.waitForSelector('canvas', { timeout: 15000 });
-        await new Promise(r => setTimeout(r, 2000));
-    };
+	const [canvasA] = canvasAList;
+	const [canvasB] = canvasBList;
+	const diff = canvasA && canvasB ? compareCanvasDataUrls(canvasA, canvasB) : null;
 
-    await Promise.all([
-        setupPage(pageA, { token: tokenA.token, userName: 'UserA' }),
-        setupPage(pageB, { token: tokenB.token, userName: 'UserB' })
-    ]);
+	return {
+		collisionTriggerDetected,
+		dirtyRedrawCount: Math.max(runtimeA?.lastDirtyRedraw?.count || 0, runtimeB?.lastDirtyRedraw?.count || 0),
+		convergedVisually: diff ? diff.diffRatio < diff.passThreshold : false,
+		settleTimeMs,
+	};
+};
 
-    const drawLine = async (p: Page, startX: number, startY: number, endX: number, endY: number, steps = 15) => {
-        await p.mouse.move(startX, startY);
-        await p.mouse.down();
-        for (let i = 1; i <= steps; i++) {
-            const progress = i / steps;
-            await p.mouse.move(startX + (endX - startX) * progress, startY + (endY - startY) * progress);
-            await p.waitForTimeout(20);
-        }
-        await p.mouse.up();
-    };
-
-    // 刻意制造短兵相接的“交叉对角线”
-    const start = performance.now();
-    await Promise.all([
-        drawLine(pageA, 500, 300, 700, 400),
-        drawLine(pageB, 700, 300, 500, 400),
-    ]);
-
-    await new Promise(r => setTimeout(r, 4000)); // 给脏矩阵充足的判定消解时间
-    const end = performance.now();
-
-    await context1.close();
-    await context2.close();
-
-    return {
-        success: collisionDetected,
-        collisionDetected: collisionDetected,
-        durationMs: end - start
-    };
+export const collectCollisionSample = async (
+	browser: Browser,
+	throttleCpu = false
+): Promise<BenchmarkRunSample> => {
+	const startedAt = performance.now();
+	try {
+		const report = await runCollisionSuite(browser, throttleCpu);
+		return {
+			status: "passed",
+			durationMs: performance.now() - startedAt,
+			metrics: report,
+		};
+	} catch (error: any) {
+		return {
+			status: "failed",
+			durationMs: performance.now() - startedAt,
+			metrics: {},
+			error: error?.message || "collision suite failed",
+		};
+	}
 };

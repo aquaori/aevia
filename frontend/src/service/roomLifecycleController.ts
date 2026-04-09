@@ -3,6 +3,7 @@ import { watch, type Ref } from "vue";
 import { canvasRef, uiCanvasRef } from "./canvas";
 import type { EditorHookMap, WhiteboardSession } from "../utils/editorTypes";
 import { useLamportStore } from "../store/lamportStore";
+import { resetBenchmarkRuntime, setRuntimeSnapshot } from "./benchmarkRuntime";
 
 interface RoomLifecycleControllerOptions {
 	session: WhiteboardSession;
@@ -34,12 +35,19 @@ interface RoomLifecycleControllerOptions {
 export const createRoomLifecycleController = (options: RoomLifecycleControllerOptions) => {
 	let pointerLeaveHandler: (() => void) | null = null;
 	let stopSelectionWatch: (() => void) | null = null;
+	let stopCommandWatch: (() => void) | null = null;
 
 	const mount = () => {
 		if (typeof window !== "undefined") {
+			resetBenchmarkRuntime();
 			(window as any).__benchmarkCommands = options.commands;
 			(window as any).__benchmarkLamportStore = useLamportStore();
 			(window as any).__benchmarkCurrentColor = options.currentColor;
+			setRuntimeSnapshot({
+				commandCount: Array.isArray((options.commands as any).value)
+					? (options.commands as any).value.length
+					: 0,
+			});
 		}
 
 		if (canvasRef.value && uiCanvasRef.value) {
@@ -70,9 +78,25 @@ export const createRoomLifecycleController = (options: RoomLifecycleControllerOp
 			},
 			{ deep: true }
 		);
+		stopCommandWatch = watch(
+			() => (options.commands as any).value?.length ?? 0,
+			(commandCount) => {
+				const commands = ((options.commands as any).value ?? []) as Array<{ id: string }>;
+				setRuntimeSnapshot({
+					commandCount,
+					lastCommandDigest: commands
+						.map((command) => command.id)
+						.join(",")
+						.substring(0, 200),
+				});
+			},
+			{ immediate: true }
+		);
 	};
 
 	const unmount = () => {
+		stopCommandWatch?.();
+		stopCommandWatch = null;
 		stopSelectionWatch?.();
 		stopSelectionWatch = null;
 		if (pointerLeaveHandler) {

@@ -34,6 +34,42 @@ export interface EditorHookMap {
 	"collab:message": { type: string; payload: unknown };
 	"render:before": { reason: "full" | "incremental" | "overlay" };
 	"render:after": { reason: "full" | "incremental" | "overlay" };
+	"benchmark:init-received": { payloadBytes: number; commandCount: number };
+	"benchmark:init-parsed": { payloadBytes: number; commandCount: number; durationMs?: number };
+	"benchmark:commands-hydrated": { commandCount: number; durationMs: number };
+	"benchmark:render-start": {
+		reason: "full" | "incremental" | "overlay" | "dirty" | "local-input" | "remote-input";
+		points?: number;
+	};
+	"benchmark:render-end": {
+		reason: "full" | "incremental" | "overlay" | "dirty" | "local-input" | "remote-input";
+		points?: number;
+		durationMs: number;
+	};
+	"benchmark:incremental-render-start": { commandId?: string; points: number; source: "local" | "remote" };
+	"benchmark:incremental-render-end": {
+		commandId?: string;
+		points: number;
+		source: "local" | "remote";
+		durationMs: number;
+	};
+	"benchmark:dirty-redraw-start": { rect: { minX: number; minY: number; width: number; height: number } };
+	"benchmark:dirty-redraw-end": {
+		rect: { minX: number; minY: number; width: number; height: number };
+		durationMs: number;
+		pointCount: number;
+	};
+	"benchmark:undo-start": { source: "local" | "remote" };
+	"benchmark:undo-end": { source: "local" | "remote"; durationMs: number };
+	"benchmark:redo-start": { source: "local" | "remote" };
+	"benchmark:redo-end": { source: "local" | "remote"; durationMs: number };
+	"benchmark:page-switch-start": { fromPageId: number; toPageId: number };
+	"benchmark:page-switch-end": { fromPageId: number; toPageId: number; durationMs: number };
+	"benchmark:remote-command-received": {
+		commandId: string;
+		pushType: "normal" | "start" | "update" | "stop";
+		points: number;
+	};
 }
 
 export interface EditorHost {

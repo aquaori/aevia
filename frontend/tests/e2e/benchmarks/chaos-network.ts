@@ -1,124 +1,179 @@
-import { chromium, type Page, type Browser } from 'playwright';
-import { CONFIG, createRoom, joinRoom, WebSocketInjector } from './utils';
+import type { Browser, Page } from "playwright";
+import type { BenchmarkRunSample } from "./core-types";
+import {
+	bootstrapRoomPage,
+	compareCanvasDataUrls,
+	createContextAndPage,
+	createRoomWithUsers,
+	getCanvasDataUrls,
+	readBenchmarkRuntime,
+} from "./suite-helpers";
 
 export interface ChaosReport {
-    targetNetworkMs: number;
-    actualReconnectionTimeMs: number;
-    droppedStateRecovered: boolean;
+	recoveryMode: "latency" | "latency-bandwidth" | "offline-recover" | "hide-resume";
+	catchUpMs: number;
+	fullyRecovered: boolean;
+	commandsConsistent: boolean;
+	visualConsistent: boolean;
 }
 
+type ChaosMode = ChaosReport["recoveryMode"];
+
+const drawLine = async (page: Page, startX: number, startY: number, endX: number, endY: number) => {
+	await page.mouse.move(startX, startY);
+	await page.mouse.down();
+	await page.mouse.move(endX, endY, { steps: 20 });
+	await page.mouse.up();
+};
+
+const getDigest = async (page: Page) => {
+	const runtime = await readBenchmarkRuntime(page);
+	return runtime?.lastCommandDigest || "";
+};
+
+const applyChaosMode = async (mode: ChaosMode, client: any, page: Page) => {
+	await client.send("Network.enable");
+	switch (mode) {
+		case "latency":
+			await client.send("Network.emulateNetworkConditions", {
+				offline: false,
+				latency: 500,
+				downloadThroughput: -1,
+				uploadThroughput: -1,
+			});
+			break;
+		case "latency-bandwidth":
+			await client.send("Network.emulateNetworkConditions", {
+				offline: false,
+				latency: 500,
+				downloadThroughput: (50 * 1024) / 8,
+				uploadThroughput: (50 * 1024) / 8,
+			});
+			break;
+		case "offline-recover":
+			await client.send("Network.emulateNetworkConditions", {
+				offline: true,
+				latency: 0,
+				downloadThroughput: 0,
+				uploadThroughput: 0,
+			});
+			break;
+		case "hide-resume":
+			await page.evaluate(() => {
+				Object.defineProperty(document, "hidden", {
+					configurable: true,
+					get: () => true,
+				});
+			});
+			await client.send("Network.emulateNetworkConditions", {
+				offline: false,
+				latency: 400,
+				downloadThroughput: (80 * 1024) / 8,
+				uploadThroughput: (80 * 1024) / 8,
+			});
+			break;
+	}
+};
+
+const restoreNetwork = async (mode: ChaosMode, client: any, page: Page) => {
+	await client.send("Network.emulateNetworkConditions", {
+		offline: false,
+		latency: 0,
+		downloadThroughput: -1,
+		uploadThroughput: -1,
+	});
+	if (mode === "hide-resume") {
+		await page.evaluate(() => {
+			Object.defineProperty(document, "hidden", {
+				configurable: true,
+				get: () => false,
+			});
+		});
+	}
+};
+
 export const runChaosSuite = async (
-    browser: Browser,
-    throttleCpu: boolean = false
+	browser: Browser,
+	throttleCpu = false,
+	mode: ChaosMode = "latency"
 ): Promise<ChaosReport> => {
+	const { creds } = await createRoomWithUsers("ChaosRoom", ["StableA", "PoorB"]);
+	const { context: contextA, page: pageA } = await createContextAndPage(browser, throttleCpu);
+	const { context: contextB, page: pageB } = await createContextAndPage(browser, throttleCpu);
+	const clientB = await contextB.newCDPSession(pageB);
 
-    const roomId = String(Math.floor(100000 + Math.random() * 900000));
-    await createRoom(roomId, `ChaosRoom`);
+	await Promise.all([
+		bootstrapRoomPage(pageA, { token: creds[0]!.token, userName: "StableA" }),
+		bootstrapRoomPage(pageB, { token: creds[1]!.token, userName: "PoorB" }),
+	]);
 
-    const tokenA = await joinRoom(roomId, 'StableA');
-    const tokenB = await joinRoom(roomId, 'PoorB');
-    if (!tokenA || !tokenB) throw new Error("Join room failed");
+	await applyChaosMode(mode, clientB, pageB);
 
-    const context1 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const context2 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const pageA = await context1.newPage();
-    const pageB = await context2.newPage();
+	const actionStart = performance.now();
+	await drawLine(pageA, 100, 100, 320, 320);
+	await pageA.waitForTimeout(300);
+	const baselineDigest = await getDigest(pageA);
 
-    let clientB: any;
+	if (mode === "offline-recover") {
+		await pageB.waitForTimeout(1200);
+		await restoreNetwork(mode, clientB, pageB);
+	}
 
-    if (throttleCpu) {
-        const clientA = await context1.newCDPSession(pageA);
-        await clientA.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-        clientB = await context2.newCDPSession(pageB);
-        await clientB.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-    } else {
-        clientB = await context2.newCDPSession(pageB);
-    }
+	let catchUpMs = 0;
+	for (let i = 0; i < 50; i += 1) {
+		await pageB.waitForTimeout(200);
+		const digest = await getDigest(pageB);
+		if (digest && digest === baselineDigest) {
+			catchUpMs = performance.now() - actionStart;
+			break;
+		}
+	}
 
-    const setupPage = async (page: Page, observer: any) => {
-        await page.goto(CONFIG.FRONTEND_URL);
-        await page.evaluate(({ t, name }: { t: string; name: string }) => {
-            sessionStorage.setItem('user', JSON.stringify({ token: t, userId: '', username: name }));
-            localStorage.setItem('wb_username', name);
-        }, { t: observer.token, name: observer.userName });
-        await page.goto(`${CONFIG.FRONTEND_URL}/room`);
-        await page.waitForSelector('canvas', { timeout: 15000 });
-        await new Promise(r => setTimeout(r, 2000));
-    };
+	await restoreNetwork(mode, clientB, pageB);
+	await pageB.waitForTimeout(800);
 
-    await Promise.all([
-        setupPage(pageA, { token: tokenA.token, userName: 'StableA' }),
-        setupPage(pageB, { token: tokenB.token, userName: 'PoorB' })
-    ]);
+	const [digestA, digestB, canvasesA, canvasesB] = await Promise.all([
+		getDigest(pageA),
+		getDigest(pageB),
+		getCanvasDataUrls(pageA),
+		getCanvasDataUrls(pageB),
+	]);
 
-    // 1. 设置 B 的网络为极恶劣状态 (500ms 延迟，低带宽)
-    await clientB.send('Network.enable');
-    await clientB.send('Network.emulateNetworkConditions', {
-        offline: false,
-        latency: 500, // 500ms 延迟
-        downloadThroughput: 50 * 1024 / 8, // 50kbps
-        uploadThroughput: 50 * 1024 / 8
-    });
+	await contextA.close();
+	await contextB.close();
 
-    const drawLine = async (p: Page, startX: number, startY: number, endX: number, endY: number, steps = 15) => {
-        await p.mouse.move(startX, startY);
-        await p.mouse.down();
-        for (let i = 1; i <= steps; i++) {
-            const progress = i / steps;
-            await p.mouse.move(startX + (endX - startX) * progress, startY + (endY - startY) * progress);
-            await p.waitForTimeout(20);
-        }
-        await p.mouse.up();
-    };
+	const [canvasA] = canvasesA;
+	const [canvasB] = canvasesB;
+	const diff = canvasA && canvasB ? compareCanvasDataUrls(canvasA, canvasB) : null;
 
-    const getCommandsDigest = async (p: Page) => {
-        return await p.evaluate(() => {
-            const cmds = (window as any).__benchmarkCommands?.value || [];
-            return {
-                len: cmds.length,
-                hash: cmds.map((c: any) => c.id).join(',').substring(0, 100)
-            }
-        });
-    };
+	return {
+		recoveryMode: mode,
+		catchUpMs,
+		fullyRecovered: Boolean(catchUpMs) && digestA === digestB,
+		commandsConsistent: Boolean(digestA) && digestA === digestB,
+		visualConsistent: diff ? diff.diffRatio < diff.passThreshold : false,
+	};
+};
 
-    // 2. 在 B 脱胶或极度延迟时，A 强势操作 (制造未知的增量突变)
-    const actionStart = performance.now();
-    await drawLine(pageA, 100, 100, 300, 300);
-
-    // 等 A 自己稳定下来，获取 A 的命令摘要作为基准
-    await new Promise(r => setTimeout(r, 500));
-    const digestABaseline = await getCommandsDigest(pageA);
-
-    // 轮询等待 B 的命令数组追上 A（最长 10 秒）
-    let bGotSync = false;
-    let bSyncTime = 0;
-    let waitLoops = 0;
-
-    while (!bGotSync && waitLoops < 50) {
-        await new Promise(r => setTimeout(r, 200));
-        waitLoops++;
-        const digestBNow = await getCommandsDigest(pageB);
-        if (digestBNow.len === digestABaseline.len && digestBNow.len > 0 && digestBNow.hash === digestABaseline.hash) {
-            bGotSync = true;
-            bSyncTime = performance.now();
-        }
-    }
-
-    // 恢复正常网络
-    await clientB.send('Network.emulateNetworkConditions', {
-        offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1
-    });
-
-    const digestA = await getCommandsDigest(pageA);
-    const digestB = await getCommandsDigest(pageB);
-    const droppedStateRecovered = (digestA.len === digestB.len && digestA.len > 0 && digestA.hash === digestB.hash);
-
-    await context1.close();
-    await context2.close();
-
-    return {
-        targetNetworkMs: 500,
-        actualReconnectionTimeMs: bSyncTime > 0 ? bSyncTime - actionStart : 0,
-        droppedStateRecovered
-    };
+export const collectChaosSample = async (
+	browser: Browser,
+	throttleCpu = false,
+	mode: ChaosMode = "latency"
+): Promise<BenchmarkRunSample> => {
+	const startedAt = performance.now();
+	try {
+		const report = await runChaosSuite(browser, throttleCpu, mode);
+		return {
+			status: "passed",
+			durationMs: performance.now() - startedAt,
+			metrics: report,
+		};
+	} catch (error: any) {
+		return {
+			status: "failed",
+			durationMs: performance.now() - startedAt,
+			metrics: { recoveryMode: mode },
+			error: error?.message || "chaos suite failed",
+		};
+	}
 };

@@ -4,6 +4,12 @@ import type { FlatPoint } from "../utils/type";
 import type { Command, Point } from "../utils/type";
 import { useLamportStore } from "../store/lamportStore";
 import type { LastWidthInfo } from "../utils/type";
+import {
+	recordIncrementalRenderEnd,
+	recordIncrementalRenderStart,
+	recordRenderEnd,
+	recordRenderStart,
+} from "./benchmarkRuntime";
 
 // Canvas DOM元素引用
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -27,6 +33,10 @@ const renderIncrementPoint = (
 	if (cmd.type !== "path" || !points || points.length === 0) {
 		return;
 	}
+	const runtime = typeof window !== "undefined" ? (window as any).__benchmarkRuntime : null;
+	const source: "local" | "remote" =
+		runtime?.localInput?.lastCommandId === cmd.id ? "local" : "remote";
+	const incrementalStart = recordIncrementalRenderStart(cmd.id, points.length, source);
 	const color = cmd.tool === "eraser" ? "#ffffff" : cmd.color || "#000000";
 	const op = cmd.tool === "eraser" ? "destination-out" : "source-over";
 	const baseSize = cmd.size || 3;
@@ -162,7 +172,7 @@ const renderIncrementPoint = (
 			lastWidths[cmd.id] = { lastWidth: newWidth };
 		}
 	}
-
+	recordIncrementalRenderEnd(cmd.id, points.length, source, performance.now() - incrementalStart);
 };
 
 const renderPageContentFromPoints = (
@@ -173,7 +183,9 @@ const renderPageContentFromPoints = (
 	isDirtyRender: boolean = false,
 	startTime?: number
 ) => {
-	const _renderStart = startTime || performance.now();
+	const _renderStart =
+		startTime ||
+		recordRenderStart(isDirtyRender ? "dirty" : "full", Array.isArray(points) ? points.length : 0);
 	if (!points) return;
 
 	// 记录每个命令的最后状态，用于绘制线段
@@ -236,6 +248,7 @@ const renderPageContentFromPoints = (
 	});
 
 	const _renderEnd = performance.now();
+	recordRenderEnd(isDirtyRender ? "dirty" : "full", points.length, _renderEnd - _renderStart);
 	const logPrefix = isDirtyRender ? "[局部重绘完成]" : "[全量渲染完成]";
 	console.log(
 		`${logPrefix} 点数=${points.length} 耗时=${(_renderEnd - _renderStart).toFixed(2)}ms`
@@ -244,7 +257,7 @@ const renderPageContentFromPoints = (
 
 const renderWithPoints = (sortedPoints: FlatPoint[]) => {
 	if (!canvasRef.value || !ctx.value) return;
-	const _renderStart = performance.now();
+	const _renderStart = recordRenderStart("full", sortedPoints.length);
 
 	const dpr = window.devicePixelRatio || 1;
 	const physicalWidth = canvasRef.value.width;

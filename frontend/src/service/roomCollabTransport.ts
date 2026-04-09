@@ -4,6 +4,7 @@ import { toast } from "vue-sonner";
 import type { EditorHookMap } from "../utils/editorTypes";
 import type { Command, Point, RemoteCursor } from "../utils/type";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
+import { recordInitParsed, recordInitReceived } from "./benchmarkRuntime";
 
 interface RoomCollabTransportOptions {
 	token: Ref<string>;
@@ -135,7 +136,18 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 			socket.value.onmessage = (event) => {
 				try {
+					const parseStart = performance.now();
+					const payloadText = typeof event.data === "string" ? event.data : "";
 					const msg = JSON.parse(event.data);
+					if (msg.type === "init") {
+						const payloadBytes = new TextEncoder().encode(payloadText).length;
+						recordInitReceived(payloadBytes, msg.data?.commands?.length || 0);
+						recordInitParsed(
+							payloadBytes,
+							msg.data?.commands?.length || 0,
+							performance.now() - parseStart
+						);
+					}
 					options.emitHook?.("collab:message", { type: msg.type, payload: msg.data });
 					dispatcher.handleMessage(msg);
 				} catch (error) {

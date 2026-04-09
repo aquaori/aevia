@@ -4,6 +4,11 @@ import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
 import { canvasRef, ctx } from "./canvas";
 import type { Command, Point, aabbBox } from "../utils/type";
+import {
+	markLocalInputStart,
+	recordIncrementalRenderEnd,
+	recordIncrementalRenderStart,
+} from "./benchmarkRuntime";
 
 type Tool = "pen" | "eraser" | "cursor";
 type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing";
@@ -173,6 +178,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 
 		const id = uuidv4();
 		options.currentDrawingId.value = id;
+		markLocalInputStart(id);
 
 		useLamportStore().pushToQueue({
 			x,
@@ -322,13 +328,29 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		});
 
 		if (options.currentTool.value === "eraser") {
+			const incrementalStartedAt = recordIncrementalRenderStart(
+				options.currentDrawingId.value || undefined,
+				1,
+				"local"
+			);
 			ctx.value.beginPath();
 			ctx.value.moveTo(options.lastXRef.value, options.lastYRef.value);
 			ctx.value.lineTo(x, y);
 			ctx.value.strokeStyle = "#ffffff";
 			ctx.value.lineWidth = options.currentSize.value;
 			ctx.value.stroke();
+			recordIncrementalRenderEnd(
+				options.currentDrawingId.value || undefined,
+				1,
+				"local",
+				performance.now() - incrementalStartedAt
+			);
 		} else {
+			const incrementalStartedAt = recordIncrementalRenderStart(
+				options.currentDrawingId.value || undefined,
+				1,
+				"local"
+			);
 			const midX = (options.lastXRef.value + x) / 2;
 			const midY = (options.lastYRef.value + y) / 2;
 			ctx.value.beginPath();
@@ -337,6 +359,12 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			ctx.value.lineWidth = newWidth;
 			ctx.value.strokeStyle = options.currentColor.value;
 			ctx.value.stroke();
+			recordIncrementalRenderEnd(
+				options.currentDrawingId.value || undefined,
+				1,
+				"local",
+				performance.now() - incrementalStartedAt
+			);
 		}
 
 		if (typeof window !== "undefined" && (window as any).__benchmarkHook) {
@@ -454,8 +482,19 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			ctx.value.globalCompositeOperation =
 				options.currentTool.value === "eraser" ? "destination-out" : "source-over";
 			ctx.value.fillStyle = color;
+			const incrementalStartedAt = recordIncrementalRenderStart(
+				options.currentDrawingId.value || undefined,
+				1,
+				"local"
+			);
 			ctx.value.arc(x, y, w / 2, 0, Math.PI * 2);
 			ctx.value.fill();
+			recordIncrementalRenderEnd(
+				options.currentDrawingId.value || undefined,
+				1,
+				"local",
+				performance.now() - incrementalStartedAt
+			);
 		}
 
 		if (options.pendingPointsRef.value.length > 0) {

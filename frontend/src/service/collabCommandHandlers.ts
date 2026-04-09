@@ -5,6 +5,14 @@ import { canvasRef, ctx, lastWidths, renderIncrementPoint } from "./canvas";
 import { useLamportStore } from "../store/lamportStore";
 import type { Command, Point } from "../utils/type";
 import type { CollabIncomingMessage, CollabMessageDispatcherOptions } from "./collabDispatcherTypes";
+import {
+	markRemoteCommandReceived,
+	recordCommandsHydrated,
+	recordRedoEnd,
+	recordRedoStart,
+	recordUndoEnd,
+	recordUndoStart,
+} from "./benchmarkRuntime";
 
 export const createCollabCommandHandlers = (options: CollabMessageDispatcherOptions) => {
 	const renderIncrement = (cmd: Command, points: Point[]) => {
@@ -43,6 +51,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 	const handleInit = (msg: CollabIncomingMessage) => {
 		options.onInitConnectionState();
+		const hydrateStart = performance.now();
 
 		const initData = msg.data;
 		options.userId.value = initData.userId;
@@ -60,12 +69,18 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		initData.commands.forEach((cmd: Command) => {
 			options.insertCommand(cmd);
 		});
+		recordCommandsHydrated(initData.commands?.length || 0, performance.now() - hydrateStart);
 		options.renderCanvas();
 	};
 
 	const handlePushCommand = (msg: CollabIncomingMessage) => {
 		const cmd = msg.data.cmd as Command;
 		const pushType = msg.pushType as "normal" | "start" | "update" | "stop";
+		const remoteCommandId = cmd?.id || msg.data.cmdId;
+		const remotePointCount = (msg.data.points ?? cmd?.points ?? []).length || 0;
+		if (remoteCommandId) {
+			markRemoteCommandReceived(remoteCommandId, pushType, remotePointCount);
+		}
 
 		if ((pushType === "normal" || pushType === "start") && cmd) {
 			options.emitHook?.("command:before-apply", {
@@ -225,11 +240,25 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	const handleUndoRedo = (msg: CollabIncomingMessage) => {
+		const timer =
+			msg.type === "undo-cmd" ? recordUndoStart("remote") : recordRedoStart("remote");
 		const cmd = options.commands.value.find((candidate) => candidate.id === msg.data.cmdId);
-		if (!cmd) return;
+		if (!cmd) {
+			if (msg.type === "undo-cmd") {
+				recordUndoEnd("remote", 0);
+			} else {
+				recordRedoEnd("remote", 0);
+			}
+			return;
+		}
 		cmd.isDeleted = msg.type === "undo-cmd";
 		options.renderCanvas();
 		options.setTool(options.currentTool.value);
+		if (msg.type === "undo-cmd") {
+			recordUndoEnd("remote", performance.now() - timer);
+		} else {
+			recordRedoEnd("remote", performance.now() - timer);
+		}
 	};
 
 	return {

@@ -2,6 +2,7 @@
 import type { FlatPoint } from "./type";
 import { useCommandStore } from "../store/commandStore";
 import { renderPageContentFromPoints } from "../service/canvas";
+import { recordDirtyRedrawEnd, recordDirtyRedrawStart } from "../service/benchmarkRuntime";
 
 /**
  * 局部区域重绘函数
@@ -20,6 +21,13 @@ const reRenderDirtyRect = (
 	if (!ctx || !canvasRef || !dirtyRect || typeof dirtyRect.minX === "undefined") {
 		return;
 	}
+	const dirtyRectSnapshot = {
+		minX: dirtyRect.minX,
+		minY: dirtyRect.minY,
+		width: dirtyRect.width,
+		height: dirtyRect.height,
+	};
+	const dirtyStart = recordDirtyRedrawStart(dirtyRectSnapshot);
 	const dpr = window.devicePixelRatio || 1;
 	const canvasW = canvasRef.width / dpr;
 	const canvasH = canvasRef.height / dpr;
@@ -68,6 +76,7 @@ const reRenderDirtyRect = (
 	});
 	// 执行重绘
 	renderPageContentFromPoints(ctx, canvasW, canvasH, filteredPoints, true);
+	recordDirtyRedrawEnd(dirtyRectSnapshot, performance.now() - dirtyStart, filteredPoints.length);
 	ctx.restore();
 };
 

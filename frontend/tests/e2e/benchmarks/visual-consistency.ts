@@ -1,163 +1,187 @@
-import { chromium, type Page, type Browser } from 'playwright';
-import { CONFIG, createRoom, joinRoom } from './utils';
-import pixelmatch from 'pixelmatch';
-import { PNG } from 'pngjs';
+import path from "path";
+import type { Browser, Page } from "playwright";
+import type { BenchmarkRunSample } from "./core-types";
+import {
+	bootstrapRoomPage,
+	compareCanvasDataUrls,
+	createContextAndPage,
+	createRoomWithUsers,
+	getCanvasDataUrls,
+	writeDataUrlPng,
+} from "./suite-helpers";
 
 export interface VisualConsistencyReport {
-    lateJoinerMatched: boolean;
-    concurrentCrossingMatched: boolean;
+	lateJoinerMatched: boolean;
+	concurrentCrossingMatched: boolean;
+	undoRedoMatched: boolean;
+	multiPageRevisitMatched: boolean;
+	diffPixels: number;
+	diffRatio: number;
+	passThreshold: number;
+	artifactPaths: string[];
 }
 
-const setupPage = async (page: Page, observer: any) => {
-    await page.goto(CONFIG.FRONTEND_URL);
-    await page.evaluate(({ t, name }: { t: string; name: string }) => {
-        sessionStorage.setItem('user', JSON.stringify({ token: t, userId: '', username: name }));
-        localStorage.setItem('wb_username', name);
-    }, { t: observer.token, name: observer.userName });
-    await page.goto(`${CONFIG.FRONTEND_URL}/room`);
-    await page.waitForSelector('canvas', { timeout: 15000 });
-    await new Promise(r => setTimeout(r, 2000));
+const drawLine = async (
+	page: Page,
+	startX: number,
+	startY: number,
+	endX: number,
+	endY: number,
+	steps = 20
+) => {
+	await page.mouse.move(startX, startY);
+	await page.mouse.down();
+	await page.mouse.move(endX, endY, { steps });
+	await page.mouse.up();
 };
 
-const drawLine = async (p: Page, startX: number, startY: number, endX: number, endY: number, steps = 20) => {
-    await p.mouse.move(startX, startY);
-    await p.mouse.down();
-    for (let i = 1; i <= steps; i++) {
-        const progress = i / steps;
-        await p.mouse.move(startX + (endX - startX) * progress, startY + (endY - startY) * progress);
-        await p.waitForTimeout(10);
-    }
-    await p.mouse.up();
-};
-
-const getCanvasBase64 = async (page: Page): Promise<string> => {
-    return await page.evaluate(() => {
-        const canvas = document.querySelector('canvas');
-        if (!canvas) return '';
-        return canvas.toDataURL('image/png');
-    });
-};
-
-const getCanvasImageData = async (page: Page) => {
-    const base64 = await getCanvasBase64(page);
-    if (!base64) return null;
-    const buffer = Buffer.from(base64.replace(/^data:image\/png;base64,/, ""), 'base64');
-    return PNG.sync.read(buffer);
+const comparePageCanvases = async (pageA: Page, pageB: Page, artifactRoot?: string) => {
+	const urlsA = await getCanvasDataUrls(pageA);
+	const urlsB = await getCanvasDataUrls(pageB);
+	const primaryA = urlsA[0] || "";
+	const primaryB = urlsB[0] || "";
+	const diffPath = artifactRoot ? path.join(artifactRoot, "canvas-diff.png") : undefined;
+	const diff = compareCanvasDataUrls(primaryA, primaryB, diffPath);
+	const artifacts: string[] = [];
+	if (artifactRoot) {
+		const aPath = path.join(artifactRoot, "canvas-a.png");
+		const bPath = path.join(artifactRoot, "canvas-b.png");
+		writeDataUrlPng(primaryA, aPath);
+		writeDataUrlPng(primaryB, bPath);
+		artifacts.push(aPath, bPath);
+		if (diffPath) artifacts.push(diffPath);
+	}
+	return { diff, artifacts };
 };
 
 export const runVisualConsistencySuite = async (
-    browser: Browser,
-    throttleCpu: boolean = false
+	browser: Browser,
+	throttleCpu = false,
+	artifactDir?: string
 ): Promise<VisualConsistencyReport> => {
+	const artifactPaths: string[] = [];
 
-    // =======================================================
-    // 场景 A: 晚加入者追平测试 (Late Joiner Sync)
-    // =======================================================
-    const roomIdA = String(Math.floor(100000 + Math.random() * 900000));
-    await createRoom(roomIdA, 'VisualRoomA');
-    const tokenA1 = await joinRoom(roomIdA, 'UserA1');
-    const tokenA2 = await joinRoom(roomIdA, 'UserA2');
+	const lateJoinerRoom = await createRoomWithUsers("VisualRoomLate", ["UserA1", "UserA2"]);
+	const { context: contextA1, page: pageA1 } = await createContextAndPage(browser, throttleCpu);
+	await bootstrapRoomPage(pageA1, { token: lateJoinerRoom.creds[0]!.token, userName: "UserA1" });
+	await drawLine(pageA1, 200, 200, 400, 400);
+	await drawLine(pageA1, 200, 400, 400, 200);
+	await drawLine(pageA1, 300, 150, 300, 450);
+	await pageA1.waitForTimeout(800);
 
-    const context1 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const pageA1 = await context1.newPage();
-    if (throttleCpu) {
-        const client1 = await context1.newCDPSession(pageA1);
-        await client1.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-    }
+	const { context: contextA2, page: pageA2 } = await createContextAndPage(browser, throttleCpu);
+	await bootstrapRoomPage(pageA2, { token: lateJoinerRoom.creds[1]!.token, userName: "UserA2" });
+	await pageA2.waitForTimeout(1200);
+	const lateCompare = await comparePageCanvases(
+		pageA1,
+		pageA2,
+		artifactDir ? path.join(artifactDir, "visual-late-joiner") : undefined
+	);
+	artifactPaths.push(...lateCompare.artifacts);
+	const lateJoinerMatched = lateCompare.diff.diffRatio < lateCompare.diff.passThreshold;
+	await contextA1.close();
+	await contextA2.close();
 
-    await setupPage(pageA1, { token: tokenA1!.token, userName: 'UserA1' });
+	const crossingRoom = await createRoomWithUsers("VisualRoomCross", ["UserB1", "UserB2"]);
+	const { context: contextB1, page: pageB1 } = await createContextAndPage(browser, throttleCpu);
+	const { context: contextB2, page: pageB2 } = await createContextAndPage(browser, throttleCpu);
+	await Promise.all([
+		bootstrapRoomPage(pageB1, { token: crossingRoom.creds[0]!.token, userName: "UserB1" }),
+		bootstrapRoomPage(pageB2, { token: crossingRoom.creds[1]!.token, userName: "UserB2" }),
+	]);
+	await Promise.all([
+		drawLine(pageB1, 600, 300, 600, 500, 25),
+		drawLine(pageB2, 500, 400, 700, 400, 25),
+	]);
+	await Promise.all([
+		drawLine(pageB1, 500, 300, 700, 500, 25),
+		drawLine(pageB2, 700, 300, 500, 500, 25),
+	]);
+	await pageB1.waitForTimeout(2000);
+	await pageB2.waitForTimeout(2000);
+	const crossingCompare = await comparePageCanvases(
+		pageB1,
+		pageB2,
+		artifactDir ? path.join(artifactDir, "visual-crossing") : undefined
+	);
+	artifactPaths.push(...crossingCompare.artifacts);
+	const concurrentCrossingMatched = crossingCompare.diff.diffRatio < crossingCompare.diff.passThreshold;
 
-    // User A1 独自创作复杂图案
-    await drawLine(pageA1, 200, 200, 400, 400, 20);
-    await drawLine(pageA1, 200, 400, 400, 200, 20);
-    await drawLine(pageA1, 300, 150, 300, 450, 20);
-    await new Promise(r => setTimeout(r, 1000)); // 确保持久化到后端
+	await pageB1.keyboard.down(process.platform === "darwin" ? "Meta" : "Control");
+	await pageB1.keyboard.press("KeyZ");
+	await pageB1.keyboard.up(process.platform === "darwin" ? "Meta" : "Control");
+	await pageB2.waitForTimeout(800);
+	await pageB1.keyboard.down(process.platform === "darwin" ? "Meta" : "Control");
+	await pageB1.keyboard.down("Shift");
+	await pageB1.keyboard.press("KeyZ");
+	await pageB1.keyboard.up("Shift");
+	await pageB1.keyboard.up(process.platform === "darwin" ? "Meta" : "Control");
+	await pageB2.waitForTimeout(800);
+	const undoCompare = await comparePageCanvases(
+		pageB1,
+		pageB2,
+		artifactDir ? path.join(artifactDir, "visual-undo-redo") : undefined
+	);
+	artifactPaths.push(...undoCompare.artifacts);
+	const undoRedoMatched = undoCompare.diff.diffRatio < undoCompare.diff.passThreshold;
 
-    // 此时 User A2 姗姗来迟，加载全量房间历史
-    const context2 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const pageA2 = await context2.newPage();
-    if (throttleCpu) {
-        const client2 = await context2.newCDPSession(pageA2);
-        await client2.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-    }
-    await setupPage(pageA2, { token: tokenA2!.token, userName: 'UserA2' });
-    await new Promise(r => setTimeout(r, 1500)); // 等待拉取完成和初始渲染
+	await pageB1.keyboard.press("ArrowRight");
+	await pageB1.keyboard.press("ArrowLeft");
+	await pageB2.keyboard.press("ArrowRight");
+	await pageB2.keyboard.press("ArrowLeft");
+	await pageB1.waitForTimeout(1000);
+	await pageB2.waitForTimeout(1000);
+	const revisitCompare = await comparePageCanvases(
+		pageB1,
+		pageB2,
+		artifactDir ? path.join(artifactDir, "visual-multi-page") : undefined
+	);
+	artifactPaths.push(...revisitCompare.artifacts);
+	const multiPageRevisitMatched = revisitCompare.diff.diffRatio < revisitCompare.diff.passThreshold;
 
-    const baseA1 = await getCanvasBase64(pageA1);
-    const baseA2 = await getCanvasBase64(pageA2);
-    const lateJoinerMatched = (baseA1 === baseA2) && baseA1.length > 500;
+	await contextB1.close();
+	await contextB2.close();
 
-    await context1.close();
-    await context2.close();
+	return {
+		lateJoinerMatched,
+		concurrentCrossingMatched,
+		undoRedoMatched,
+		multiPageRevisitMatched,
+		diffPixels: revisitCompare.diff.diffPixels,
+		diffRatio: revisitCompare.diff.diffRatio,
+		passThreshold: revisitCompare.diff.passThreshold,
+		artifactPaths,
+	};
+};
 
-    // =======================================================
-    // 场景 B: 高频并发交叉绘制 (Concurrent Crossing)
-    // =======================================================
-    const roomIdB = String(Math.floor(100000 + Math.random() * 900000));
-    await createRoom(roomIdB, 'VisualRoomB');
-    const tokenB1 = await joinRoom(roomIdB, 'UserB1');
-    const tokenB2 = await joinRoom(roomIdB, 'UserB2');
-
-    const context3 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const context4 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const pageB1 = await context3.newPage();
-    const pageB2 = await context4.newPage();
-
-    if (throttleCpu) {
-        const client3 = await context3.newCDPSession(pageB1);
-        await client3.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-        const client4 = await context4.newCDPSession(pageB2);
-        await client4.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-    }
-
-    await Promise.all([
-        setupPage(pageB1, { token: tokenB1!.token, userName: 'UserB1' }),
-        setupPage(pageB2, { token: tokenB2!.token, userName: 'UserB2' })
-    ]);
-
-    // 两人同时刻意绘制“井”字或者“米”字结构的线条，迫使局部产生错综复杂的遮挡
-    await Promise.all([
-        drawLine(pageB1, 600, 300, 600, 500, 25), // 竖线1
-        drawLine(pageB2, 500, 400, 700, 400, 25), // 横线1
-    ]);
-    await Promise.all([
-        drawLine(pageB1, 500, 300, 700, 500, 25), // 对角斜线1
-        drawLine(pageB2, 700, 300, 500, 500, 25), // 对角斜线2
-    ]);
-
-    await new Promise(r => setTimeout(r, 4000)); // 等待网络互换与 ctx.clip 完全收敛
-
-    const img1 = await getCanvasImageData(pageB1);
-    const img2 = await getCanvasImageData(pageB2);
-    let concurrentCrossingMatched = false;
-
-    if (img1 && img2 && img1.width === img2.width && img1.height === img2.height) {
-        const diffBuffer = new Uint8Array(img1.width * img1.height * 4);
-        const diffPixels = pixelmatch(img1.data, img2.data, diffBuffer, img1.width, img1.height, { threshold: 0.1 });
-        // 允许的像素误差值，应对部分Z轴穿插和渲染白边（设置一个合理的宽容度，比如 100 像素以内的不同属于正常情况）
-        const TOTAL_PIXELS = img1.width * img1.height;
-        const diffRatio = diffPixels / TOTAL_PIXELS;
-
-        if (diffRatio < 0.005) { // 误差率低于 0.5% 认为图片一致，消除直接使用Base64导致的完全匹配失效
-            concurrentCrossingMatched = true;
-        } else {
-            console.warn(`[Visual Consistency] Diff pixels: ${diffPixels}, Ratio: ${diffRatio.toFixed(4)}`);
-        }
-    }
-
-    if (!concurrentCrossingMatched) {
-        const getCmds = (p: any) => p.evaluate(() => {
-            const cmds = (window as any).__benchmarkCommands?.value || [];
-            return cmds.map((c: any) => `${c.id.substring(0, 4)}(L${c.lamport},U${c.userId.substring(0, 2)})`).join(' -> ');
-        });
-        const cmds1 = await getCmds(pageB1);
-        const cmds2 = await getCmds(pageB2);
-        console.warn('  [Z紊乱分析] P1:', cmds1);
-        console.warn('  [Z紊乱分析] P2:', cmds2);
-    }
-
-    await context3.close();
-    await context4.close();
-
-    return { lateJoinerMatched, concurrentCrossingMatched };
+export const collectVisualConsistencySample = async (
+	browser: Browser,
+	throttleCpu = false,
+	artifactDir?: string
+): Promise<BenchmarkRunSample> => {
+	const startedAt = performance.now();
+	try {
+		const report = await runVisualConsistencySuite(browser, throttleCpu, artifactDir);
+		return {
+			status: "passed",
+			durationMs: performance.now() - startedAt,
+			metrics: {
+				lateJoinerMatched: report.lateJoinerMatched,
+				concurrentCrossingMatched: report.concurrentCrossingMatched,
+				undoRedoMatched: report.undoRedoMatched,
+				multiPageRevisitMatched: report.multiPageRevisitMatched,
+				diffPixels: report.diffPixels,
+				diffRatio: report.diffRatio,
+				passThreshold: report.passThreshold,
+			},
+			artifacts: report.artifactPaths,
+		};
+	} catch (error: any) {
+		return {
+			status: "failed",
+			durationMs: performance.now() - startedAt,
+			metrics: {},
+			error: error?.message || "visual consistency suite failed",
+		};
+	}
 };

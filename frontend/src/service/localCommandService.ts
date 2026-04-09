@@ -3,6 +3,12 @@ import { v4 as uuidv4 } from "uuid";
 import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
 import type { Command } from "../utils/type";
+import {
+	recordRedoEnd,
+	recordRedoStart,
+	recordUndoEnd,
+	recordUndoStart,
+} from "./benchmarkRuntime";
 
 type PushCommandType = "normal" | "start" | "update" | "stop";
 
@@ -125,6 +131,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 	};
 
 	const undo = (): CommandActionResult => {
+		const undoStart = recordUndoStart("local");
 		for (let index = options.commands.value.length - 1; index >= 0; index -= 1) {
 			const command = options.commands.value[index];
 			if (!command) continue;
@@ -142,14 +149,17 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				command.isDeleted = true;
 				options.renderCanvas();
 				options.setTool(options.currentTool.value);
+				recordUndoEnd("local", performance.now() - undoStart);
 				return { ok: true, command };
 			}
 		}
 
+		recordUndoEnd("local", performance.now() - undoStart);
 		return { ok: false };
 	};
 
 	const redo = (): CommandActionResult => {
+		const redoStart = recordRedoStart("local");
 		let lastVisibleIndex = -1;
 
 		for (let index = options.commands.value.length - 1; index >= 0; index -= 1) {
@@ -178,10 +188,12 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				command.isDeleted = false;
 				options.renderCanvas();
 				options.setTool(options.currentTool.value);
+				recordRedoEnd("local", performance.now() - redoStart);
 				return { ok: true, command };
 			}
 		}
 
+		recordRedoEnd("local", performance.now() - redoStart);
 		return { ok: false };
 	};
 

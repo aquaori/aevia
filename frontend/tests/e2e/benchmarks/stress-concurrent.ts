@@ -1,140 +1,199 @@
-import { chromium, type Page, type Browser } from 'playwright';
-import { CONFIG, createRoom, joinRoom, WebSocketInjector } from './utils';
+import type { Browser, Page } from "playwright";
+import type { BenchmarkRunSample } from "./core-types";
+import {
+	bootstrapRoomPage,
+	compareCanvasDataUrls,
+	createContextAndPage,
+	createRoomWithUsers,
+	getCanvasDataUrls,
+	readBenchmarkRuntime,
+	sampleHeap,
+} from "./suite-helpers";
+import { WebSocketInjector, joinRoom } from "./utils";
 
 export interface StressReport {
-    averageFps: number;
-    maxMainThreadBlockMs: number;
-    totalPointsInjected: number;
-    isConsistent: boolean;
+	avgFps: number;
+	minFps: number;
+	p95FrameTimeMs: number;
+	maxFrameGapMs: number;
+	longTaskCount: number;
+	longTaskTotalMs: number;
+	peakHeapMb: number;
+	heapEndMb: number;
+	totalPointsInjected: number;
+	isStateConsistent: boolean;
+	isVisualConsistent: boolean;
 }
 
+type StressProfile = "uniform" | "bursty" | "mixed-tools";
+
+const installStressStats = async (page: Page) => {
+	await page.addInitScript(() => {
+		(window as any).__stressStats = {
+			frameTimes: [] as number[],
+			maxFrameGapMs: 0,
+			minFps: Number.POSITIVE_INFINITY,
+			frameCount: 0,
+			startTs: 0,
+			longTaskCount: 0,
+			longTaskTotalMs: 0,
+		};
+
+		let last = performance.now();
+		(window as any).__stressStats.startTs = last;
+		const loop = (now: number) => {
+			const delta = now - last;
+			last = now;
+			(window as any).__stressStats.frameTimes.push(delta);
+			(window as any).__stressStats.maxFrameGapMs = Math.max(
+				(window as any).__stressStats.maxFrameGapMs,
+				delta
+			);
+			(window as any).__stressStats.frameCount += 1;
+			const fps = delta > 0 ? 1000 / delta : 0;
+			(window as any).__stressStats.minFps = Math.min(
+				(window as any).__stressStats.minFps,
+				fps
+			);
+			requestAnimationFrame(loop);
+		};
+		requestAnimationFrame(loop);
+
+		if ("PerformanceObserver" in window) {
+			try {
+				const observer = new PerformanceObserver((list) => {
+					for (const entry of list.getEntries()) {
+						(window as any).__stressStats.longTaskCount += 1;
+						(window as any).__stressStats.longTaskTotalMs += entry.duration;
+					}
+				});
+				observer.observe({ type: "longtask", buffered: true } as any);
+			} catch {}
+		}
+	});
+};
+
+const runProfile = async (
+	injectors: WebSocketInjector[],
+	profile: StressProfile,
+	durationMs: number
+) => {
+	switch (profile) {
+		case "bursty":
+			return Promise.all(
+				injectors.map((injector, index) =>
+					injector.injectRealtimeStrokes(index % 2 === 0 ? 90 : 45, durationMs, 350)
+				)
+			);
+		case "mixed-tools":
+			return Promise.all(
+				injectors.map(async (injector, index) => {
+					if (index % 3 === 0) {
+						// @ts-ignore testing only
+						injector["userName"] = `${injector.userName}_eraser`;
+					}
+					return injector.injectRealtimeStrokes(60, durationMs, 280);
+				})
+			);
+		case "uniform":
+		default:
+			return Promise.all(injectors.map((injector) => injector.injectRealtimeStrokes(60, durationMs, 500)));
+	}
+};
+
+const percentile = (values: number[], p: number) => {
+	if (values.length === 0) return 0;
+	const sorted = [...values].sort((a, b) => a - b);
+	const index = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
+	return sorted[index] ?? 0;
+};
+
 export const runStressSuite = async (
-    browser: Browser,
-    throttleCpu: boolean = false
+	browser: Browser,
+	throttleCpu = false,
+	profile: StressProfile = "uniform"
 ): Promise<StressReport> => {
+	const { roomId, creds } = await createRoomWithUsers("StressRoom", ["Observer1", "Observer2"]);
+	const { context: context1, page: page1 } = await createContextAndPage(browser, throttleCpu);
+	const { context: context2, page: page2 } = await createContextAndPage(browser, throttleCpu);
 
-    const roomId = String(Math.floor(100000 + Math.random() * 900000));
-    await createRoom(roomId, `StressRoom`);
+	await installStressStats(page1);
+	await installStressStats(page2);
+	await Promise.all([
+		bootstrapRoomPage(page1, { token: creds[0]!.token, userName: "Observer1" }),
+		bootstrapRoomPage(page2, { token: creds[1]!.token, userName: "Observer2" }),
+	]);
 
-    const observer1 = await joinRoom(roomId, 'Observer1');
-    const observer2 = await joinRoom(roomId, 'Observer2');
-    if (!observer1 || !observer2) throw new Error("Observer joining failed");
+	const injectors: WebSocketInjector[] = [];
+	for (let i = 0; i < 20; i += 1) {
+		const cred = await joinRoom(roomId, `StressBot_${i}`);
+		if (!cred) throw new Error(`missing stress bot ${i}`);
+		const injector = new WebSocketInjector(roomId, `StressBot_${i}`, cred.token, cred.userId);
+		await injector.connect();
+		injectors.push(injector);
+	}
 
-    const context1 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const context2 = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-    const page1: Page = await context1.newPage();
-    const page2: Page = await context2.newPage();
+	const counts = await runProfile(injectors, profile, 10000);
+	const totalPointsInjected = counts.reduce((sum, count) => sum + count, 0);
+	await page1.waitForTimeout(2500);
+	await page2.waitForTimeout(2500);
 
-    if (throttleCpu) {
-        const client = await context1.newCDPSession(page1);
-        await client.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-        const client2 = await context2.newCDPSession(page2);
-        await client2.send('Emulation.setCPUThrottlingRate', { rate: 4 });
-    }
+	const [stats1, stats2, runtime1, runtime2, heap1] = await Promise.all([
+		page1.evaluate(() => (window as any).__stressStats),
+		page2.evaluate(() => (window as any).__stressStats),
+		readBenchmarkRuntime(page1),
+		readBenchmarkRuntime(page2),
+		sampleHeap(page1),
+	]);
 
-    // 在页面中注入帧监控 (rAF 循环) 以测量主线程卡死情况和平均 FPS
-    await page1.addInitScript(() => {
-        (window as any).__stressStats = {
-            maxBlockTime: 0,
-            frameCount: 0,
-            startTime: 0,
-            totalRunningMs: 0
-        };
-        let lastTime = performance.now();
-        (window as any).__stressStats.startTime = lastTime;
+	const [canvasA] = await getCanvasDataUrls(page1);
+	const [canvasB] = await getCanvasDataUrls(page2);
+	const diff = canvasA && canvasB ? compareCanvasDataUrls(canvasA, canvasB) : null;
 
-        const loop = (now: number) => {
-            const delta = now - lastTime;
-            if (delta > (window as any).__stressStats.maxBlockTime) {
-                (window as any).__stressStats.maxBlockTime = delta;
-            }
-            (window as any).__stressStats.frameCount++;
-            (window as any).__stressStats.totalRunningMs = now - (window as any).__stressStats.startTime;
-            lastTime = now;
-            requestAnimationFrame(loop);
-        };
-        requestAnimationFrame(loop);
-    });
+	injectors.forEach((injector) => injector.close());
+	await context1.close();
+	await context2.close();
 
-    const setupPage = async (page: Page, observer: any) => {
-        await page.goto(CONFIG.FRONTEND_URL);
-        await page.evaluate(({ t, name }: { t: string; name: string }) => {
-            sessionStorage.setItem('user', JSON.stringify({ token: t, userId: '', username: name }));
-            localStorage.setItem('wb_username', name);
-        }, { t: observer.token, name: observer.userName });
-        await page.goto(`${CONFIG.FRONTEND_URL}/room`);
-        await page.waitForSelector('canvas', { timeout: 15000 });
-    };
+	const frameTimes = [...(stats1?.frameTimes || []), ...(stats2?.frameTimes || [])];
+	const totalRuntimeMs = Math.max(1, (frameTimes || []).reduce((sum, value) => sum + value, 0));
+	const avgFps = frameTimes.length > 0 ? frameTimes.length / (totalRuntimeMs / 1000) : 0;
+	const digest1 = runtime1?.lastCommandDigest || "";
+	const digest2 = runtime2?.lastCommandDigest || "";
 
-    await Promise.all([
-        setupPage(page1, { token: observer1.token, userName: 'Observer1' }),
-        setupPage(page2, { token: observer2.token, userName: 'Observer2' })
-    ]);
+	return {
+		avgFps,
+		minFps: Math.min(stats1?.minFps || 0, stats2?.minFps || 0),
+		p95FrameTimeMs: percentile(frameTimes, 95),
+		maxFrameGapMs: Math.max(stats1?.maxFrameGapMs || 0, stats2?.maxFrameGapMs || 0),
+		longTaskCount: (stats1?.longTaskCount || 0) + (stats2?.longTaskCount || 0),
+		longTaskTotalMs: (stats1?.longTaskTotalMs || 0) + (stats2?.longTaskTotalMs || 0),
+		peakHeapMb: Number(heap1?.peakUsedMb || 0),
+		heapEndMb: Number(heap1?.endUsedMb || 0),
+		totalPointsInjected,
+		isStateConsistent: Boolean(digest1) && digest1 === digest2,
+		isVisualConsistent: diff ? diff.diffRatio < diff.passThreshold : false,
+	};
+};
 
-    // 等待稳定，重置数据准备开始测试
-    await new Promise(r => setTimeout(r, 2000));
-    await page1.evaluate(() => {
-        (window as any).__stressStats.maxBlockTime = 0;
-        (window as any).__stressStats.frameCount = 0;
-        (window as any).__stressStats.startTime = performance.now();
-    });
-
-    // 制造高并发压力：20 个活跃用户同时以 60Hz 手速狂画 10 秒钟
-    const injectors = [];
-    const VIRTUAL_USERS = 20;
-
-    for (let i = 0; i < VIRTUAL_USERS; i++) {
-        const cred = await joinRoom(roomId, `StressBot_${i}`);
-        if (!cred) throw new Error("Auth failed");
-        const inj = new WebSocketInjector(roomId, `StressBot_${i}`, cred.token, cred.userId);
-        await inj.connect();
-        injectors.push(inj);
-    }
-
-    // 同时开火：10秒钟 60FPS 的连续坐标投递，每次落笔不得超过500个点
-    const DURATION = 10000;
-    const injectionPromises = injectors.map(inj => inj.injectRealtimeStrokes(60, DURATION, 500));
-    const pointsInjectedArray = await Promise.all(injectionPromises);
-    const totalPointsInjected = pointsInjectedArray.reduce((sum, curr) => sum + curr, 0);
-
-    // 留出最后3秒的渲染消化期
-    await new Promise(r => setTimeout(r, 3000));
-
-    const stats = await page1.evaluate(() => (window as any).__stressStats);
-    // 计算真实渲染 FPS (按实际运行时间)，增加安全检查避免 NaN
-    const averageFps = stats && stats.totalRunningMs > 0 
-        ? (stats.frameCount / (stats.totalRunningMs / 1000))
-        : 0;
-
-    // [CRDT 指标验证] State Equivalence Check - 终态一致性对账
-    const getCommandsDigest = async (p: Page) => {
-        return await p.evaluate(() => {
-            const cmds = (window as any).__benchmarkCommands?.value || [];
-            return {
-                len: cmds.length,
-                hash: cmds.map((c: any) => c.id).join(',').substring(0, 100) // 简单取百位长特征码
-            }
-        });
-    };
-
-    const digest1 = await getCommandsDigest(page1);
-    const digest2 = await getCommandsDigest(page2);
-
-    // 断言数组长度大于0，且两端数组长度与内容完全同构
-    const isConsistent = (digest1.len === digest2.len && digest1.len > 0 && digest1.hash === digest2.hash);
-
-    if (!isConsistent) {
-        console.warn(`[状态破损警告] Obs1(len=${digest1.len}) VS Obs2(len=${digest2.len})`);
-    }
-
-    injectors.forEach(inj => inj.close());
-    await context1.close();
-    await context2.close();
-
-    return {
-        averageFps,
-        maxMainThreadBlockMs: stats.maxBlockTime,
-        totalPointsInjected,
-        isConsistent
-    };
+export const collectStressSample = async (
+	browser: Browser,
+	throttleCpu = false,
+	profile: StressProfile = "uniform"
+): Promise<BenchmarkRunSample> => {
+	const startedAt = performance.now();
+	try {
+		const report = await runStressSuite(browser, throttleCpu, profile);
+		return {
+			status: "passed",
+			durationMs: performance.now() - startedAt,
+			metrics: { ...report, profile },
+		};
+	} catch (error: any) {
+		return {
+			status: "failed",
+			durationMs: performance.now() - startedAt,
+			metrics: { profile },
+			error: error?.message || "stress suite failed",
+		};
+	}
 };
