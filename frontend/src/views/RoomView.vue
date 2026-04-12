@@ -19,7 +19,9 @@
 	import {
 		canvasRef,
 		uiCanvasRef,
+		ctx,
 		renderWithPoints,
+		renderIncrementPoint,
 	} from "../service/canvas";
 	import { createWhiteboardSession } from "../service/whiteboardSession";
 	import { createRoomCollabTransport } from "../service/roomCollabTransport";
@@ -52,7 +54,7 @@
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
 	import type { EditorHookMap, SelectionState } from "../utils/editorTypes";
-	import type { Command } from "../utils/type";
+	import type { Command, Point } from "../utils/type";
 
 	// 路由钩子，获取URL中的token参数
 	const router = useRouter();
@@ -142,7 +144,7 @@
 			points: c.points ? toRaw(c.points) : [],
 		}));
 
-		workerBridge.requestFlatPoints({
+		workerBridge.renderMainCanvas({
 			commands: rawCommands,
 			pageId: currentPageId.value,
 			transformingCmdIds: Array.from(transformingCmdIds.value),
@@ -150,9 +152,60 @@
 		});
 	};
 
+	const renderIncrementalCommand = (
+		cmd: Command,
+		points: Point[],
+		source: "local" | "remote" = cmd.userId === userId.value ? "local" : "remote"
+	) => {
+		if (workerBridge.isOffscreenEnabled()) {
+			workerBridge.renderIncrementalCommand(cmd, points, currentPageId.value, source);
+			return;
+		}
+		if (!canvasRef.value || !ctx.value || cmd.pageId !== currentPageId.value) return;
+		const dpr = window.devicePixelRatio || 1;
+		const logicalWidth = canvasRef.value.width / dpr;
+		const logicalHeight = canvasRef.value.height / dpr;
+		renderIncrementPoint(cmd, points, ctx.value, logicalWidth, logicalHeight);
+	};
+
+	const renderSinglePointCommand = (
+		cmd: Command,
+		source: "local" | "remote" = cmd.userId === userId.value ? "local" : "remote"
+	) => {
+		if (workerBridge.isOffscreenEnabled()) {
+			workerBridge.renderSinglePointCommand(cmd, currentPageId.value, source);
+			return;
+		}
+		renderIncrementalCommand(cmd, cmd.points ?? []);
+	};
+
+	const refreshWorkerScene = () => {
+		if (workerBridge.isOffscreenEnabled()) {
+			workerBridge.rerenderScene(
+				currentPageId.value,
+				Array.from(transformingCmdIds.value)
+			);
+			return;
+		}
+		renderCanvas();
+	};
+
 	const canvasRuntime = createCanvasRuntime({
 		requestRender: renderCanvas,
+		requestWorkerDirtyRender: (rect) =>
+			workerBridge.renderDirtyRect(
+				rect,
+				currentPageId.value,
+				Array.from(transformingCmdIds.value)
+			),
 		syncToolState: () => roomEditorController.setTool(currentTool.value),
+		isOffscreenEnabled: () => workerBridge.isOffscreenEnabled(),
+		syncMainCanvasViewport: (payload) => {
+			if (canvasRef.value) {
+				workerBridge.bindMainCanvas(canvasRef.value, payload);
+			}
+			workerBridge.syncViewport(payload);
+		},
 		requestMergeDirtyRects: (payload) => workerBridge.requestMergeDirtyRects(payload),
 	});
 
@@ -209,6 +262,11 @@
 		remoteCursors,
 		remoteSelectionRects,
 		renderCanvas,
+		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
+		syncCommandState: (command) => workerBridge.syncCommandState(command),
+		requestSceneRefresh: refreshWorkerScene,
+		renderIncrementalCommand,
+		renderSinglePointCommand,
 		goToPage,
 		setTool: roomEditorController.setTool,
 		insertCommand,
@@ -228,6 +286,9 @@
 		insertCommand,
 		clearClearedCommands,
 		renderCanvas,
+		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
+		syncCommandState: (command) => workerBridge.syncCommandState(command),
+		requestSceneRefresh: refreshWorkerScene,
 		setTool: roomEditorController.setTool,
 		send: roomCollabTransport.send,
 	});
@@ -318,6 +379,9 @@
 		pendingPointsRef: pendingPoints,
 		interactionController,
 		canvasRuntime,
+		renderIncrementalCommand: (cmd, points, source) => renderIncrementalCommand(cmd, points, source),
+		renderSinglePointCommand: (cmd, source) => renderSinglePointCommand(cmd, source),
+		isOffscreenMainCanvas: () => workerBridge.isOffscreenEnabled(),
 		send: roomCollabTransport.send,
 		pushCommand: roomCommandController.pushCommand,
 		renderCanvas,

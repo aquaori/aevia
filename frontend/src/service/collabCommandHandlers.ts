@@ -2,6 +2,7 @@
 import { markRaw } from "vue";
 import { toast } from "vue-sonner";
 import { canvasRef, ctx, lastWidths, renderIncrementPoint } from "./canvas";
+import { getCommandDirtyRect } from "./commandDirtyRect";
 import { useLamportStore } from "../store/lamportStore";
 import type { Command, Point } from "../utils/type";
 import type { CollabIncomingMessage, CollabMessageDispatcherOptions } from "./collabDispatcherTypes";
@@ -13,9 +14,14 @@ import {
 	recordUndoEnd,
 	recordUndoStart,
 } from "./benchmarkRuntime";
+import { paintStrokeSample } from "./strokeRasterizer";
 
 export const createCollabCommandHandlers = (options: CollabMessageDispatcherOptions) => {
 	const renderIncrement = (cmd: Command, points: Point[]) => {
+		if (options.renderIncrementalCommand) {
+			options.renderIncrementalCommand(cmd, points);
+			return;
+		}
 		if (!canvasRef.value || !ctx.value || cmd.pageId !== options.currentPageId.value) return;
 		const dpr = window.devicePixelRatio || 1;
 		const logicalWidth = canvasRef.value.width / dpr;
@@ -24,6 +30,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	const renderSinglePoint = (cmd: Command) => {
+		if (options.renderSinglePointCommand) {
+			options.renderSinglePointCommand(cmd);
+			return;
+		}
 		if (!canvasRef.value || !ctx.value || cmd.pageId !== options.currentPageId.value) return;
 		const p0 = cmd.points?.[0];
 		if (!p0) return;
@@ -31,21 +41,16 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const dpr = window.devicePixelRatio || 1;
 		const width = canvasRef.value.width / dpr;
 		const height = canvasRef.value.height / dpr;
-		const x = p0.x * width;
-		const y = p0.y * height;
-		const baseSize = cmd.size || 3;
-		let pointWidth = baseSize * (p0.p * 2);
-		if (cmd.tool === "eraser") pointWidth = baseSize;
-
-		const color = cmd.tool === "eraser" ? "#ffffff" : cmd.color || "#000000";
-		const op = cmd.tool === "eraser" ? "destination-out" : "source-over";
-
 		ctx.value.save();
-		ctx.value.globalCompositeOperation = op;
-		ctx.value.fillStyle = color;
-		ctx.value.beginPath();
-		ctx.value.arc(x, y, pointWidth / 2, 0, Math.PI * 2);
-		ctx.value.fill();
+		paintStrokeSample({
+			ctx: ctx.value,
+			sample: p0,
+			tool: cmd.tool,
+			color: cmd.color,
+			baseSize: cmd.size || 3,
+			logicalWidth: width,
+			logicalHeight: height,
+		});
 		ctx.value.restore();
 	};
 
@@ -118,7 +123,11 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 			if (options.pendingUpdates.value.has(cmd.id)) {
 				const points = options.pendingUpdates.value.get(cmd.id) || [];
-				cmd.points = markRaw([...(cmd.points || []), ...points]);
+				if (!cmd.points) {
+					cmd.points = markRaw([...points]);
+				} else {
+					cmd.points.push(...points);
+				}
 				options.pendingUpdates.value.delete(cmd.id);
 			}
 
@@ -142,7 +151,11 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 			const localCmd = options.commandMap.get(cmdId);
 			if (localCmd) {
-				localCmd.points = markRaw([...(localCmd.points || []), ...points]);
+				if (!localCmd.points) {
+					localCmd.points = markRaw([...points]);
+				} else {
+					localCmd.points.push(...points);
+				}
 			} else {
 				options.pendingUpdates.value.set(cmdId, points);
 				return;
@@ -164,7 +177,11 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 			if (localCmd) {
 				if (stopPoints.length > 0) {
-					localCmd.points = [...(localCmd.points || []), ...stopPoints];
+					if (!localCmd.points) {
+						localCmd.points = markRaw([...stopPoints]);
+					} else {
+						localCmd.points.push(...stopPoints);
+					}
 					renderIncrement(localCmd, stopPoints);
 				}
 			} else if (msg.data.cmd) {
@@ -252,7 +269,18 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			return;
 		}
 		cmd.isDeleted = msg.type === "undo-cmd";
-		options.renderCanvas();
+		options.syncCommandState?.(cmd);
+		if (options.requestSceneRefresh) {
+			options.requestSceneRefresh();
+		} else {
+			const dirtyRect =
+				cmd.pageId === options.currentPageId.value ? getCommandDirtyRect(cmd) : null;
+			if (dirtyRect) {
+				options.requestDirtyRender?.(dirtyRect);
+			} else {
+				options.renderCanvas();
+			}
+		}
 		options.setTool(options.currentTool.value);
 		if (msg.type === "undo-cmd") {
 			recordUndoEnd("remote", performance.now() - timer);

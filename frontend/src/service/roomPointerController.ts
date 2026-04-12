@@ -9,6 +9,7 @@ import {
 	recordIncrementalRenderEnd,
 	recordIncrementalRenderStart,
 } from "./benchmarkRuntime";
+import { getNextStrokeWidth, paintStrokeSample, resolveStrokeStyle } from "./strokeRasterizer";
 
 type Tool = "pen" | "eraser" | "cursor";
 type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing";
@@ -55,6 +56,13 @@ interface RoomPointerControllerOptions {
 	canvasRuntime: {
 		eraseDirtyRect: (rect: aabbBox, transformingCmdIds?: Set<string>) => void;
 	};
+	renderIncrementalCommand?: (
+		cmd: Command,
+		points: Point[],
+		source?: "local" | "remote"
+	) => void;
+	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
+	isOffscreenMainCanvas?: () => boolean;
 	send: (type: string, data: unknown) => boolean;
 	pushCommand: (
 		cmdPartial: Partial<Command>,
@@ -87,12 +95,10 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		}
 
 		if (ctx.value) {
-			if (tool === "eraser") {
-				ctx.value.globalCompositeOperation = "destination-out";
-			} else if (tool === "pen") {
-				ctx.value.globalCompositeOperation = "source-over";
-				ctx.value.strokeStyle = options.currentColor.value;
-			}
+			const style = resolveStrokeStyle(tool, options.currentColor.value);
+			ctx.value.globalCompositeOperation = style.compositeOperation;
+			ctx.value.strokeStyle = style.color;
+			ctx.value.fillStyle = style.color;
 		}
 
 		options.activeMenu.value = null;
@@ -103,8 +109,10 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.currentColor.value = color;
 		if (options.currentTool.value === "eraser") setTool("pen");
 		if (ctx.value) {
-			ctx.value.strokeStyle = color;
-			ctx.value.globalCompositeOperation = "source-over";
+			const style = resolveStrokeStyle("pen", color);
+			ctx.value.strokeStyle = style.color;
+			ctx.value.fillStyle = style.color;
+			ctx.value.globalCompositeOperation = style.compositeOperation;
 		}
 		options.activeMenu.value = null;
 	};
@@ -180,21 +188,23 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.currentDrawingId.value = id;
 		markLocalInputStart(id);
 
-		useLamportStore().pushToQueue({
-			x,
-			y,
-			p: initialPressure,
-			cmdId: id,
-			userId: options.userId.value,
-			tool: options.currentTool.value,
-			color: options.currentColor.value,
-			size: options.currentSize.value,
-			isDeleted: false,
-			lastX: x,
-			lastY: y,
-			lastWidth: options.lastWidthRef.value,
-			lamport,
-		});
+		if (!options.isOffscreenMainCanvas?.()) {
+			useLamportStore().pushToQueue({
+				x,
+				y,
+				p: initialPressure,
+				cmdId: id,
+				userId: options.userId.value,
+				tool: options.currentTool.value,
+				color: options.currentColor.value,
+				size: options.currentSize.value,
+				isDeleted: false,
+				lastX: x,
+				lastY: y,
+				lastWidth: options.lastWidthRef.value,
+				lamport,
+			});
+		}
 
 		options.pushCommand(
 			{
@@ -214,6 +224,28 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			},
 			"start"
 		);
+
+		if (options.isOffscreenMainCanvas?.()) {
+			options.renderIncrementalCommand?.(
+				{
+					id,
+					type: "path",
+					points: [p0],
+					tool: options.currentTool.value,
+					color: options.currentColor.value,
+					size: options.currentSize.value,
+					timestamp: Date.now(),
+					userId: options.userId.value,
+					roomId: Array.isArray(options.roomId.value) ? options.roomId.value[0] : options.roomId.value,
+					pageId: options.currentPageId.value,
+					isDeleted: false,
+					lamport,
+					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+				},
+				[p0],
+				"local"
+			);
+		}
 	};
 
 	const draw = (e: PointerEvent) => {
@@ -246,7 +278,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			}, 30);
 		}
 
-		if (!options.isDrawing.value || !ctx.value) return;
+		if (!options.isDrawing.value) return;
 		if (e.pointerId !== options.activePointerId.value) return;
 
 		if (options.currentTool.value === "cursor") {
@@ -282,6 +314,9 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				const cmd = options.commands.value.find((candidate) => candidate.id === cmdId);
 				if (cmd) cmd.points = points;
 			});
+			if (options.isOffscreenMainCanvas?.()) {
+				options.renderCanvas();
+			}
 			return;
 		}
 
@@ -289,76 +324,99 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		if (dist < 2) return;
 
 		const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
-		const velocityFactor = Math.max(0.4, 1 - dist / 120);
-		const simulatedPressure =
-			e.pointerType === "pen" ? pressure : clamp(1 - dist / 100, 0.3, 1);
+		const simulatedPressure = e.pointerType === "pen" ? pressure : clamp(1 - dist / 100, 0.3, 1);
 		const usedPressure = e.pointerType === "pen" ? pressure : simulatedPressure;
-
-		const targetWidth = options.currentSize.value * (usedPressure * 2) * velocityFactor;
-		const newWidth = clamp(
-			options.lastWidthRef.value * 0.7 + targetWidth * 0.3,
-			1,
-			options.currentSize.value + 2
-		);
 
 		const dpr = window.devicePixelRatio || 1;
 		const width = canvasRef.value!.width / dpr;
 		const height = canvasRef.value!.height / dpr;
 
-		ctx.value.globalCompositeOperation =
-			options.currentTool.value === "eraser" ? "destination-out" : "source-over";
-		ctx.value.lineCap = "round";
-		ctx.value.lineJoin = "round";
-
 		const lamport = useLamportStore().getNextLamport();
-		useLamportStore().pushToQueue({
+		if (!options.isOffscreenMainCanvas?.()) {
+			useLamportStore().pushToQueue({
+				x,
+				y,
+				p: usedPressure,
+				lamport,
+				lastX: options.lastXRef.value,
+				lastY: options.lastYRef.value,
+				lastWidth: options.lastWidthRef.value,
+				cmdId: options.currentDrawingId.value || "",
+				userId: options.userId.value,
+				tool: options.currentTool.value,
+				color: options.currentColor.value,
+				size: options.currentSize.value,
+				isDeleted: false,
+			});
+		}
+
+		const normalizedPoint = { x: x / width, y: y / height, p: usedPressure, lamport };
+		let nextState = {
 			x,
 			y,
-			p: usedPressure,
-			lamport,
-			lastX: options.lastXRef.value,
-			lastY: options.lastYRef.value,
-			lastWidth: options.lastWidthRef.value,
-			cmdId: options.currentDrawingId.value || "",
-			userId: options.userId.value,
-			tool: options.currentTool.value,
-			color: options.currentColor.value,
-			size: options.currentSize.value,
-			isDeleted: false,
-		});
-
-		if (options.currentTool.value === "eraser") {
+			width: options.lastWidthRef.value,
+		};
+		if (options.isOffscreenMainCanvas?.()) {
+			const nextWidth =
+				options.currentTool.value === "eraser"
+					? options.currentSize.value
+					: getNextStrokeWidth({
+							tool: options.currentTool.value,
+							baseSize: options.currentSize.value,
+							pressure: usedPressure,
+							previousState: {
+								x: options.lastXRef.value,
+								y: options.lastYRef.value,
+								width: options.lastWidthRef.value,
+							},
+							x,
+							y,
+							logicalWidth: width,
+					  });
+			options.renderIncrementalCommand?.(
+				{
+					id: options.currentDrawingId.value || "",
+					type: "path",
+					tool: options.currentTool.value,
+					color: options.currentColor.value,
+					size: options.currentSize.value,
+					timestamp: Date.now(),
+					userId: options.userId.value,
+					roomId: Array.isArray(options.roomId.value)
+						? options.roomId.value[0] || ""
+						: options.roomId.value,
+					pageId: options.currentPageId.value,
+					isDeleted: false,
+					lamport,
+					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+				},
+				[normalizedPoint]
+			);
+			nextState = {
+				x,
+				y,
+				width: nextWidth,
+			};
+		} else if (ctx.value) {
 			const incrementalStartedAt = recordIncrementalRenderStart(
 				options.currentDrawingId.value || undefined,
 				1,
 				"local"
 			);
-			ctx.value.beginPath();
-			ctx.value.moveTo(options.lastXRef.value, options.lastYRef.value);
-			ctx.value.lineTo(x, y);
-			ctx.value.strokeStyle = "#ffffff";
-			ctx.value.lineWidth = options.currentSize.value;
-			ctx.value.stroke();
-			recordIncrementalRenderEnd(
-				options.currentDrawingId.value || undefined,
-				1,
-				"local",
-				performance.now() - incrementalStartedAt
-			);
-		} else {
-			const incrementalStartedAt = recordIncrementalRenderStart(
-				options.currentDrawingId.value || undefined,
-				1,
-				"local"
-			);
-			const midX = (options.lastXRef.value + x) / 2;
-			const midY = (options.lastYRef.value + y) / 2;
-			ctx.value.beginPath();
-			ctx.value.moveTo(options.lastXRef.value, options.lastYRef.value);
-			ctx.value.quadraticCurveTo(midX, midY, x, y);
-			ctx.value.lineWidth = newWidth;
-			ctx.value.strokeStyle = options.currentColor.value;
-			ctx.value.stroke();
+			nextState = paintStrokeSample({
+				ctx: ctx.value,
+				sample: normalizedPoint,
+				previousState: {
+					x: options.lastXRef.value,
+					y: options.lastYRef.value,
+					width: options.lastWidthRef.value,
+				},
+				tool: options.currentTool.value,
+				color: options.currentColor.value,
+				baseSize: options.currentSize.value,
+				logicalWidth: width,
+				logicalHeight: height,
+			});
 			recordIncrementalRenderEnd(
 				options.currentDrawingId.value || undefined,
 				1,
@@ -373,9 +431,9 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 
 		options.lastXRef.value = x;
 		options.lastYRef.value = y;
-		options.lastWidthRef.value = newWidth;
+		options.lastWidthRef.value = nextState.width;
 
-		const newPoint = { x: x / width, y: y / height, p: usedPressure, lamport };
+		const newPoint = normalizedPoint;
 		options.currentPathPointsRef.value.push(newPoint);
 		options.pendingPointsRef.value.push(newPoint);
 
@@ -466,35 +524,55 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			return;
 		}
 
-		if (options.currentPathPointsRef.value.length === 1 && ctx.value && canvasRef.value) {
+		if (
+			options.currentPathPointsRef.value.length === 1 &&
+			canvasRef.value &&
+			!options.isOffscreenMainCanvas?.()
+		) {
 			const dpr = window.devicePixelRatio || 1;
 			const p0 = options.currentPathPointsRef.value[0] || { x: 0, y: 0, p: 0.5, lamport: 0 };
 			const width = canvasRef.value.width / dpr;
 			const height = canvasRef.value.height / dpr;
-			const x = p0.x * width;
-			const y = p0.y * height;
-			let w = options.currentSize.value * (p0.p * 2);
-			if (options.currentTool.value === "eraser") w = options.currentSize.value;
-
-			ctx.value.beginPath();
-			const color =
-				options.currentTool.value === "eraser" ? "#ffffff" : options.currentColor.value;
-			ctx.value.globalCompositeOperation =
-				options.currentTool.value === "eraser" ? "destination-out" : "source-over";
-			ctx.value.fillStyle = color;
-			const incrementalStartedAt = recordIncrementalRenderStart(
-				options.currentDrawingId.value || undefined,
-				1,
-				"local"
-			);
-			ctx.value.arc(x, y, w / 2, 0, Math.PI * 2);
-			ctx.value.fill();
-			recordIncrementalRenderEnd(
-				options.currentDrawingId.value || undefined,
-				1,
-				"local",
-				performance.now() - incrementalStartedAt
-			);
+			if (options.isOffscreenMainCanvas?.()) {
+				options.renderSinglePointCommand?.({
+					id: cmdId || "",
+					type: "path",
+					points: [p0],
+					tool: options.currentTool.value,
+					color: options.currentColor.value,
+					size: options.currentSize.value,
+					timestamp: Date.now(),
+					userId: options.userId.value,
+					roomId: Array.isArray(options.roomId.value)
+						? options.roomId.value[0] || ""
+						: options.roomId.value,
+					pageId: options.currentPageId.value,
+					isDeleted: false,
+					lamport: p0.lamport,
+					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+				});
+			} else if (ctx.value) {
+				const incrementalStartedAt = recordIncrementalRenderStart(
+					options.currentDrawingId.value || undefined,
+					1,
+					"local"
+				);
+				paintStrokeSample({
+					ctx: ctx.value,
+					sample: p0,
+					tool: options.currentTool.value,
+					color: options.currentColor.value,
+					baseSize: options.currentSize.value,
+					logicalWidth: width,
+					logicalHeight: height,
+				});
+				recordIncrementalRenderEnd(
+					options.currentDrawingId.value || undefined,
+					1,
+					"local",
+					performance.now() - incrementalStartedAt
+				);
+			}
 		}
 
 		if (options.pendingPointsRef.value.length > 0) {

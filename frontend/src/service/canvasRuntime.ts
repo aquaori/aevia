@@ -12,18 +12,40 @@ interface DirtyRect {
 	maxY: number;
 	width: number;
 	height: number;
+	candidateCommandIds?: string[];
 }
 
 interface CanvasRuntimeOptions {
 	requestRender: () => void;
+	requestWorkerDirtyRender?: (rect: {
+		minX: number;
+		minY: number;
+		maxX: number;
+		maxY: number;
+		width: number;
+		height: number;
+		candidateCommandIds?: string[];
+	}) => void;
 	syncToolState: () => void;
+	isOffscreenEnabled?: () => boolean;
+	syncMainCanvasViewport?: (payload: { width: number; height: number; dpr: number }) => void;
 	requestMergeDirtyRects: (payload: {
-		rects: Array<{ minX: number; minY: number; maxX: number; maxY: number }>;
+		rects: Array<{
+			minX: number;
+			minY: number;
+			maxX: number;
+			maxY: number;
+			candidateCommandIds?: string[];
+		}>;
 	}) => void;
 }
 
 export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 	const dirtyRenderQueue = createDirtyRenderQueue((rect) => {
+		if (options.isOffscreenEnabled?.()) {
+			options.requestWorkerDirtyRender?.(rect);
+			return;
+		}
 		if (!ctx.value || !canvasRef.value) return;
 		reRenderDirtyRect(rect, ctx.value, canvasRef.value);
 	});
@@ -40,16 +62,20 @@ export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 	});
 
 	const resize = () => {
-		if (!canvasRef.value || !ctx.value) return;
+		if (!canvasRef.value) return;
 
 		const dpr = window.devicePixelRatio || 1;
 		const width = window.innerWidth;
 		const height = window.innerHeight;
+		const offscreenEnabled = options.isOffscreenEnabled?.() ?? false;
 
-		canvasRef.value.width = width * dpr;
-		canvasRef.value.height = height * dpr;
 		canvasRef.value.style.width = width + "px";
 		canvasRef.value.style.height = height + "px";
+
+		if (!offscreenEnabled) {
+			canvasRef.value.width = width * dpr;
+			canvasRef.value.height = height * dpr;
+		}
 
 		if (uiCanvasRef.value) {
 			uiCanvasRef.value.width = width * dpr;
@@ -58,16 +84,19 @@ export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 			uiCanvasRef.value.style.height = height + "px";
 		}
 
-		ctx.value.setTransform(1, 0, 0, 1, 0, 0);
-		ctx.value.scale(dpr, dpr);
-		ctx.value.lineCap = "round";
-		ctx.value.lineJoin = "round";
+		if (!offscreenEnabled && ctx.value) {
+			ctx.value.setTransform(1, 0, 0, 1, 0, 0);
+			ctx.value.scale(dpr, dpr);
+			ctx.value.lineCap = "round";
+			ctx.value.lineJoin = "round";
+		}
 
 		if (uiCtx.value) {
 			uiCtx.value.setTransform(1, 0, 0, 1, 0, 0);
 			uiCtx.value.scale(dpr, dpr);
 		}
 
+		options.syncMainCanvasViewport?.({ width, height, dpr });
 		options.requestRender();
 		options.syncToolState();
 	};
@@ -77,6 +106,13 @@ export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 	};
 
 	const eraseDirtyRect = (rect: DirtyRect, transformingCmdIds?: Set<string>) => {
+		if (options.isOffscreenEnabled?.()) {
+			options.requestWorkerDirtyRender?.({
+				...rect,
+				candidateCommandIds: rect.candidateCommandIds ?? Array.from(transformingCmdIds ?? []),
+			});
+			return;
+		}
 		if (!ctx.value || !canvasRef.value) return;
 		reRenderDirtyRect(rect, ctx.value, canvasRef.value, transformingCmdIds);
 	};
@@ -101,6 +137,7 @@ export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 				minY: minY - padding,
 				maxX: maxX + padding,
 				maxY: maxY + padding,
+				candidateCommandIds: [point.cmdId],
 			};
 		});
 

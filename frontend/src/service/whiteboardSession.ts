@@ -35,7 +35,10 @@ export const createWhiteboardSession = (
 		emit("session:before-init", undefined);
 		canvasRef.value = input.canvas;
 		uiCanvasRef.value = input.uiCanvas;
-		ctx.value = input.canvas.getContext("2d");
+		ctx.value =
+			typeof input.canvas.transferControlToOffscreen === "function"
+				? null
+				: input.canvas.getContext("2d");
 		uiCtx.value = input.uiCanvas.getContext("2d");
 		options.initialize?.();
 		options.resize?.();

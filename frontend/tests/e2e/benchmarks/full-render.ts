@@ -63,13 +63,17 @@ const injectHistory = async (roomId: string, scale: number, shape: DatasetShape)
 	return injectTimeMs;
 };
 
-const waitForFullRender = async (page: Page, timeoutMs: number) =>
+const waitForFullRender = async (page: Page, timeoutMs: number, minPoints: number) =>
 	page.waitForFunction(
-		() => {
+		(expectedPoints) => {
 			const runtime = (window as any).__benchmarkRuntime;
-			return runtime?.lastFullRender?.durationMs > 0 && runtime?.lastInit?.commandCount > 0;
+			return (
+				runtime?.lastFullRender?.durationMs > 0 &&
+				runtime?.lastFullRender?.points >= expectedPoints &&
+				runtime?.lastInit?.commandCount > 0
+			);
 		},
-		undefined,
+		minPoints,
 		{ timeout: timeoutMs }
 	);
 
@@ -112,7 +116,7 @@ export const runFullRenderSuite = async (
 	await page.goto(`${CONFIG.FRONTEND_URL}/room`);
 	await page.waitForSelector("canvas", { timeout: 30000 });
 	const canvasReadyTs = performance.now();
-	await waitForFullRender(page, throttleCpu ? 120000 : 60000);
+	await waitForFullRender(page, throttleCpu ? 120000 : 60000, scale);
 	await page.waitForTimeout(250);
 	const doneTs = performance.now();
 

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
 import type { Command } from "../utils/type";
+import { getCommandDirtyRect } from "./commandDirtyRect";
 import {
 	recordRedoEnd,
 	recordRedoStart,
@@ -30,6 +31,17 @@ interface LocalCommandServiceOptions {
 	insertCommand: (cmd: Command) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
 	renderCanvas: () => void;
+	requestDirtyRender?: (rect: {
+		minX: number;
+		minY: number;
+		maxX: number;
+		maxY: number;
+		width: number;
+		height: number;
+		candidateCommandIds?: string[];
+	}) => void;
+	syncCommandState?: (command: Command) => void;
+	requestSceneRefresh?: () => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	send: (type: string, data: unknown) => boolean;
 }
@@ -147,7 +159,18 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				options.currentCommandIndex.value = index;
 				options.send("undo-cmd", { cmdId: command.id });
 				command.isDeleted = true;
-				options.renderCanvas();
+				options.syncCommandState?.(command);
+				if (options.requestSceneRefresh) {
+					options.requestSceneRefresh();
+				} else {
+					const dirtyRect =
+						command.pageId === options.currentPageId.value ? getCommandDirtyRect(command) : null;
+					if (dirtyRect) {
+					options.requestDirtyRender?.(dirtyRect);
+					} else {
+						options.renderCanvas();
+					}
+				}
 				options.setTool(options.currentTool.value);
 				recordUndoEnd("local", performance.now() - undoStart);
 				return { ok: true, command };
@@ -186,7 +209,18 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				options.currentCommandIndex.value = index;
 				options.send("redo-cmd", { cmdId: command.id });
 				command.isDeleted = false;
-				options.renderCanvas();
+				options.syncCommandState?.(command);
+				if (options.requestSceneRefresh) {
+					options.requestSceneRefresh();
+				} else {
+					const dirtyRect =
+						command.pageId === options.currentPageId.value ? getCommandDirtyRect(command) : null;
+					if (dirtyRect) {
+					options.requestDirtyRender?.(dirtyRect);
+					} else {
+						options.renderCanvas();
+					}
+				}
 				options.setTool(options.currentTool.value);
 				recordRedoEnd("local", performance.now() - redoStart);
 				return { ok: true, command };
@@ -232,7 +266,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		return {
 			ok: true,
 			command: clearCommand,
-			notice: cleared ? `${userName} cleared page ${clearCommand.pageId + 1}` : undefined,
+			notice: cleared ? `${userName} 在页面 ${clearCommand.pageId + 1} 执行了清屏操作` : undefined,
 		};
 	};
 
@@ -243,4 +277,3 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		clearCanvas,
 	};
 };
-

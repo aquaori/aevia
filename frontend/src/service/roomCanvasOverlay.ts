@@ -1,5 +1,5 @@
 // File role: renders overlay canvas content such as selections, cursors, previews, and transform visuals.
-import { toRaw, type Ref, type ComponentPublicInstance } from "vue";
+import { toRaw, watch, type Ref, type ComponentPublicInstance } from "vue";
 import { uiCanvasRef, uiCtx, renderIncrementPoint, renderPageContentFromPoints } from "./canvas";
 import type { Command, FlatPoint, RemoteCursor } from "../utils/type";
 import type { aabbBox } from "../utils/type";
@@ -38,17 +38,91 @@ interface RoomCanvasOverlayOptions {
 	) => void;
 }
 
+const CURSOR_LABEL_FONT = "500 12px 'Segoe UI', sans-serif";
+
 export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
-	let uiLoopId: number | null = null;
+	let renderRafId: number | null = null;
+	let animationRafId: number | null = null;
+	let cursorExpiryTimer: number | null = null;
+	let stopWatches: Array<() => void> = [];
+	let wasVisible = false;
+	const cursorLabelWidthCache = new Map<string, number>();
+
+	const hasVisibleOverlay = (now: number) => {
+		const hasRemoteCursor = Array.from(options.remoteCursors.value.values()).some(
+			(cursor) =>
+				cursor.userId !== options.userId.value &&
+				cursor.pageId === options.currentPageId.value &&
+				now - (cursor.lastUpdate || 0) <= 10000
+		);
+
+		return (
+			hasRemoteCursor ||
+			Boolean(options.selectionRect.value) ||
+			options.remoteSelectionRects.value.size > 0 ||
+			options.transformingCmdIds.value.size > 0 ||
+			options.selectedCommandIds.value.size > 0 ||
+			Boolean(options.transformAnim.value)
+		);
+	};
+
+	const scheduleCursorExpiryCheck = (now: number) => {
+		if (cursorExpiryTimer) {
+			clearTimeout(cursorExpiryTimer);
+			cursorExpiryTimer = null;
+		}
+
+		let nextExpiryDelay = Number.POSITIVE_INFINITY;
+		options.remoteCursors.value.forEach((cursor) => {
+			if (cursor.userId === options.userId.value) return;
+			if (cursor.pageId !== options.currentPageId.value) return;
+			const remaining = 10000 - (now - (cursor.lastUpdate || 0));
+			if (remaining > 0) {
+				nextExpiryDelay = Math.min(nextExpiryDelay, remaining);
+			}
+		});
+
+		if (!Number.isFinite(nextExpiryDelay)) return;
+		cursorExpiryTimer = window.setTimeout(() => {
+			render();
+		}, Math.max(16, nextExpiryDelay));
+	};
+
+	const scheduleRender = () => {
+		if (renderRafId !== null) return;
+		renderRafId = requestAnimationFrame(() => {
+			renderRafId = null;
+			render();
+		});
+	};
+
+	const ensureAnimationLoop = () => {
+		if (animationRafId !== null) return;
+		animationRafId = requestAnimationFrame(() => {
+			animationRafId = null;
+			render();
+		});
+	};
 
 	const render = () => {
 		if (!uiCtx.value || !uiCanvasRef.value) return;
+
+		const now = Date.now();
+		const visible = hasVisibleOverlay(now);
+		if (!visible && !wasVisible) {
+			return;
+		}
 
 		const dpr = window.devicePixelRatio || 1;
 		const width = uiCanvasRef.value.width / dpr;
 		const height = uiCanvasRef.value.height / dpr;
 
 		uiCtx.value.clearRect(0, 0, width, height);
+		wasVisible = visible;
+
+		if (!visible) {
+			return;
+		}
 
 		if (options.interactionMode.value === "box-selecting" && options.selectionRect.value) {
 			const r = options.selectionRect.value;
@@ -82,6 +156,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			uiCtx.value!.restore();
 		});
 
+		let shouldAnimate = false;
 		if (options.transformAnim.value) {
 			const step = 1 / 8;
 			if (options.transformAnim.value.phase === "entering") {
@@ -91,6 +166,8 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 				);
 				if (options.transformAnim.value.progress >= 1) {
 					options.transformAnim.value.phase = "dragging";
+				} else {
+					shouldAnimate = true;
 				}
 			} else if (options.transformAnim.value.phase === "exiting") {
 				options.transformAnim.value.progress = Math.max(
@@ -99,11 +176,14 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 				);
 				if (options.transformAnim.value.progress <= 0) {
 					options.finalizeDrop();
+				} else {
+					shouldAnimate = true;
 				}
 			}
 		}
 
 		if (options.transformingCmdIds.value.size > 0) {
+			shouldAnimate = true;
 			uiCtx.value.save();
 
 			if (options.transformAnim.value) {
@@ -173,12 +253,14 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			}
 		}
 
+		let fontPrepared = false;
 		options.remoteCursors.value.forEach((cursor) => {
 			if (cursor.userId === options.userId.value) return;
 			if (cursor.pageId !== options.currentPageId.value) return;
 
-			if (Date.now() - (cursor.lastUpdate || 0) > 10000) {
+			if (now - (cursor.lastUpdate || 0) > 10000) {
 				options.remoteCursors.value.delete(cursor.userId);
+				cursorLabelWidthCache.delete(cursor.userName || "");
 				return;
 			}
 
@@ -206,13 +288,20 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			uiCtx.value!.stroke();
 
 			if (cursor.userName) {
-				uiCtx.value!.font = "500 12px 'Segoe UI', sans-serif";
+				if (!fontPrepared) {
+					uiCtx.value!.font = CURSOR_LABEL_FONT;
+					fontPrepared = true;
+				}
 				const textPaddingX = 6;
 				const textPaddingY = 3;
-				const textMetrics = uiCtx.value!.measureText(cursor.userName);
+				let textWidth = cursorLabelWidthCache.get(cursor.userName);
+				if (textWidth === undefined) {
+					textWidth = uiCtx.value!.measureText(cursor.userName).width;
+					cursorLabelWidthCache.set(cursor.userName, textWidth);
+				}
 				const trX = 10;
 				const trY = 10;
-				const trW = textMetrics.width + textPaddingX * 2;
+				const trW = textWidth + textPaddingX * 2;
 				const trH = 16 + textPaddingY * 2;
 				const r = 4;
 
@@ -237,21 +326,101 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 
 			uiCtx.value!.restore();
 		});
+
+		scheduleCursorExpiryCheck(now);
+		if (shouldAnimate || options.interactionMode.value === "box-selecting") {
+			ensureAnimationLoop();
+		}
 	};
 
 	const startLoop = () => {
-		const loop = () => {
-			render();
-			uiLoopId = requestAnimationFrame(loop);
-		};
-		loop();
+		stopWatches = [
+			watch(
+				() => options.interactionMode.value,
+				() => scheduleRender()
+			),
+			watch(
+				() =>
+					options.selectionRect.value
+						? [
+								options.selectionRect.value.x,
+								options.selectionRect.value.y,
+								options.selectionRect.value.w,
+								options.selectionRect.value.h,
+							]
+						: null,
+				() => scheduleRender()
+			),
+			watch(
+				() =>
+					Array.from(options.remoteSelectionRects.value.entries()).map(([userId, rect]) => [
+						userId,
+						rect.x,
+						rect.y,
+						rect.w,
+						rect.h,
+					]),
+				() => scheduleRender(),
+				{ deep: true }
+			),
+			watch(
+				() =>
+					options.transformAnim.value
+						? [
+								options.transformAnim.value.phase,
+								options.transformAnim.value.progress,
+							]
+						: null,
+				() => scheduleRender()
+			),
+			watch(
+				() => Array.from(options.transformingCmdIds.value),
+				() => scheduleRender(),
+				{ deep: true }
+			),
+			watch(
+				() => Array.from(options.selectedCommandIds.value),
+				() => scheduleRender(),
+				{ deep: true }
+			),
+			watch(
+				() =>
+					Array.from(options.remoteCursors.value.values()).map((cursor) => [
+						cursor.userId,
+						cursor.pageId,
+						cursor.x,
+						cursor.y,
+						cursor.userName,
+						cursor.lastUpdate,
+					]),
+				() => scheduleRender(),
+				{ deep: true }
+			),
+			watch(
+				() => options.currentPageId.value,
+				() => scheduleRender()
+			),
+		];
+
+		scheduleRender();
 	};
 
 	const stopLoop = () => {
-		if (uiLoopId) {
-			cancelAnimationFrame(uiLoopId);
-			uiLoopId = null;
+		stopWatches.forEach((stop) => stop());
+		stopWatches = [];
+		if (renderRafId !== null) {
+			cancelAnimationFrame(renderRafId);
+			renderRafId = null;
 		}
+		if (animationRafId !== null) {
+			cancelAnimationFrame(animationRafId);
+			animationRafId = null;
+		}
+		if (cursorExpiryTimer) {
+			clearTimeout(cursorExpiryTimer);
+			cursorExpiryTimer = null;
+		}
+		wasVisible = false;
 	};
 
 	const renderPreviewCanvas = (el: Element | ComponentPublicInstance | null, index: number) => {
@@ -300,4 +469,3 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 		renderPreviewCanvas,
 	};
 };
-

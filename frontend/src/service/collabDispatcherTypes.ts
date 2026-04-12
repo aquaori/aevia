@@ -20,6 +20,23 @@ export interface CollabMessageDispatcherOptions {
 	remoteCursors: Ref<Map<string, RemoteCursor>>;
 	remoteSelectionRects: Ref<Map<string, { x: number; y: number; w: number; h: number }>>;
 	renderCanvas: () => void;
+	requestDirtyRender?: (rect: {
+		minX: number;
+		minY: number;
+		maxX: number;
+		maxY: number;
+		width: number;
+		height: number;
+		candidateCommandIds?: string[];
+	}) => void;
+	syncCommandState?: (command: Command) => void;
+	requestSceneRefresh?: () => void;
+	renderIncrementalCommand?: (
+		cmd: Command,
+		points: Point[],
+		source?: "local" | "remote"
+	) => void;
+	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
 	goToPage: (page: number) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;

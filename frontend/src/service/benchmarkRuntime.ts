@@ -311,11 +311,37 @@ const recordRenderEnd = (
 	if (!runtime) return;
 	const summary = { reason, points, durationMs, ts: performance.now() };
 	if (reason === "full") {
-		runtime.lastFullRender = summary;
+		if (points > 0) {
+			runtime.lastFullRender = summary;
+		}
 	} else if (reason !== "overlay") {
 		runtime.lastIncrementalRender = summary;
 	}
 	pushEvent("render-end", { reason, points, durationMs });
+};
+
+const recordWorkerFullRender = (points: number, durationMs: number) => {
+	const runtime = ensureRuntime();
+	if (!runtime) return;
+	const safeDurationMs = Number.isFinite(durationMs) ? Math.max(durationMs, 0.01) : 0.01;
+	const endTs = performance.now();
+	runtime.lastRenderReason = "full";
+	runtime.renderCounters.full = (runtime.renderCounters.full || 0) + 1;
+	if (points > 0) {
+		runtime.lastFullRender = {
+			reason: "full",
+			points,
+			durationMs: safeDurationMs,
+			ts: endTs,
+		};
+		pushEvent("render-start", {
+			reason: "full",
+			points,
+			source: "worker",
+			ts: endTs - safeDurationMs,
+		});
+		pushEvent("render-end", { reason: "full", points, durationMs: safeDurationMs, source: "worker" });
+	}
 };
 
 const recordIncrementalRenderStart = (
@@ -353,6 +379,47 @@ const recordIncrementalRenderEnd = (
 		markRemoteRenderEnd(commandId, points);
 	} else if (source === "local" && commandId) {
 		markLocalInputRenderEnd(commandId);
+	}
+};
+
+const recordWorkerIncrementalRender = (
+	commandId: string | undefined,
+	points: number,
+	source: "local" | "remote",
+	durationMs: number
+) => {
+	const runtime = ensureRuntime();
+	if (!runtime) return;
+	const safeDurationMs = Number.isFinite(durationMs) ? Math.max(durationMs, 0.01) : 0.01;
+	const endTs = performance.now();
+	const startTs = endTs - safeDurationMs;
+	runtime.lastIncrementalRender = {
+		reason: `${source}-incremental`,
+		points,
+		durationMs: safeDurationMs,
+		ts: endTs,
+	};
+	pushEvent("incremental-render-start", { commandId, points, source, ts: startTs, via: "worker" });
+	pushEvent("incremental-render-end", {
+		commandId,
+		points,
+		source,
+		durationMs: safeDurationMs,
+		via: "worker",
+	});
+	if (source === "local" && commandId) {
+		runtime.localInput.lastCommandId = commandId;
+		runtime.localInput.lastRenderStartTs = startTs;
+		runtime.localInput.lastRenderEndTs = endTs;
+		pushEvent("local-input-render-start", { commandId, ts: startTs, via: "worker" });
+		pushEvent("local-input-render-end", { commandId, ts: endTs, via: "worker" });
+	} else if (source === "remote" && commandId) {
+		const state = runtime.remoteCommands[commandId] || { commandId, sendTs: 0 };
+		state.renderStartTs = startTs;
+		state.renderEndTs = endTs;
+		runtime.remoteCommands[commandId] = state;
+		pushEvent("remote-render-start", { commandId, points, ts: startTs, via: "worker" });
+		pushEvent("remote-render-end", { commandId, points, ts: endTs, via: "worker" });
 	}
 };
 
@@ -436,8 +503,10 @@ export {
 	recordCommandsHydrated,
 	recordRenderStart,
 	recordRenderEnd,
+	recordWorkerFullRender,
 	recordIncrementalRenderStart,
 	recordIncrementalRenderEnd,
+	recordWorkerIncrementalRender,
 	recordDirtyRedrawStart,
 	recordDirtyRedrawEnd,
 	recordUndoStart,

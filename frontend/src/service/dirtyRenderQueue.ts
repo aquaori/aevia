@@ -8,6 +8,7 @@ interface DirtyRect {
 	maxY: number;
 	width: number;
 	height: number;
+	candidateCommandIds?: string[];
 }
 
 export const createDirtyRenderQueue = (
@@ -44,6 +45,12 @@ export const createDirtyRenderQueue = (
 				maxY: newMaxY,
 				width: newMaxX - newMinX,
 				height: newMaxY - newMinY,
+				candidateCommandIds: Array.from(
+					new Set([
+						...(pendingDirtyRect.candidateCommandIds ?? []),
+						...(rect.candidateCommandIds ?? []),
+					])
+				),
 			};
 		}
 
