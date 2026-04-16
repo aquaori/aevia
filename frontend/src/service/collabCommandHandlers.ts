@@ -13,7 +13,7 @@ import {
 	recordRedoStart,
 	recordUndoEnd,
 	recordUndoStart,
-} from "./benchmarkRuntime";
+} from "../instrumentation/runtimeInstrumentation";
 import { paintStrokeSample } from "./strokeRasterizer";
 
 export const createCollabCommandHandlers = (options: CollabMessageDispatcherOptions) => {
@@ -74,8 +74,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		initData.commands.forEach((cmd: Command) => {
 			options.insertCommand(cmd);
 		});
-		recordCommandsHydrated(initData.commands?.length || 0, performance.now() - hydrateStart);
 		options.renderCanvas();
+		recordCommandsHydrated(initData.commands?.length || 0, performance.now() - hydrateStart);
 	};
 
 	const handlePushCommand = (msg: CollabIncomingMessage) => {
@@ -215,7 +215,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 		let hasUpdates = false;
 		cmdIds.forEach((id: string) => {
-			const cmd = options.commands.value.find((candidate) => candidate.id === id);
+			const cmd = options.commandMap.get(id);
 			if (!cmd?.points) return;
 			cmd.points.forEach((point) => {
 				point.x += dx;
@@ -232,7 +232,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 		let hasUpdates = false;
 		updates.forEach((update: any) => {
-			const cmd = options.commands.value.find((candidate) => candidate.id === update.cmdId);
+			const cmd = options.commandMap.get(update.cmdId);
 			if (!cmd) return;
 			cmd.points = update.points;
 			if (msg.type === "cmd-batch-stop") {
@@ -259,7 +259,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	const handleUndoRedo = (msg: CollabIncomingMessage) => {
 		const timer =
 			msg.type === "undo-cmd" ? recordUndoStart("remote") : recordRedoStart("remote");
-		const cmd = options.commands.value.find((candidate) => candidate.id === msg.data.cmdId);
+		const cmd = options.commandMap.get(msg.data.cmdId);
 		if (!cmd) {
 			if (msg.type === "undo-cmd") {
 				recordUndoEnd("remote", 0);

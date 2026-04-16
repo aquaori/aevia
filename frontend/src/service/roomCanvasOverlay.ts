@@ -18,6 +18,7 @@ interface RoomCanvasOverlayOptions {
 	transformingCmdIds: Ref<Set<string>>;
 	selectedCommandIds: Ref<Set<string>>;
 	commands: Ref<Command[]>;
+	commandMap: Map<string, Command>;
 	currentPageId: Ref<number>;
 	remoteCursors: Ref<Map<string, RemoteCursor>>;
 	userId: Ref<string>;
@@ -202,7 +203,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			}
 
 			options.transformingCmdIds.value.forEach((cmdId) => {
-				const cmd = options.commands.value.find((candidate) => candidate.id === cmdId);
+				const cmd = options.commandMap.get(cmdId);
 				if (!cmd?.points?.length) return;
 				renderIncrementPoint(cmd, cmd.points, uiCtx.value!, width, height, true);
 			});

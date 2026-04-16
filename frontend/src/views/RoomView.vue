@@ -24,27 +24,32 @@
 		renderIncrementPoint,
 	} from "../service/canvas";
 	import { createWhiteboardSession } from "../service/whiteboardSession";
+	import {
+		createBenchmarkPlugin,
+		shouldEnableBenchmarkRuntime,
+	} from "../plugins/benchmark/benchmarkPlugin";
 	import { createRoomCollabTransport } from "../service/roomCollabTransport";
-	import { createRoomUiState } from "../service/roomUiState";
+	import { createRoomUiState } from "../states/roomUiState";
 	import { createCanvasRuntime } from "../service/canvasRuntime";
 	import { createRenderWorkerBridge } from "../service/renderWorkerBridge";
-	import { createInteractionController } from "../service/interactionController";
+	import { createInteractionController } from "../controllers/interactionController";
 	import { createLocalCommandService } from "../service/localCommandService";
-	import { createRoomCommandController } from "../service/roomCommandController";
+	import { createRoomCommandController } from "../controllers/roomCommandController";
 	import { createRoomPageService } from "../service/roomPageService";
 	import { createRoomCanvasOverlay } from "../service/roomCanvasOverlay";
-	import { createRoomPointerController } from "../service/roomPointerController";
-	import { createRoomHeaderController } from "../service/roomHeaderController";
-	import { createRoomKeyboardController } from "../service/roomKeyboardController";
-	import { createRoomToolController } from "../service/roomToolController";
-	import { createRoomPanelController } from "../service/roomPanelController";
-	import { createRoomEditorState } from "../service/roomEditorState";
-	import { createRoomEditorController } from "../service/roomEditorController";
-	import { createRoomSessionState } from "../service/roomSessionState";
-	import { createRoomLifecycleController } from "../service/roomLifecycleController";
+	import { createRoomPointerController } from "../controllers/roomPointerController";
+	import { createRoomHeaderController } from "../controllers/roomHeaderController";
+	import { createRoomKeyboardController } from "../controllers/roomKeyboardController";
+	import { createRoomToolController } from "../controllers/roomToolController";
+	import { createRoomPanelController } from "../controllers/roomPanelController";
+	import { createRoomEditorState } from "../states/roomEditorState";
+	import { createRoomEditorController } from "../controllers/roomEditorController";
+	import { createRoomSessionState } from "../states/roomSessionState";
+	import { createRoomLifecycleController } from "../controllers/roomLifecycleController";
+	import { provideRoomSession } from "../service/roomSessionContext";
 	import {
 		createRoomInteractionState,
-	} from "../service/roomInteractionState";
+	} from "../states/roomInteractionState";
 	import RoomToolbar from "../components/RoomToolbar.vue";
 	import RoomPagination from "../components/RoomPagination.vue";
 	import RoomShortcutsDialog from "../components/RoomShortcutsDialog.vue";
@@ -53,7 +58,7 @@
 	import RoomConnectionOverlays from "../components/RoomConnectionOverlays.vue";
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
-	import type { EditorHookMap, SelectionState } from "../utils/editorTypes";
+	import type { SelectionState } from "../utils/editorTypes";
 	import type { Command, Point } from "../utils/type";
 
 	// 路由钩子，获取URL中的token参数
@@ -128,12 +133,8 @@
 		lastWidth,
 	} = createRoomInteractionState();
 
-	// 预设颜色列表
-
 	const interactionController = createInteractionController();
-	let emitHostHook:
-		| (<K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void)
-		| undefined;
+	const roomSessionRef = provideRoomSession();
 
 	const renderCanvas = () => {
 		if (!canvasRef.value) return;
@@ -165,7 +166,7 @@
 		const dpr = window.devicePixelRatio || 1;
 		const logicalWidth = canvasRef.value.width / dpr;
 		const logicalHeight = canvasRef.value.height / dpr;
-		renderIncrementPoint(cmd, points, ctx.value, logicalWidth, logicalHeight);
+		renderIncrementPoint(cmd, points, ctx.value, logicalWidth, logicalHeight, false, source);
 	};
 
 	const renderSinglePointCommand = (
@@ -228,7 +229,6 @@
 		renderCanvas,
 		selectionRect,
 		interactionMode,
-		emitHook: (event, payload) => emitHostHook?.(event, payload),
 	});
 
 	const startDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.startDrawing(e);
@@ -271,7 +271,6 @@
 		setTool: roomEditorController.setTool,
 		insertCommand,
 		clearClearedCommands,
-		emitHook: (event, payload) => emitHostHook?.(event, payload),
 	});
 	const isReconnecting = roomCollabTransport.isReconnecting;
 	const reconnectCount = roomCollabTransport.reconnectCount;
@@ -295,7 +294,6 @@
 	const roomCommandController = createRoomCommandController({
 		localCommandService,
 		activeMenu,
-		emitHook: (event, payload) => emitHostHook?.(event, payload),
 	});
 
 	const roomPageService = createRoomPageService({
@@ -310,7 +308,6 @@
 		setTool: roomEditorController.setTool,
 		currentTool,
 		send: roomCollabTransport.send,
-		emitHook: (event, payload) => emitHostHook?.(event, payload),
 	});
 	const roomToolController = createRoomToolController({
 		activeMenu,
@@ -371,6 +368,7 @@
 		transformAnim: transformAnim as Ref<any>,
 		activeMenu,
 		commands,
+		commandMap,
 		lastXRef: lastX,
 		lastYRef: lastY,
 		lastWidthRef: lastWidth,
@@ -397,6 +395,7 @@
 		transformingCmdIds,
 		selectedCommandIds,
 		commands,
+		commandMap,
 		currentPageId,
 		remoteCursors,
 		userId,
@@ -436,11 +435,16 @@
 		requestRender: renderCanvas,
 		requestOverlayRender: roomCanvasOverlay.render,
 	});
-	emitHostHook = session.emitHook;
+	if (shouldEnableBenchmarkRuntime()) {
+		session.use(
+			createBenchmarkPlugin({
+				commands,
+				currentColor,
+			})
+		);
+	}
+	roomSessionRef.value = session;
 	const roomLifecycleController = createRoomLifecycleController({
-		session,
-		commands,
-		currentColor,
 		roomCanvasOverlay,
 		roomKeyboardController,
 		roomHeaderController,

@@ -508,9 +508,15 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "rerender-scene") {
+		const startedAt = performance.now();
 		currentPageId = data.pageId as number;
 		currentTransformingIds = new Set((data.transformingCmdIds as string[]) ?? []);
-		renderFullScene();
+		const pointCount = renderFullScene();
+		self.postMessage({
+			type: "benchmark-render-full-complete",
+			points: pointCount,
+			durationMs: performance.now() - startedAt,
+		});
 		return;
 	}
 

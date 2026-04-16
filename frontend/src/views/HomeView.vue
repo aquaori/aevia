@@ -182,7 +182,31 @@
 						)
 						.then((res) => {
 							if (res.data.code == 200) {
-								submit();
+								localStorage.setItem("wb_username", username.value);
+								axios
+									.post(
+										(import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") +
+											"/join-room",
+										{
+											roomId: roomId.value,
+											userName: username.value,
+											password: password.value || "",
+										}
+									)
+									.then((joinRes) => {
+										if (joinRes.data.code == 200) {
+											const token = joinRes.data.data.token;
+											userStore.setToken(token);
+											router.push({ name: "room" });
+										} else {
+											toast.error("加入房间失败，请重试");
+										}
+									})
+									.catch((err) => {
+										toast.error(
+											err.response?.data?.msg || "加入房间失败，请重试"
+										);
+									});
 							} else {
 								toast.error(
 									"房间创建失败：" + res.data.msg || "创建房间失败，请重试。"
@@ -271,7 +295,8 @@
 							.then((res) => {
 								if (res.data.code == 200) {
 									const token = res.data.data.token;
-									router.push({ name: "room", params: { token: token } });
+									userStore.setToken(token);
+									router.push({ name: "room" });
 								} else {
 									toast.error("房间不存在！");
 								}

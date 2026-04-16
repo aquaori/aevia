@@ -3,7 +3,8 @@ import type { BenchmarkRunSample } from "./core-types";
 import { bootstrapRoomPage, createContextAndPage, createRoomWithUsers } from "./suite-helpers";
 
 export interface MicroRenderReport {
-	microRenderMs: number;
+	microAppRenderMs: number;
+	microVisiblePaintMs: number;
 	microPoints: number;
 	microCostPerPoint: number;
 }
@@ -15,34 +16,14 @@ export const runMicroRenderSuite = async (
 	const { creds } = await createRoomWithUsers("MicroRenderRoom", ["MicroUser"]);
 	const { context, page } = await createContextAndPage(browser, throttleCpu);
 	await bootstrapRoomPage(page, { token: creds[0]!.token, userName: "MicroUser" });
-
 	const report = await page.evaluate(async () => {
-		const canvas = document.createElement("canvas");
-		canvas.width = 1280;
-		canvas.height = 720;
-		const context = canvas.getContext("2d");
-		if (!context) {
-			return { microRenderMs: 0, microPoints: 0, microCostPerPoint: 0 };
+		const runMicroRender = (window as any).__benchmarkRunMicroRender as
+			| (() => Promise<MicroRenderReport>)
+			| undefined;
+		if (!runMicroRender) {
+			throw new Error("benchmark micro runner unavailable");
 		}
-		const module = await import("/src/service/canvas.ts");
-		const points = Array.from({ length: 2000 }).map((_, index) => ({
-			x: ((index % 100) + 20) / 1280,
-			y: (Math.floor(index / 100) + 20) / 720,
-			p: 0.6,
-			cmdId: `micro-${Math.floor(index / 25)}`,
-			color: "#111111",
-			size: 3,
-			tool: "pen",
-			isDeleted: false,
-		}));
-		const startedAt = performance.now();
-		module.renderPageContentFromPoints(context, 1280, 720, points as any);
-		const microRenderMs = performance.now() - startedAt;
-		return {
-			microRenderMs,
-			microPoints: points.length,
-			microCostPerPoint: points.length > 0 ? microRenderMs / points.length : 0,
-		};
+		return runMicroRender();
 	});
 
 	await context.close();

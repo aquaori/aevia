@@ -1,10 +1,10 @@
 // File role: websocket transport for room collaboration, reconnection, and raw message intake.
 import { ref, type Ref } from "vue";
 import { toast } from "vue-sonner";
-import type { EditorHookMap } from "../utils/editorTypes";
 import type { Command, Point, RemoteCursor } from "../utils/type";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
-import { recordInitParsed, recordInitReceived } from "./benchmarkRuntime";
+import { recordInitParsed, recordInitReceived } from "../instrumentation/runtimeInstrumentation";
+import { useRoomSessionEmitHook } from "./roomSessionContext";
 
 interface RoomCollabTransportOptions {
 	token: Ref<string>;
@@ -46,10 +46,10 @@ interface RoomCollabTransportOptions {
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
-	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
 export const createRoomCollabTransport = (options: RoomCollabTransportOptions) => {
+	const emitHook = useRoomSessionEmitHook();
 	const socket = ref<WebSocket | null>(null);
 	const isIntentionalClose = ref(false);
 	const isReconnecting = ref(false);
@@ -83,7 +83,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		setTool: options.setTool,
 		insertCommand: options.insertCommand,
 		clearClearedCommands: options.clearClearedCommands,
-		emitHook: options.emitHook,
+		emitHook,
 		onInitConnectionState: () => {
 			if (isReconnecting.value) {
 				toast.success("重连成功");
@@ -146,14 +146,14 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				socket.value.close();
 			}
 
-			const wsUrl = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:4646";
+			const wsUrl = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:4646/ws";
 			const tokenStr = Array.isArray(options.token.value)
 				? (options.token.value[0] ?? "")
 				: options.token.value || "";
 			socket.value = new WebSocket(wsUrl, [tokenStr]);
 
 			socket.value.onopen = () => {
-				options.emitHook?.("collab:connected", undefined);
+				emitHook("collab:connected", undefined);
 			};
 
 			socket.value.onmessage = (event) => {
@@ -170,7 +170,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							performance.now() - parseStart
 						);
 					}
-					options.emitHook?.("collab:message", { type: msg.type, payload: msg.data });
+					emitHook("collab:message", { type: msg.type, payload: msg.data });
 					dispatcher.handleMessage(msg);
 				} catch (error) {
 					console.error(
@@ -193,7 +193,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			};
 		} catch (error) {
 			console.error("Failed to connect to WebSocket:", error);
-			toast.error("WebSocket connection failed");
+			toast.error("服务器连接失败");
 			if (!isIntentionalClose.value && !options.reconnectFailed.value) {
 				setTimeout(() => doReconnect(), 100);
 			}

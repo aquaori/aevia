@@ -1,7 +1,10 @@
 // File role: utility helpers for dirty-rect based redraw calculations.
 import { useCommandStore } from "../store/commandStore";
 import { renderClippedPointSequence } from "../service/canvas";
-import { recordDirtyRedrawEnd, recordDirtyRedrawStart } from "../service/benchmarkRuntime";
+import {
+	recordDirtyRedrawEnd,
+	recordDirtyRedrawStart,
+} from "../instrumentation/runtimeInstrumentation";
 
 const reRenderDirtyRect = (
 	dirtyRect: any,

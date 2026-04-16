@@ -443,6 +443,7 @@ const run = async () => {
 
 	console.log(`[基准测试] 已写入结果 JSON：${path.join(reportRoot, "benchmark-results.json")}`);
 	console.log(`[基准测试] 已写入摘要 Markdown：${summaryPath}`);
+	process.exit(0);
 };
 
 run().catch((error) => {

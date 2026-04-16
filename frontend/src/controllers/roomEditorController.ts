@@ -1,7 +1,7 @@
 // File role: top-level editor controller for tool switching, color changes, and transform finalization.
 import type { Ref } from "vue";
-import type { EditorHookMap } from "../utils/editorTypes";
-import type { HandleType, InteractionMode, TransformAnimState } from "./roomInteractionState";
+import type { HandleType, InteractionMode, TransformAnimState } from "../states/roomInteractionState";
+import { useRoomSessionEmitHook } from "../service/roomSessionContext";
 
 type Tool = "pen" | "eraser" | "cursor";
 type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
@@ -22,14 +22,14 @@ interface RoomEditorControllerOptions {
 	renderCanvas: () => void;
 	selectionRect: Ref<{ x: number; y: number; w: number; h: number } | null>;
 	interactionMode: Ref<InteractionMode>;
-	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
 export const createRoomEditorController = (options: RoomEditorControllerOptions) => {
+	const emitHook = useRoomSessionEmitHook();
 	const setTool = (tool: Tool) => {
 		if (options.pointerController.value) {
 			options.pointerController.value.setTool(tool);
-			options.emitHook?.("tool:changed", { tool });
+			emitHook("tool:changed", { tool });
 			return;
 		}
 		options.currentTool.value = tool;
@@ -38,7 +38,7 @@ export const createRoomEditorController = (options: RoomEditorControllerOptions)
 			options.selectionRect.value = null;
 			options.interactionMode.value = "none";
 		}
-		options.emitHook?.("tool:changed", { tool });
+		emitHook("tool:changed", { tool });
 	};
 
 	const setColor = (color: string) => {

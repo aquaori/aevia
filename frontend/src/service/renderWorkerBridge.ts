@@ -1,5 +1,8 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
-import { recordWorkerFullRender, recordWorkerIncrementalRender } from "./benchmarkRuntime";
+import {
+	recordWorkerFullRender,
+	recordWorkerIncrementalRender,
+} from "../instrumentation/runtimeInstrumentation";
 import type { Command, FlatPoint, Point } from "../utils/type";
 
 interface RenderWorkerBridgeOptions {

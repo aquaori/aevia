@@ -1,8 +1,8 @@
 // File role: page-facing command controller that wraps local command actions and user feedback.
 import { toast } from "vue-sonner";
 import type { Ref } from "vue";
-import type { EditorHookMap } from "../utils/editorTypes";
 import type { Command } from "../utils/type";
+import { useRoomSessionEmitHook } from "../service/roomSessionContext";
 
 interface LocalCommandServiceLike {
 	pushCommand: (
@@ -17,16 +17,16 @@ interface LocalCommandServiceLike {
 interface RoomCommandControllerOptions {
 	localCommandService: LocalCommandServiceLike;
 	activeMenu: Ref<"pen" | "eraser" | "color" | "more" | null>;
-	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
 export const createRoomCommandController = (options: RoomCommandControllerOptions) => {
+	const emitHook = useRoomSessionEmitHook();
 	const pushCommand = (
 		cmdPartial: Partial<Command>,
 		type: "normal" | "start" | "update" | "stop" = "normal"
 	) => {
 		if (type !== "update") {
-			options.emitHook?.("command:before-apply", {
+			emitHook("command:before-apply", {
 				command: cmdPartial as Command,
 				source: "local",
 			});
@@ -37,7 +37,7 @@ export const createRoomCommandController = (options: RoomCommandControllerOption
 			return;
 		}
 		if (result.command && type !== "update") {
-			options.emitHook?.("command:applied", {
+			emitHook("command:applied", {
 				command: result.command,
 				source: "local",
 			});
@@ -56,7 +56,7 @@ export const createRoomCommandController = (options: RoomCommandControllerOption
 	};
 
 	const clearCanvas = () => {
-		options.emitHook?.("command:before-apply", {
+		emitHook("command:before-apply", {
 			command: {
 				type: "clear",
 			} as Command,
@@ -67,7 +67,7 @@ export const createRoomCommandController = (options: RoomCommandControllerOption
 			toast.info(result.notice);
 		}
 		if (result.command) {
-			options.emitHook?.("command:applied", {
+			emitHook("command:applied", {
 				command: result.command,
 				source: "local",
 			});

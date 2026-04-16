@@ -14,9 +14,11 @@ export interface FullRenderReport {
 	hydrateCommandsMs: number;
 	sortAndFlattenMs: number;
 	canvasClearMs: number;
-	pureRenderMs: number;
+	appRenderMs: number;
+	workerFullRenderMs: number;
+	visiblePaintMs: number;
 	firstInteractiveMs: number;
-	totalPerceivedMs: number;
+	totalVisibleMs: number;
 	estimatedResidualMs: number;
 	renderThroughputPointsPerSec: number;
 	heapUsedMb: number;
@@ -69,6 +71,9 @@ const waitForFullRender = async (page: Page, timeoutMs: number, minPoints: numbe
 			const runtime = (window as any).__benchmarkRuntime;
 			return (
 				runtime?.lastFullRender?.durationMs > 0 &&
+				runtime?.lastFullRender?.visiblePaintMs > 0 &&
+				typeof runtime?.lastFullRender?.canvasSignature === "string" &&
+				runtime.lastFullRender.canvasSignature.length > 0 &&
 				runtime?.lastFullRender?.points >= expectedPoints &&
 				runtime?.lastInit?.commandCount > 0
 			);
@@ -117,7 +122,6 @@ export const runFullRenderSuite = async (
 	await page.waitForSelector("canvas", { timeout: 30000 });
 	const canvasReadyTs = performance.now();
 	await waitForFullRender(page, throttleCpu ? 120000 : 60000, scale);
-	await page.waitForTimeout(250);
 	const doneTs = performance.now();
 
 	const runtime = await readBenchmarkRuntime(page);
@@ -125,14 +129,19 @@ export const runFullRenderSuite = async (
 
 	await context.close();
 
-	const pureRenderMs = Number(runtime?.lastFullRender?.durationMs || 0);
+	const workerFullRenderMs = Number(runtime?.lastFullRender?.durationMs || 0);
+	const visiblePaintMs = Number(runtime?.lastFullRender?.visiblePaintMs || 0);
+	const appRenderMs = workerFullRenderMs;
 	const sortAndFlattenMs = 0;
 	const canvasClearMs = 0;
-	const totalPerceivedMs = doneTs - navStart;
+	const totalVisibleMs =
+		(runtime?.lastFullRender?.visiblePaintTs || 0) > 0
+			? Number(runtime.lastFullRender.visiblePaintTs) - navStart
+			: doneTs - navStart;
 	const estimatedResidualMs = Math.max(
 		0,
-		totalPerceivedMs -
-			pureRenderMs -
+		totalVisibleMs -
+			appRenderMs -
 			(runtime?.lastInit?.parseDurationMs || 0) -
 			(runtime?.lastInit?.hydrateDurationMs || 0)
 	);
@@ -149,11 +158,13 @@ export const runFullRenderSuite = async (
 		hydrateCommandsMs: Number(runtime?.lastInit?.hydrateDurationMs || 0),
 		sortAndFlattenMs,
 		canvasClearMs,
-		pureRenderMs,
+		appRenderMs,
+		workerFullRenderMs,
+		visiblePaintMs,
 		firstInteractiveMs: canvasReadyTs - navStart,
-		totalPerceivedMs,
+		totalVisibleMs,
 		estimatedResidualMs,
-		renderThroughputPointsPerSec: pureRenderMs > 0 ? scale / (pureRenderMs / 1000) : 0,
+		renderThroughputPointsPerSec: appRenderMs > 0 ? scale / (appRenderMs / 1000) : 0,
 		heapUsedMb: Number(heap?.lastUsedMb || 0),
 		peakHeapMb: Number(heap?.peakUsedMb || heap?.lastUsedMb || 0),
 		heapGrowthMb: Number((heap?.endUsedMb || 0) - (heap?.startUsedMb || 0)),
@@ -180,9 +191,11 @@ export const collectFullRenderSample = async (
 				hydrateCommandsMs: report.hydrateCommandsMs,
 				sortAndFlattenMs: report.sortAndFlattenMs,
 				canvasClearMs: report.canvasClearMs,
-				pureRenderMs: report.pureRenderMs,
+				appRenderMs: report.appRenderMs,
+				workerFullRenderMs: report.workerFullRenderMs,
+				visiblePaintMs: report.visiblePaintMs,
 				firstInteractiveMs: report.firstInteractiveMs,
-				totalPerceivedMs: report.totalPerceivedMs,
+				totalVisibleMs: report.totalVisibleMs,
 				estimatedResidualMs: report.estimatedResidualMs,
 				renderThroughputPointsPerSec: report.renderThroughputPointsPerSec,
 				heapUsedMb: report.heapUsedMb,

@@ -80,6 +80,7 @@ interface BeginCursorInteractionInput {
 	canvas: HTMLCanvasElement;
 	event: PointerEvent;
 	commands: Command[];
+	commandMap: Map<string, Command>;
 	selectedCommandIds: Set<string>;
 	currentPageId: number;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
@@ -104,7 +105,7 @@ interface BeginCursorInteractionResult {
 
 interface TransformStopPayloadInput {
 	selectedCommandIds: Set<string>;
-	commands: Command[];
+	commandMap: Map<string, Command>;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
 }
 
@@ -117,7 +118,7 @@ interface FinishCursorInteractionInput {
 	interactionMode: "none" | "box-selecting" | "dragging" | "resizing";
 	selectionRect: SelectionRect | null;
 	selectedCommandIds: Set<string>;
-	commands: Command[];
+	commandMap: Map<string, Command>;
 	currentPageId: number;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
 }
@@ -502,6 +503,7 @@ export const createInteractionController = () => {
 		canvas,
 		event,
 		commands,
+		commandMap,
 		selectedCommandIds,
 		currentPageId,
 		getCommandBoundingBox,
@@ -529,9 +531,9 @@ export const createInteractionController = () => {
 		const initialCmdsState = new Map<string, Point[]>();
 		if (cursorAction.action === "group") {
 			cursorAction.selectedIds.forEach((id) => {
-				const cmd = commands.find((candidate) => candidate.id === id);
+				const cmd = commandMap.get(id);
 				if (cmd?.points) {
-					initialCmdsState.set(id, JSON.parse(JSON.stringify(cmd.points)));
+					initialCmdsState.set(id, cmd.points.map((point) => ({ ...point })));
 				}
 			});
 		}
@@ -551,18 +553,18 @@ export const createInteractionController = () => {
 
 	const buildTransformStopPayload = ({
 		selectedCommandIds,
-		commands,
+		commandMap,
 		getCommandBoundingBox,
 	}: TransformStopPayloadInput): TransformStopPayload => {
 		const updates = Array.from(selectedCommandIds)
 			.map((id) => {
-				const cmd = commands.find((candidate) => candidate.id === id);
+				const cmd = commandMap.get(id);
 				return cmd ? { cmdId: id, points: cmd.points } : null;
 			})
 			.filter((update): update is { cmdId: string; points: Point[] | undefined } => Boolean(update));
 
 		const boxes = updates.reduce<Array<{ cmdId: string; box: aabbBox }>>((result, update) => {
-			const cmd = commands.find((candidate) => candidate.id === update.cmdId);
+			const cmd = commandMap.get(update.cmdId);
 			if (!cmd) {
 				return result;
 			}
@@ -594,7 +596,7 @@ export const createInteractionController = () => {
 		interactionMode,
 		selectionRect,
 		selectedCommandIds,
-		commands,
+		commandMap,
 		currentPageId,
 		getCommandBoundingBox,
 	}: FinishCursorInteractionInput): FinishCursorInteractionResult => {
@@ -603,7 +605,7 @@ export const createInteractionController = () => {
 				remoteSelectionRect: null,
 				selectedIds: resolveBoxSelectionStop({
 					rect: selectionRect,
-					commands,
+					commands: Array.from(commandMap.values()),
 					currentPageId,
 					getCommandBoundingBox,
 				}),
@@ -621,7 +623,7 @@ export const createInteractionController = () => {
 				selectedIds: Array.from(selectedCommandIds),
 				transformPayload: buildTransformStopPayload({
 					selectedCommandIds,
-					commands,
+					commandMap,
 					getCommandBoundingBox,
 				}),
 				nextState: getCursorStopState(),

@@ -2,14 +2,14 @@
 import { v4 as uuidv4 } from "uuid";
 import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
-import { canvasRef, ctx } from "./canvas";
+import { canvasRef, ctx } from "../service/canvas";
 import type { Command, Point, aabbBox } from "../utils/type";
 import {
 	markLocalInputStart,
 	recordIncrementalRenderEnd,
 	recordIncrementalRenderStart,
-} from "./benchmarkRuntime";
-import { getNextStrokeWidth, paintStrokeSample, resolveStrokeStyle } from "./strokeRasterizer";
+} from "../instrumentation/runtimeInstrumentation";
+import { getNextStrokeWidth, paintStrokeSample, resolveStrokeStyle } from "../service/strokeRasterizer";
 
 type Tool = "pen" | "eraser" | "cursor";
 type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing";
@@ -46,13 +46,14 @@ interface RoomPointerControllerOptions {
 	transformAnim: Ref<TransformAnimState | null>;
 	activeMenu: Ref<"pen" | "eraser" | "color" | "more" | null>;
 	commands: Ref<Command[]>;
+	commandMap: Map<string, Command>;
 	lastXRef: Ref<number>;
 	lastYRef: Ref<number>;
 	lastWidthRef: Ref<number>;
 	lastSentPosRef: Ref<{ x: number; y: number }>;
 	currentPathPointsRef: Ref<Point[]>;
 	pendingPointsRef: Ref<Point[]>;
-	interactionController: ReturnType<typeof import("./interactionController").createInteractionController>;
+	interactionController: ReturnType<typeof import("../controllers/interactionController").createInteractionController>;
 	canvasRuntime: {
 		eraseDirtyRect: (rect: aabbBox, transformingCmdIds?: Set<string>) => void;
 	};
@@ -126,6 +127,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				canvas: canvasRef.value,
 				event: e,
 				commands: options.commands.value,
+				commandMap: options.commandMap,
 				selectedCommandIds: options.selectedCommandIds.value,
 				currentPageId: options.currentPageId.value,
 				getCommandBoundingBox: options.getCommandBoundingBox,
@@ -311,7 +313,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			}
 
 			preview.transformedCommands.forEach(({ cmdId, points }) => {
-				const cmd = options.commands.value.find((candidate) => candidate.id === cmdId);
+				const cmd = options.commandMap.get(cmdId);
 				if (cmd) cmd.points = points;
 			});
 			if (options.isOffscreenMainCanvas?.()) {
@@ -425,10 +427,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			);
 		}
 
-		if (typeof window !== "undefined" && (window as any).__benchmarkHook) {
-			(window as any).__benchmarkHook(null, options.currentDrawingId.value || "");
-		}
-
 		options.lastXRef.value = x;
 		options.lastYRef.value = y;
 		options.lastWidthRef.value = nextState.width;
@@ -454,7 +452,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		if (e.pointerId !== options.activePointerId.value) return;
 
 		const cmdId = options.currentDrawingId.value;
-		const cmd = options.commands.value.find((candidate) => candidate.id === cmdId);
+		const cmd = cmdId ? options.commandMap.get(cmdId) : undefined;
 		if (cmd?.points?.length) {
 			cmd.box = options.getCommandBoundingBox(cmd) ?? {
 				minX: 0,
@@ -481,7 +479,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				interactionMode: options.interactionMode.value,
 				selectionRect: options.selectionRect.value,
 				selectedCommandIds: options.selectedCommandIds.value,
-				commands: options.commands.value,
+				commandMap: options.commandMap,
 				currentPageId: options.currentPageId.value,
 				getCommandBoundingBox: options.getCommandBoundingBox,
 			});
@@ -602,4 +600,3 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		finalizeDrop,
 	};
 };
-

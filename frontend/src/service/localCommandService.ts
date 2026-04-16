@@ -9,7 +9,7 @@ import {
 	recordRedoStart,
 	recordUndoEnd,
 	recordUndoStart,
-} from "./benchmarkRuntime";
+} from "../instrumentation/runtimeInstrumentation";
 
 type PushCommandType = "normal" | "start" | "update" | "stop";
 

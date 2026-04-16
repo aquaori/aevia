@@ -10,6 +10,16 @@ export interface SelectionState {
 	h: number;
 }
 
+export type SessionLifecyclePhase =
+	| "idle"
+	| "mounting"
+	| "ready"
+	| "connecting"
+	| "connected"
+	| "disconnecting"
+	| "destroying"
+	| "destroyed";
+
 export interface WhiteboardSessionState {
 	currentTool: Ref<"pen" | "eraser" | "cursor">;
 	currentColor: Ref<string>;
@@ -22,6 +32,10 @@ export interface WhiteboardSessionState {
 }
 
 export interface EditorHookMap {
+	"session:lifecycle": {
+		phase: SessionLifecyclePhase;
+		previousPhase: SessionLifecyclePhase;
+	};
 	"session:before-init": void;
 	"session:ready": void;
 	"session:before-destroy": void;
@@ -72,13 +86,22 @@ export interface EditorHookMap {
 	};
 }
 
+export interface EditorPlugin {
+	name: string;
+	setup?: (host: EditorHost) => void | (() => void) | { dispose?: () => void };
+}
+
 export interface EditorHost {
 	state: Readonly<WhiteboardSessionState>;
 	canUndo: ComputedRef<boolean>;
 	canRedo: ComputedRef<boolean>;
+	lifecycle: Ref<SessionLifecyclePhase>;
 	events: TypedEventBus<EditorHookMap>;
 	hooks: TypedEventBus<EditorHookMap>;
 	emitHook<K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]): void;
+	use(plugin: EditorPlugin): () => void;
+	hasPlugin(name: string): boolean;
+	listPlugins(): string[];
 }
 
 export interface WhiteboardSession extends EditorHost {

@@ -7,11 +7,39 @@ import { createRoom, joinRoom, WebSocketInjector } from "./utils";
 export interface IncrementalRenderReport {
 	incrementalRenderMs: number;
 	refreshRenderMs: number;
+	remoteVisiblePaintMs: number;
+	refreshVisiblePaintMs: number;
 	dirtyAreaPx: number;
 	dirtyAreaRatio: number;
 	pointsPerUpdate: number;
 	renderCostPerPoint: number;
 }
+
+const waitForFunctionWithSnapshot = async <T>(
+	page: import("playwright").Page,
+	label: string,
+	fn: (payload: T) => boolean,
+	payload: T,
+	timeout: number
+) => {
+	try {
+		await page.waitForFunction(fn, payload, { timeout });
+	} catch (error: any) {
+		const snapshot = await page.evaluate(() => {
+			const runtime = (window as any).__benchmarkRuntime || {};
+			return {
+				lastIncrementalRender: runtime.lastIncrementalRender || null,
+				lastDirtyRedraw: runtime.lastDirtyRedraw || null,
+				lastFullRender: runtime.lastFullRender || null,
+				remoteCommands: runtime.remoteCommands || {},
+				lastEvents: [...(runtime.events || [])].slice(-12),
+			};
+		});
+		throw new Error(
+			`${label}: ${error?.message || "waitForFunction failed"}\n${JSON.stringify(snapshot)}`
+		);
+	}
+};
 
 interface StrokeCommandPayload {
 	id: string;
@@ -186,6 +214,15 @@ export const runIncrementalRenderSuite = async (
 
 	const { context, page } = await createContextAndPage(browser, throttleCpu);
 	await bootstrapRoomPage(page, { token: observer.token, userName: "IncrementalObserver" });
+	const baselineState = await page.evaluate(() => {
+		const runtime = (window as any).__benchmarkRuntime || {};
+		return {
+			baselineSignature: String(
+				runtime.lastFullRender?.canvasSignature || runtime.lastIncrementalRender?.canvasSignature || ""
+			),
+			baselineIncrementalTs: Number(runtime.lastIncrementalRender?.ts || 0),
+		};
+	});
 
 	const commandId = uuidv4();
 	const backgroundCommandId = uuidv4();
@@ -224,8 +261,10 @@ export const runIncrementalRenderSuite = async (
 		frameDelayMs: 10,
 	});
 
-	await page.waitForFunction(
-		(payload: { id: string }) => {
+	await waitForFunctionWithSnapshot(
+		page,
+		"incremental remote render wait",
+		(payload: { id: string; baselineSignature: string; baselineIncrementalTs: number }) => {
 			const runtime = (window as any).__benchmarkRuntime;
 			const remote = runtime?.remoteCommands?.[payload.id];
 			const matchedEvent = [...(runtime?.events || [])]
@@ -236,19 +275,35 @@ export const runIncrementalRenderSuite = async (
 						event?.detail?.commandId === payload.id &&
 						event?.detail?.source === "remote"
 				);
+			const lastIncremental = runtime?.lastIncrementalRender;
+			const fallbackSignature = String(lastIncremental?.canvasSignature || "");
 			return (
 				remote?.renderEndTs > 0 &&
+				remote?.visiblePaintTs > 0 &&
+				typeof remote?.canvasSignature === "string" &&
+				remote.canvasSignature.length > 0 &&
 				Number(matchedEvent?.detail?.points || 0) > 0 &&
 				typeof matchedEvent?.detail?.durationMs === "number"
+			) || (
+				lastIncremental?.ts > payload.baselineIncrementalTs &&
+				lastIncremental?.visiblePaintTs > 0 &&
+				fallbackSignature.length > 0 &&
+				Number(lastIncremental?.points || 0) > 0 &&
+				typeof lastIncremental?.durationMs === "number"
 			);
 		},
-		{ id: commandId },
-		{ timeout: 8000 }
+		{
+			id: commandId,
+			baselineSignature: baselineState.baselineSignature,
+			baselineIncrementalTs: baselineState.baselineIncrementalTs,
+		},
+		8000
 	);
 
 	const beforeUndo = await page.evaluate((id: string) => {
 		const runtime = (window as any).__benchmarkRuntime || {};
 		const remote = runtime.remoteCommands?.[id] || {};
+		const lastIncremental = runtime.lastIncrementalRender || null;
 		const summary =
 			[...(runtime.events || [])]
 				.reverse()
@@ -262,10 +317,14 @@ export const runIncrementalRenderSuite = async (
 		const full = runtime.lastFullRender || null;
 		return {
 			renderEndTs: Number(remote.renderEndTs || 0),
-			incrementalRenderMs: Number(summary?.durationMs || 0),
-			pointsPerUpdate: Number(summary?.points || 0),
+			incrementalRenderMs: Number(summary?.durationMs || lastIncremental?.durationMs || 0),
+			remoteVisiblePaintMs: Number(remote.visiblePaintMs || lastIncremental?.visiblePaintMs || 0),
+			remoteCanvasSignature: String(remote.canvasSignature || lastIncremental?.canvasSignature || ""),
+			pointsPerUpdate: Number(summary?.points || lastIncremental?.points || 0),
 			dirtyCount: Number(dirty?.count || 0),
 			fullRenderTs: Number(full?.ts || 0),
+			dirtyVisiblePaintTs: Number(dirty?.lastVisiblePaintTs || 0),
+			fullVisiblePaintTs: Number(full?.visiblePaintTs || 0),
 		};
 	}, commandId);
 
@@ -279,7 +338,9 @@ export const runIncrementalRenderSuite = async (
 		})
 	);
 
-	await page.waitForFunction(
+	await waitForFunctionWithSnapshot(
+		page,
+		"incremental refresh wait",
 		(payload: { dirtyCount: number; fullRenderTs: number }) => {
 			const runtime = (window as any).__benchmarkRuntime;
 			const dirty = runtime?.lastDirtyRedraw;
@@ -287,22 +348,31 @@ export const runIncrementalRenderSuite = async (
 			return (
 				(dirty?.count > payload.dirtyCount &&
 					typeof dirty?.lastRect?.width === "number" &&
-					dirty.lastDurationMs >= 0) ||
-				(full?.ts > payload.fullRenderTs && full?.durationMs > 0)
+					dirty.lastDurationMs >= 0 &&
+					dirty?.lastVisiblePaintTs > 0 &&
+					typeof dirty?.lastCanvasSignature === "string" &&
+					dirty.lastCanvasSignature.length > 0) ||
+				(full?.ts > payload.fullRenderTs &&
+					full?.durationMs > 0 &&
+					full?.visiblePaintTs > 0 &&
+					typeof full?.canvasSignature === "string" &&
+					full.canvasSignature.length > 0)
 			);
 		},
 		{
 			dirtyCount: beforeUndo.dirtyCount,
 			fullRenderTs: beforeUndo.fullRenderTs,
 		},
-		{ timeout: 8000 }
+		8000
 	);
 
 	const snapshot = await page.evaluate(() => {
 		const runtime = (window as any).__benchmarkRuntime || {};
+		const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
 		return {
 			lastDirtyRedraw: runtime.lastDirtyRedraw || null,
 			lastFullRender: runtime.lastFullRender || null,
+			canvasArea: canvas ? canvas.width * canvas.height : 0,
 		};
 	});
 
@@ -312,17 +382,21 @@ export const runIncrementalRenderSuite = async (
 	const rect = snapshot?.lastDirtyRedraw?.lastRect;
 	const usedDirtyPath =
 		Number(snapshot?.lastDirtyRedraw?.count || 0) > Number(beforeUndo.dirtyCount || 0);
-	const canvasArea = 1280 * 720;
+	const canvasArea = Number(snapshot?.canvasArea || 0);
 	const dirtyAreaPxRaw = usedDirtyPath
 		? rect
 			? Number(rect.width) * Number(rect.height)
 			: 0
-		: canvasArea;
+		: Math.max(canvasArea, 1);
 	const dirtyAreaPx = Number.isFinite(dirtyAreaPxRaw) ? dirtyAreaPxRaw : 0;
 	const incrementalRenderMs = Math.max(0.01, Number(beforeUndo.incrementalRenderMs || 0.01));
+	const remoteVisiblePaintMs = Math.max(0.01, Number(beforeUndo.remoteVisiblePaintMs || 0.01));
 	const refreshRenderMs = usedDirtyPath
 		? Math.max(0.01, Number(snapshot?.lastDirtyRedraw?.lastDurationMs || 0.01))
 		: Math.max(0.01, Number(snapshot?.lastFullRender?.durationMs || 0.01));
+	const refreshVisiblePaintMs = usedDirtyPath
+		? Math.max(0.01, Number(snapshot?.lastDirtyRedraw?.lastVisiblePaintMs || 0.01))
+		: Math.max(0.01, Number(snapshot?.lastFullRender?.visiblePaintMs || 0.01));
 	const pointsPerUpdate = Number(beforeUndo.pointsPerUpdate || 0);
 	if (pointsPerUpdate <= 0) {
 		throw new Error("incremental render metrics missing");
@@ -330,6 +404,8 @@ export const runIncrementalRenderSuite = async (
 	return {
 		incrementalRenderMs,
 		refreshRenderMs,
+		remoteVisiblePaintMs,
+		refreshVisiblePaintMs,
 		dirtyAreaPx,
 		dirtyAreaRatio: canvasArea > 0 ? dirtyAreaPx / canvasArea : 0,
 		pointsPerUpdate,

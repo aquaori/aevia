@@ -18,6 +18,9 @@ const createContextAndPage = async (
 ) => {
 	const context = await browser.newContext({ viewport });
 	const page = await context.newPage();
+	await page.addInitScript(() => {
+		(window as any).__ENABLE_BENCHMARK__ = true;
+	});
 	let client: CDPSession | null = null;
 	if (throttleCpu) {
 		client = await context.newCDPSession(page);

@@ -1,7 +1,11 @@
 // File role: page navigation and page-creation orchestration for the whiteboard room.
 import type { Ref } from "vue";
-import type { EditorHookMap } from "../utils/editorTypes";
-import { recordPageSwitchEnd, recordPageSwitchStart, setRuntimeSnapshot } from "./benchmarkRuntime";
+import {
+	recordPageSwitchEnd,
+	recordPageSwitchStart,
+	setRuntimeSnapshot,
+} from "../instrumentation/runtimeInstrumentation";
+import { useRoomSessionEmitHook } from "./roomSessionContext";
 
 interface RoomPageServiceOptions {
 	currentPageId: Ref<number>;
@@ -13,10 +17,10 @@ interface RoomPageServiceOptions {
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	currentTool: Ref<"pen" | "eraser" | "cursor">;
 	send: (type: string, data: unknown) => boolean;
-	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
 export const createRoomPageService = (options: RoomPageServiceOptions) => {
+	const emitHook = useRoomSessionEmitHook();
 	const resetViewportState = () => {
 		options.renderCanvas();
 		options.setTool(options.currentTool.value);
@@ -29,7 +33,7 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		setRuntimeSnapshot({ currentPageId: index, totalPages: options.totalPages.value });
 		options.closeOverview();
 		resetViewportState();
-		options.emitHook?.("page:changed", { pageId: index });
+		emitHook("page:changed", { pageId: index });
 		recordPageSwitchEnd(fromPageId, index, performance.now() - switchStart);
 	};
 
@@ -44,7 +48,7 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 			totalPages: options.totalPages.value,
 		});
 		resetViewportState();
-		options.emitHook?.("page:changed", { pageId: options.currentPageId.value });
+		emitHook("page:changed", { pageId: options.currentPageId.value });
 		recordPageSwitchEnd(fromPageId, toPageId, performance.now() - switchStart);
 	};
 
@@ -65,7 +69,7 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		setRuntimeSnapshot({ currentPageId: toPageId, totalPages: options.totalPages.value });
 		const switchStart = recordPageSwitchStart(fromPageId, toPageId);
 		resetViewportState();
-		options.emitHook?.("page:changed", { pageId: options.currentPageId.value });
+		emitHook("page:changed", { pageId: options.currentPageId.value });
 		recordPageSwitchEnd(fromPageId, toPageId, performance.now() - switchStart);
 	};
 
@@ -81,4 +85,3 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		addPageAndOpenLast,
 	};
 };
-

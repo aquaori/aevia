@@ -1,4 +1,7 @@
-// File role: browser-side benchmark runtime, event ledger, and lightweight stats snapshot.
+// File role: benchmark runtime controller that is activated by the benchmark plugin only.
+import type { Ref } from "vue";
+import type { RuntimeInstrumentationAdapter } from "../../instrumentation/runtimeInstrumentation";
+
 export type BenchmarkEventName =
 	| "init-received"
 	| "init-parsed"
@@ -22,7 +25,8 @@ export type BenchmarkEventName =
 	| "remote-command-received"
 	| "remote-render-start"
 	| "remote-render-end"
-	| "heap-sample";
+	| "heap-sample"
+	| "visible-paint";
 
 export interface BenchmarkRuntimeEvent {
 	name: BenchmarkEventName;
@@ -35,6 +39,9 @@ interface BenchmarkRenderSummary {
 	points: number;
 	durationMs: number;
 	ts: number;
+	visiblePaintTs?: number;
+	visiblePaintMs?: number;
+	canvasSignature?: string;
 }
 
 interface BenchmarkDirtySummary {
@@ -42,6 +49,9 @@ interface BenchmarkDirtySummary {
 	lastDurationMs: number;
 	lastRect: { minX: number; minY: number; width: number; height: number } | null;
 	lastPointCount: number;
+	lastVisiblePaintTs: number;
+	lastVisiblePaintMs: number;
+	lastCanvasSignature: string;
 }
 
 interface BenchmarkHeapSummary {
@@ -58,6 +68,9 @@ interface BenchmarkRemoteCommandState {
 	receiveTs?: number;
 	renderStartTs?: number;
 	renderEndTs?: number;
+	visiblePaintTs?: number;
+	visiblePaintMs?: number;
+	canvasSignature?: string;
 }
 
 export interface BenchmarkRuntimeState {
@@ -75,13 +88,19 @@ export interface BenchmarkRuntimeState {
 				receiveTs: number;
 				parseDurationMs: number;
 				hydrateDurationMs: number;
+				visiblePaintTs?: number;
+				visiblePaintMs?: number;
+				canvasSignature?: string;
 		  }
 		| null;
 	localInput: {
 		lastStartTs: number;
 		lastRenderStartTs: number;
 		lastRenderEndTs: number;
+		lastVisiblePaintTs: number;
+		lastVisiblePaintMs: number;
 		lastCommandId: string;
+		canvasSignature: string;
 	};
 	remoteCommands: Record<string, BenchmarkRemoteCommandState>;
 	renderCounters: Record<string, number>;
@@ -96,11 +115,38 @@ export interface BenchmarkRuntimeState {
 declare global {
 	interface Window {
 		__benchmarkRuntime?: BenchmarkRuntimeState;
-		__benchmarkCommands?: { value?: Array<{ id: string }> };
-		__benchmarkCurrentColor?: { value?: string };
-		__benchmarkHook?: ((source: unknown, commandId: string) => void) | undefined;
+		__benchmarkCommands?: Ref<Array<{ id: string }>> | { value?: Array<{ id: string }> };
+		__benchmarkCurrentColor?: Ref<string> | { value?: string };
+		__benchmarkRenderPageContentFromPoints?: (
+			ctx: CanvasRenderingContext2D,
+			width: number,
+			height: number,
+			points: Array<Record<string, unknown>>
+		) => void;
+		__benchmarkRunMicroRender?: () => Promise<{
+			microAppRenderMs: number;
+			microVisiblePaintMs: number;
+			microPoints: number;
+			microCostPerPoint: number;
+		}>;
+		__ENABLE_BENCHMARK__?: boolean;
+		__BENCHMARK_DEBUG_LOGS__?: boolean;
 	}
 }
+
+interface BenchmarkRuntimeBindings {
+	getMainCanvas?: () => HTMLCanvasElement | null;
+	commands?: Ref<Array<{ id: string }>>;
+	currentColor?: Ref<string>;
+	exposeGlobals?: boolean;
+	debugLogs?: boolean;
+}
+
+type VisibleMeasurementKind =
+	| { type: "full-render"; points: number }
+	| { type: "dirty-redraw"; pointCount: number }
+	| { type: "incremental-render"; commandId?: string; points: number; source: "local" | "remote" }
+	| { type: "init"; commandCount: number };
 
 const MAX_EVENTS = 4000;
 
@@ -113,6 +159,9 @@ const createInitialState = (): BenchmarkRuntimeState => ({
 		lastDurationMs: 0,
 		lastRect: null,
 		lastPointCount: 0,
+		lastVisiblePaintTs: 0,
+		lastVisiblePaintMs: 0,
+		lastCanvasSignature: "",
 	},
 	lastPageSwitch: null,
 	lastUndo: null,
@@ -122,7 +171,10 @@ const createInitialState = (): BenchmarkRuntimeState => ({
 		lastStartTs: 0,
 		lastRenderStartTs: 0,
 		lastRenderEndTs: 0,
+		lastVisiblePaintTs: 0,
+		lastVisiblePaintMs: 0,
 		lastCommandId: "",
+		canvasSignature: "",
 	},
 	remoteCommands: {},
 	renderCounters: {},
@@ -140,12 +192,51 @@ const createInitialState = (): BenchmarkRuntimeState => ({
 	lastRenderReason: null,
 });
 
-const ensureRuntime = (): BenchmarkRuntimeState | null => {
-	if (typeof window === "undefined") return null;
-	if (!window.__benchmarkRuntime) {
-		window.__benchmarkRuntime = createInitialState();
+let activeRuntime: BenchmarkRuntimeState | null = null;
+let runtimeBindings: BenchmarkRuntimeBindings = {};
+const visiblePaintTokens = new Map<string, number>();
+
+const shouldEnableBenchmarkRuntime = () => {
+	if (typeof window !== "undefined" && window.__ENABLE_BENCHMARK__ === true) {
+		return true;
 	}
-	return window.__benchmarkRuntime;
+	return import.meta.env.VITE_ENABLE_BENCHMARK === "true";
+};
+
+const ensureRuntime = (): BenchmarkRuntimeState | null => activeRuntime;
+
+const exposeGlobals = () => {
+	if (typeof window === "undefined" || !activeRuntime) return;
+	window.__benchmarkRuntime = activeRuntime;
+	if (runtimeBindings.commands) {
+		window.__benchmarkCommands = runtimeBindings.commands;
+	}
+	if (runtimeBindings.currentColor) {
+		window.__benchmarkCurrentColor = runtimeBindings.currentColor;
+	}
+};
+
+const clearGlobals = () => {
+	if (typeof window === "undefined") return;
+	delete window.__benchmarkRuntime;
+	delete window.__benchmarkCommands;
+	delete window.__benchmarkCurrentColor;
+};
+
+const activateBenchmarkRuntime = (bindings: BenchmarkRuntimeBindings = {}) => {
+	activeRuntime = createInitialState();
+	runtimeBindings = bindings;
+	if (bindings.exposeGlobals !== false) {
+		exposeGlobals();
+	}
+	return activeRuntime;
+};
+
+const deactivateBenchmarkRuntime = () => {
+	activeRuntime = null;
+	runtimeBindings = {};
+	visiblePaintTokens.clear();
+	clearGlobals();
 };
 
 const pushEvent = (name: BenchmarkEventName, detail?: Record<string, unknown>) => {
@@ -189,13 +280,107 @@ const setRuntimeSnapshot = (
 	Object.assign(runtime, partial);
 };
 
+const nextDoubleRaf = () =>
+	new Promise<number>((resolve) => {
+		requestAnimationFrame(() => {
+			requestAnimationFrame((ts) => resolve(ts));
+		});
+	});
+
+const sampleCanvasSignature = (canvas: HTMLCanvasElement | null) => {
+	if (!canvas) return "";
+	try {
+		const sampleSize = 8;
+		const snapshotCanvas = document.createElement("canvas");
+		snapshotCanvas.width = Math.max(sampleSize, canvas.width || sampleSize);
+		snapshotCanvas.height = Math.max(sampleSize, canvas.height || sampleSize);
+		const snapshotCtx = snapshotCanvas.getContext("2d", { willReadFrequently: true });
+		if (!snapshotCtx) return "";
+		snapshotCtx.drawImage(canvas, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
+		const stepX = Math.max(1, Math.floor(snapshotCanvas.width / sampleSize));
+		const stepY = Math.max(1, Math.floor(snapshotCanvas.height / sampleSize));
+		const parts: number[] = [];
+		for (let row = 0; row < sampleSize; row += 1) {
+			for (let col = 0; col < sampleSize; col += 1) {
+				const x = Math.min(snapshotCanvas.width - 1, col * stepX);
+				const y = Math.min(snapshotCanvas.height - 1, row * stepY);
+				const data = snapshotCtx.getImageData(x, y, 1, 1).data;
+				parts.push(data[0] || 0, data[1] || 0, data[2] || 0, data[3] || 0);
+			}
+		}
+		return parts.join("-");
+	} catch {
+		return "";
+	}
+};
+
+const scheduleVisiblePaintMeasurement = (
+	key: string,
+	startTs: number,
+	kind: VisibleMeasurementKind
+) => {
+	const runtime = ensureRuntime();
+	if (!runtime) return;
+	const token = (visiblePaintTokens.get(key) || 0) + 1;
+	visiblePaintTokens.set(key, token);
+
+	void nextDoubleRaf().then((visiblePaintTs) => {
+		if (visiblePaintTokens.get(key) !== token) return;
+		const signature = sampleCanvasSignature(runtimeBindings.getMainCanvas?.() ?? null);
+		const visiblePaintMs = Math.max(0, visiblePaintTs - startTs);
+
+		if (kind.type === "full-render" && runtime.lastFullRender) {
+			runtime.lastFullRender.visiblePaintTs = visiblePaintTs;
+			runtime.lastFullRender.visiblePaintMs = visiblePaintMs;
+			runtime.lastFullRender.canvasSignature = signature;
+		} else if (kind.type === "dirty-redraw") {
+			runtime.lastDirtyRedraw.lastVisiblePaintTs = visiblePaintTs;
+			runtime.lastDirtyRedraw.lastVisiblePaintMs = visiblePaintMs;
+			runtime.lastDirtyRedraw.lastCanvasSignature = signature;
+		} else if (kind.type === "incremental-render") {
+			if (runtime.lastIncrementalRender) {
+				runtime.lastIncrementalRender.visiblePaintTs = visiblePaintTs;
+				runtime.lastIncrementalRender.visiblePaintMs = visiblePaintMs;
+				runtime.lastIncrementalRender.canvasSignature = signature;
+			}
+			if (kind.source === "local") {
+				runtime.localInput.lastVisiblePaintTs = visiblePaintTs;
+				runtime.localInput.lastVisiblePaintMs = visiblePaintMs;
+				runtime.localInput.canvasSignature = signature;
+			} else if (kind.commandId) {
+				const state = runtime.remoteCommands[kind.commandId] || { commandId: kind.commandId, sendTs: 0 };
+				state.visiblePaintTs = visiblePaintTs;
+				state.visiblePaintMs = visiblePaintMs;
+				state.canvasSignature = signature;
+				runtime.remoteCommands[kind.commandId] = state;
+			}
+		} else if (kind.type === "init" && runtime.lastInit) {
+			runtime.lastInit.visiblePaintTs = visiblePaintTs;
+			runtime.lastInit.visiblePaintMs = visiblePaintMs;
+			runtime.lastInit.canvasSignature = signature;
+		}
+
+		pushEvent("visible-paint", {
+			type: kind.type,
+			commandId: "commandId" in kind ? (kind.commandId ?? "") : undefined,
+			source: "source" in kind ? kind.source : undefined,
+			visiblePaintMs,
+			visiblePaintTs,
+			canvasSignature: signature,
+		});
+	});
+};
+
 const markLocalInputStart = (commandId: string) => {
 	const runtime = ensureRuntime();
 	if (!runtime) return;
 	runtime.localInput.lastStartTs = performance.now();
 	runtime.localInput.lastRenderStartTs = 0;
 	runtime.localInput.lastRenderEndTs = 0;
+	runtime.localInput.lastVisiblePaintTs = 0;
+	runtime.localInput.lastVisiblePaintMs = 0;
 	runtime.localInput.lastCommandId = commandId;
+	runtime.localInput.canvasSignature = "";
 	pushEvent("local-input-start", { commandId });
 };
 
@@ -286,6 +471,10 @@ const recordCommandsHydrated = (commandCount: number, durationMs: number) => {
 	if (runtime.lastInit) {
 		runtime.lastInit.hydrateDurationMs = durationMs;
 		runtime.lastInit.commandCount = commandCount;
+		scheduleVisiblePaintMeasurement(`init:${commandCount}`, performance.now(), {
+			type: "init",
+			commandCount,
+		});
 	}
 	runtime.commandCount = commandCount;
 };
@@ -313,7 +502,13 @@ const recordRenderEnd = (
 	if (reason === "full") {
 		if (points > 0) {
 			runtime.lastFullRender = summary;
+			scheduleVisiblePaintMeasurement(`render:full`, summary.ts, { type: "full-render", points });
 		}
+	} else if (reason === "dirty") {
+		scheduleVisiblePaintMeasurement(`render:dirty`, summary.ts, {
+			type: "dirty-redraw",
+			pointCount: points,
+		});
 	} else if (reason !== "overlay") {
 		runtime.lastIncrementalRender = summary;
 	}
@@ -341,6 +536,7 @@ const recordWorkerFullRender = (points: number, durationMs: number) => {
 			ts: endTs - safeDurationMs,
 		});
 		pushEvent("render-end", { reason: "full", points, durationMs: safeDurationMs, source: "worker" });
+		scheduleVisiblePaintMeasurement(`render:full`, endTs, { type: "full-render", points });
 	}
 };
 
@@ -367,12 +563,19 @@ const recordIncrementalRenderEnd = (
 	const safeDurationMs = Number.isFinite(durationMs) ? Math.max(durationMs, 0.01) : 0.01;
 	const runtime = ensureRuntime();
 	if (runtime) {
+		const ts = performance.now();
 		runtime.lastIncrementalRender = {
 			reason: `${source}-incremental`,
 			points,
 			durationMs: safeDurationMs,
-			ts: performance.now(),
+			ts,
 		};
+		scheduleVisiblePaintMeasurement(`incremental:${source}:${commandId || "unknown"}`, ts, {
+			type: "incremental-render",
+			commandId,
+			points,
+			source,
+		});
 	}
 	pushEvent("incremental-render-end", { commandId, points, source, durationMs: safeDurationMs });
 	if (source === "remote" && commandId) {
@@ -407,6 +610,12 @@ const recordWorkerIncrementalRender = (
 		durationMs: safeDurationMs,
 		via: "worker",
 	});
+	scheduleVisiblePaintMeasurement(`incremental:${source}:${commandId || "unknown"}`, endTs, {
+		type: "incremental-render",
+		commandId,
+		points,
+		source,
+	});
 	if (source === "local" && commandId) {
 		runtime.localInput.lastCommandId = commandId;
 		runtime.localInput.lastRenderStartTs = startTs;
@@ -435,13 +644,21 @@ const recordDirtyRedrawEnd = (
 ) => {
 	const runtime = ensureRuntime();
 	if (!runtime) return;
+	const ts = performance.now();
 	runtime.lastDirtyRedraw = {
 		count: runtime.lastDirtyRedraw.count + 1,
 		lastDurationMs: durationMs,
 		lastRect: rect,
 		lastPointCount: pointCount,
+		lastVisiblePaintTs: 0,
+		lastVisiblePaintMs: 0,
+		lastCanvasSignature: runtime.lastDirtyRedraw.lastCanvasSignature,
 	};
 	pushEvent("dirty-redraw-end", { rect, durationMs, pointCount });
+	scheduleVisiblePaintMeasurement(`dirty:${runtime.lastDirtyRedraw.count}`, ts, {
+		type: "dirty-redraw",
+		pointCount,
+	});
 };
 
 const recordUndoStart = (source: "local" | "remote") => {
@@ -481,12 +698,39 @@ const recordPageSwitchEnd = (fromPageId: number, toPageId: number, durationMs: n
 	pushEvent("page-switch-end", { fromPageId, toPageId, durationMs });
 };
 
-const resetBenchmarkRuntime = () => {
-	if (typeof window === "undefined") return;
-	window.__benchmarkRuntime = createInitialState();
+const isBenchmarkDebugLoggingEnabled = () =>
+	Boolean(runtimeBindings.debugLogs) ||
+	(typeof window !== "undefined" && window.__BENCHMARK_DEBUG_LOGS__ === true);
+
+const benchmarkRuntimeInstrumentationAdapter: RuntimeInstrumentationAdapter = {
+	setRuntimeSnapshot,
+	markLocalInputStart,
+	markRemoteCommandReceived,
+	recordInitReceived,
+	recordInitParsed,
+	recordCommandsHydrated,
+	recordRenderStart,
+	recordRenderEnd,
+	recordIncrementalRenderStart,
+	recordIncrementalRenderEnd,
+	recordWorkerFullRender,
+	recordWorkerIncrementalRender,
+	recordDirtyRedrawStart,
+	recordDirtyRedrawEnd,
+	recordUndoStart,
+	recordUndoEnd,
+	recordRedoStart,
+	recordRedoEnd,
+	recordPageSwitchStart,
+	recordPageSwitchEnd,
+	isDebugLoggingEnabled: isBenchmarkDebugLoggingEnabled,
 };
 
 export {
+	activateBenchmarkRuntime,
+	deactivateBenchmarkRuntime,
+	benchmarkRuntimeInstrumentationAdapter,
+	shouldEnableBenchmarkRuntime,
 	ensureRuntime,
 	pushEvent,
 	sampleHeapUsage,
@@ -515,5 +759,5 @@ export {
 	recordRedoEnd,
 	recordPageSwitchStart,
 	recordPageSwitchEnd,
-	resetBenchmarkRuntime,
+	isBenchmarkDebugLoggingEnabled,
 };

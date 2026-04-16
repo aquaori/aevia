@@ -4,11 +4,12 @@ import type { Command, FlatPoint, LastWidthInfo, Point } from "../utils/type";
 import { useLamportStore } from "../store/lamportStore";
 import { useCommandStore } from "../store/commandStore";
 import {
+	isRuntimeDebugLoggingEnabled,
 	recordIncrementalRenderEnd,
 	recordIncrementalRenderStart,
 	recordRenderEnd,
 	recordRenderStart,
-} from "./benchmarkRuntime";
+} from "../instrumentation/runtimeInstrumentation";
 import {
 	createStrokeStateFromSample,
 	getNextStrokeWidth,
@@ -43,15 +44,13 @@ const renderIncrementPoint = (
 	ctx: CanvasRenderingContext2D,
 	width: number,
 	height: number,
-	skipQueue = false
+	skipQueue = false,
+	source: "local" | "remote" = "remote"
 ) => {
 	if (cmd.type !== "path" || points.length === 0) {
 		return;
 	}
 
-	const runtime = typeof window !== "undefined" ? (window as any).__benchmarkRuntime : null;
-	const source: "local" | "remote" =
-		runtime?.localInput?.lastCommandId === cmd.id ? "local" : "remote";
 	const incrementalStart = recordIncrementalRenderStart(cmd.id, points.length, source);
 	const baseSize = cmd.size || 3;
 	const startIndex = (cmd.points?.length || 0) - points.length;
@@ -139,8 +138,12 @@ const renderPointSequence = (
 
 	const renderEnd = performance.now();
 	recordRenderEnd(isDirtyRender ? "dirty" : "full", points.length, renderEnd - renderStart);
-	const logPrefix = isDirtyRender ? "[dirty-redraw]" : "[full-render]";
-	console.log(`${logPrefix} points=${points.length} duration=${(renderEnd - renderStart).toFixed(2)}ms`);
+	if (isRuntimeDebugLoggingEnabled()) {
+		const logPrefix = isDirtyRender ? "[dirty-redraw]" : "[full-render]";
+		console.log(
+			`${logPrefix} points=${points.length} duration=${(renderEnd - renderStart).toFixed(2)}ms`
+		);
+	}
 };
 
 const pointIntersectsDirtyRect = (
