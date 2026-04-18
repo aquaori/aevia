@@ -30,6 +30,11 @@ interface LocalCommandServiceOptions {
 	currentTool: Ref<"pen" | "eraser" | "cursor">;
 	insertCommand: (cmd: Command) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
+	pruneDeletedCommandsAfterPointer: (
+		userId: string,
+		pageId: number,
+		pointer: number
+	) => string[];
 	renderCanvas: () => void;
 	requestDirtyRender?: (rect: {
 		minX: number;
@@ -48,26 +53,14 @@ interface LocalCommandServiceOptions {
 
 export const createLocalCommandService = (options: LocalCommandServiceOptions) => {
 	const pruneDeletedCommandsAfterPointer = () => {
-		if (options.currentCommandIndex.value < 0) {
-			return;
-		}
-
-		for (
-			let index = options.commands.value.length - 1;
-			index >= options.currentCommandIndex.value;
-			index -= 1
-		) {
-			const command = options.commands.value[index];
-			if (
-				command &&
-				command.userId === options.userId.value &&
-				command.pageId === options.currentPageId.value &&
-				command.isDeleted
-			) {
-				options.send("delete-cmd", { cmdId: command.id });
-				options.commands.value.splice(index, 1);
-			}
-		}
+		const removedCommandIds = options.pruneDeletedCommandsAfterPointer(
+			options.userId.value,
+			options.currentPageId.value,
+			options.currentCommandIndex.value
+		);
+		removedCommandIds.forEach((cmdId) => {
+			options.send("delete-cmd", { cmdId });
+		});
 	};
 
 	const pushCommand = (

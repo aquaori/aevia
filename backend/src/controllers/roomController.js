@@ -96,10 +96,29 @@ const generateShareToken = (req, res) => {
     });
 };
 
+const getPageReview = (req, res) => {
+  const roomId = req.query.roomId;
+  if (!roomId) {
+    return res.status(400).json({ code: 400, msg: "Room ID is required" });
+  }
+
+  const pageReview = roomService.getPageReview(roomId);
+  if (!pageReview) {
+    return res.status(400).json({ code: 400, msg: "Room does not exist" });
+  }
+
+  res.status(200).json({
+    code: 200,
+    msg: "success",
+    data: pageReview,
+  });
+};
+
 module.exports = {
   createRoom,
   checkRoom,
   generateRoomId,
   joinRoom,
   generateShareToken,
+  getPageReview,
 };

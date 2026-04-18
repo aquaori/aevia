@@ -5,8 +5,8 @@
 		onUnmounted,
 		computed,
 		toRaw,
+		watch,
 		type Ref,
-		type ComponentPublicInstance,
 	} from "vue";
 	import { useRouter } from "vue-router";
 	import {
@@ -58,6 +58,7 @@
 	import RoomConnectionOverlays from "../components/RoomConnectionOverlays.vue";
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
+	import { fetchPageOverview, type PageOverviewItem } from "../service/pageOverviewService";
 	import type { SelectionState } from "../utils/editorTypes";
 	import type { Command, Point } from "../utils/type";
 
@@ -103,8 +104,12 @@
 	} = createRoomEditorState();
 
 	const commandStore = useCommandStore();
+	const { commands, pendingUpdates, currentCommandIndex, loadedPageIds } = storeToRefs(commandStore);
+	const replaceLoadedPageWindow = commandStore.replaceLoadedPageWindow;
+	const applyLoadedPageDelta = commandStore.applyLoadedPageDelta;
+	const pruneDeletedCommandsAfterPointer = commandStore.pruneDeletedCommandsAfterPointer;
 	// 统一使用 Store 中的状态，并通过 storeToRefs 保持响应性
-	const { commands, pendingUpdates, currentCommandIndex } = storeToRefs(commandStore);
+	const commandMapRef = commandStore.commandMap;
 	const commandMap = commandStore.commandMap;
 	const insertCommand = commandStore.insertCommand;
 	const clearClearedCommands = commandStore.clearClearedCommands;
@@ -135,6 +140,32 @@
 
 	const interactionController = createInteractionController();
 	const roomSessionRef = provideRoomSession();
+	const pageOverviewPages = ref<PageOverviewItem[]>([]);
+	const pageOverviewTotalPages = ref(0);
+	const pageOverviewLoading = ref(false);
+	const pageOverviewError = ref("");
+	let pageOverviewRequestId = 0;
+
+	const loadPageOverview = async () => {
+		const normalizedRoomId = Array.isArray(roomId.value) ? (roomId.value[0] ?? "") : roomId.value;
+		if (!normalizedRoomId) return;
+		const requestId = ++pageOverviewRequestId;
+		pageOverviewLoading.value = true;
+		pageOverviewError.value = "";
+		try {
+			const overview = await fetchPageOverview(normalizedRoomId);
+			if (requestId !== pageOverviewRequestId) return;
+			pageOverviewTotalPages.value = overview.totalPages;
+			pageOverviewPages.value = overview.pages;
+		} catch (error) {
+			if (requestId !== pageOverviewRequestId) return;
+			pageOverviewError.value = "页面总览加载失败";
+		} finally {
+			if (requestId === pageOverviewRequestId) {
+				pageOverviewLoading.value = false;
+			}
+		}
+	};
 
 	const renderCanvas = () => {
 		if (!canvasRef.value) return;
@@ -235,11 +266,6 @@
 	const draw = (e: PointerEvent) => roomPointerControllerRef.value?.draw(e);
 	const stopDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.stopDrawing(e);
 
-	const renderPreviewCanvas = (
-		el: Element | ComponentPublicInstance | null,
-		index: number
-	) => roomCanvasOverlay.renderPreviewCanvas(el, index);
-
 	const goToPage = (index: number) => roomPageService.goToPage(index);
 
 
@@ -251,13 +277,14 @@
 		roomName,
 		onlineCount,
 		totalPages,
+		loadedPageIds,
 		currentPageId,
 		currentTool,
 		reconnectFailed,
 		commands,
 		currentCommandIndex,
 		pendingUpdates,
-		commandMap,
+		commandMap: commandMapRef,
 		memberList,
 		remoteCursors,
 		remoteSelectionRects,
@@ -268,8 +295,12 @@
 		renderIncrementalCommand,
 		renderSinglePointCommand,
 		goToPage,
+		applyRemotePageChange: (page, nextTotalPages) =>
+			roomPageService.applyRemotePageChange(page, nextTotalPages),
 		setTool: roomEditorController.setTool,
 		insertCommand,
+		replaceLoadedPageWindow,
+		applyLoadedPageDelta,
 		clearClearedCommands,
 	});
 	const isReconnecting = roomCollabTransport.isReconnecting;
@@ -284,6 +315,7 @@
 		currentTool,
 		insertCommand,
 		clearClearedCommands,
+		pruneDeletedCommandsAfterPointer,
 		renderCanvas,
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
 		syncCommandState: (command) => workerBridge.syncCommandState(command),
@@ -299,6 +331,7 @@
 	const roomPageService = createRoomPageService({
 		currentPageId,
 		totalPages,
+		loadedPageIds,
 		username,
 		userId,
 		closeOverview: () => {
@@ -368,7 +401,7 @@
 		transformAnim: transformAnim as Ref<any>,
 		activeMenu,
 		commands,
-		commandMap,
+		commandMap: commandMapRef,
 		lastXRef: lastX,
 		lastYRef: lastY,
 		lastWidthRef: lastWidth,
@@ -395,7 +428,7 @@
 		transformingCmdIds,
 		selectedCommandIds,
 		commands,
-		commandMap,
+		commandMap: commandMapRef,
 		currentPageId,
 		remoteCursors,
 		userId,
@@ -457,6 +490,18 @@
 
 	onMounted(roomLifecycleController.mount);
 	onUnmounted(roomLifecycleController.unmount);
+
+	watch(showPageOverview, (visible) => {
+		if (visible) {
+			loadPageOverview();
+		}
+	});
+
+	watch([currentPageId, totalPages], () => {
+		if (showPageOverview.value) {
+			loadPageOverview();
+		}
+	});
 </script>
 
 <template>
@@ -504,13 +549,15 @@
 		/>
 		<RoomPageOverview
 			:visible="showPageOverview"
-			:total-pages="totalPages"
+			:total-pages="pageOverviewTotalPages || totalPages"
 			:current-page-id="currentPageId"
-			:remote-cursors="remoteCursors"
+			:pages="pageOverviewPages"
+			:loading="pageOverviewLoading"
+			:error="pageOverviewError"
 			:on-close="roomPanelController.closeOverview"
 			:go-to-page="roomPageService.goToPage"
-			:render-preview-canvas="renderPreviewCanvas"
 			:on-add-page="roomPageService.addPageAndOpenLast"
+			:on-retry="loadPageOverview"
 		/>
 		<RoomMemberList
 			:visible="showMemberList"

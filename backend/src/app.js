@@ -16,6 +16,7 @@ app.get("/check-room", roomController.checkRoom);
 app.get("/generate-room-id", roomController.generateRoomId);
 app.post("/join-room", roomController.joinRoom);
 app.get("/generate-share-token", roomController.generateShareToken);
+app.get("/get-page-review", roomController.getPageReview);
 
 // 提取的 Token 信息接口 (可选)
 app.get("/get-token-info", (req, res) => {

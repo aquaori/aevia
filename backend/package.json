@@ -4,8 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "predev": "node src/scripts/resetDevDb.js",
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
+    "dev": "node --watch src/index.js --host",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

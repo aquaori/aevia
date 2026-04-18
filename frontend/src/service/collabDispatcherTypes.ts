@@ -10,6 +10,7 @@ export interface CollabMessageDispatcherOptions {
 	roomName: Ref<string>;
 	onlineCount: Ref<number>;
 	totalPages: Ref<number>;
+	loadedPageIds: Ref<number[]>;
 	currentPageId: Ref<number>;
 	currentTool: Ref<"pen" | "eraser" | "cursor">;
 	commands: Ref<Command[]>;
@@ -38,8 +39,16 @@ export interface CollabMessageDispatcherOptions {
 	) => void;
 	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
 	goToPage: (page: number) => void;
+	applyRemotePageChange: (page: number, totalPages?: number) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
+	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;
+	applyLoadedPageDelta: (input: {
+		loadedPageIds: number[];
+		loadPageIds: number[];
+		unloadPageIds: number[];
+		commands: Command[];
+	}) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
 	onInitConnectionState: () => void;
 	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;

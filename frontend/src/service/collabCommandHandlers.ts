@@ -15,6 +15,12 @@ import {
 	recordUndoStart,
 } from "../instrumentation/runtimeInstrumentation";
 import { paintStrokeSample } from "./strokeRasterizer";
+import {
+	normalizeCommandFromProtocol,
+	normalizeCommandsFromProtocol,
+	normalizeLoadedPageIds,
+	protocolPageToState,
+} from "./collabProtocol";
 
 export const createCollabCommandHandlers = (options: CollabMessageDispatcherOptions) => {
 	const renderIncrement = (cmd: Command, points: Point[]) => {
@@ -65,21 +71,51 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		options.roomName.value = initData.roomName;
 		options.onlineCount.value = initData.onlineCount;
 		options.totalPages.value = initData.totalPage || 1;
-
-		const lastPoint = initData.commands?.at(-1)?.points?.at(-1);
+		const currentPageId = protocolPageToState(initData.pageId);
+		const loadedPageIds = normalizeLoadedPageIds(initData.loadedPageIds);
+		const normalizedCommands = normalizeCommandsFromProtocol(initData.commands);
+		const lastCommand = normalizedCommands[normalizedCommands.length - 1];
+		const lastPoint = lastCommand?.points?.[lastCommand.points.length - 1];
 		if (lastPoint) {
 			useLamportStore().lamport = Math.max(useLamportStore().lamport, lastPoint.lamport);
 		}
 
-		initData.commands.forEach((cmd: Command) => {
-			options.insertCommand(cmd);
-		});
-		options.renderCanvas();
-		recordCommandsHydrated(initData.commands?.length || 0, performance.now() - hydrateStart);
+		const nextLoadedPageIds = loadedPageIds.length > 0 ? loadedPageIds : [currentPageId];
+		options.replaceLoadedPageWindow(nextLoadedPageIds, normalizedCommands);
+		options.loadedPageIds.value = nextLoadedPageIds;
+		options.applyRemotePageChange(currentPageId, initData.totalPage || 1);
+		recordCommandsHydrated(normalizedCommands.length, performance.now() - hydrateStart);
+	};
+
+	const handlePageChange = (msg: CollabIncomingMessage) => {
+		const nextPageId = protocolPageToState(msg.data?.pageId);
+		const loadedPageIds = normalizeLoadedPageIds(msg.data?.loadedPageIds);
+		const loadPageIds = normalizeLoadedPageIds(msg.data?.loadPageIds);
+		const unloadPageIds = normalizeLoadedPageIds(msg.data?.unloadPageIds);
+		const normalizedCommands = normalizeCommandsFromProtocol(msg.data?.commands);
+		options.totalPages.value = msg.data?.totalPage || options.totalPages.value;
+
+		if (msg.data?.mode === "delta") {
+			const nextLoadedPageIds = loadedPageIds.length > 0 ? loadedPageIds : [nextPageId];
+			options.applyLoadedPageDelta({
+				loadedPageIds: nextLoadedPageIds,
+				loadPageIds,
+				unloadPageIds,
+				commands: normalizedCommands,
+			});
+			options.loadedPageIds.value = nextLoadedPageIds;
+			options.applyRemotePageChange(nextPageId, msg.data?.totalPage || options.totalPages.value);
+			return;
+		}
+
+		const nextLoadedPageIds = loadedPageIds.length > 0 ? loadedPageIds : [nextPageId];
+		options.replaceLoadedPageWindow(nextLoadedPageIds, normalizedCommands);
+		options.loadedPageIds.value = nextLoadedPageIds;
+		options.applyRemotePageChange(nextPageId, msg.data?.totalPage || options.totalPages.value);
 	};
 
 	const handlePushCommand = (msg: CollabIncomingMessage) => {
-		const cmd = msg.data.cmd as Command;
+		const cmd = msg.data.cmd ? normalizeCommandFromProtocol(msg.data.cmd as Command) : undefined;
 		const pushType = msg.pushType as "normal" | "start" | "update" | "stop";
 		const remoteCommandId = cmd?.id || msg.data.cmdId;
 		const remotePointCount = (msg.data.points ?? cmd?.points ?? []).length || 0;
@@ -95,6 +131,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 
 		if (pushType === "normal" || pushType === "start") {
+			if (!cmd) return;
+
 			if (cmd.userId === options.userId.value) {
 				options.currentCommandIndex.value = options.commands.value.length - 1;
 			}
@@ -185,7 +223,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 					renderIncrement(localCmd, stopPoints);
 				}
 			} else if (msg.data.cmd) {
-				const fallbackCmd = msg.data.cmd as Command;
+				const fallbackCmd = normalizeCommandFromProtocol(msg.data.cmd as Command);
 				options.emitHook?.("command:before-apply", {
 					command: fallbackCmd,
 					source: "remote",
@@ -246,6 +284,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	const handlePageAdd = (msg: CollabIncomingMessage) => {
 		const { totalPages: newTotalPages } = msg.data;
 		if (newTotalPages > options.totalPages.value) {
+			const createdByCurrentUser = msg.data.userId === options.userId.value;
 			toast.info(`${msg.data.username ? msg.data.username : "有用户"} 创建了页面${msg.data.totalPages}`, {
 				action: {
 					label: "前往",
@@ -253,6 +292,9 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 				},
 			});
 			options.totalPages.value = newTotalPages;
+			if (createdByCurrentUser) {
+				options.goToPage(newTotalPages - 1);
+			}
 		}
 	};
 
@@ -291,6 +333,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 	return {
 		handleInit,
+		handlePageChange,
 		handlePushCommand,
 		handleBatchMove,
 		handleBatchUpdate,

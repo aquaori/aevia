@@ -13,6 +13,11 @@ export const createCollabMessageDispatcher = (options: CollabMessageDispatcherOp
 			return;
 		}
 
+		if (msg.type === "page-change") {
+			commandHandlers.handlePageChange(msg);
+			return;
+		}
+
 		if (msg.type === "online-count-change") {
 			presenceHandlers.handleOnlineCountChange(msg);
 			return;

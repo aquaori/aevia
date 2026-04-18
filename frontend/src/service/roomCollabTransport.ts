@@ -5,6 +5,7 @@ import type { Command, Point, RemoteCursor } from "../utils/type";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
 import { recordInitParsed, recordInitReceived } from "../instrumentation/runtimeInstrumentation";
 import { useRoomSessionEmitHook } from "./roomSessionContext";
+import { commandToProtocol, statePageToProtocol } from "./collabProtocol";
 
 interface RoomCollabTransportOptions {
 	token: Ref<string>;
@@ -14,6 +15,7 @@ interface RoomCollabTransportOptions {
 	roomName: Ref<string>;
 	onlineCount: Ref<number>;
 	totalPages: Ref<number>;
+	loadedPageIds: Ref<number[]>;
 	currentPageId: Ref<number>;
 	currentTool: Ref<"pen" | "eraser" | "cursor">;
 	reconnectFailed: Ref<boolean>;
@@ -43,8 +45,16 @@ interface RoomCollabTransportOptions {
 	) => void;
 	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
 	goToPage: (page: number) => void;
+	applyRemotePageChange: (page: number, totalPages?: number) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
+	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;
+	applyLoadedPageDelta: (input: {
+		loadedPageIds: number[];
+		loadPageIds: number[];
+		unloadPageIds: number[];
+		commands: Command[];
+	}) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
 }
 
@@ -64,6 +74,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		roomName: options.roomName,
 		onlineCount: options.onlineCount,
 		totalPages: options.totalPages,
+		loadedPageIds: options.loadedPageIds,
 		currentPageId: options.currentPageId,
 		currentTool: options.currentTool,
 		commands: options.commands,
@@ -80,8 +91,11 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		renderIncrementalCommand: options.renderIncrementalCommand,
 		renderSinglePointCommand: options.renderSinglePointCommand,
 		goToPage: options.goToPage,
+		applyRemotePageChange: options.applyRemotePageChange,
 		setTool: options.setTool,
 		insertCommand: options.insertCommand,
+		replaceLoadedPageWindow: options.replaceLoadedPageWindow,
+		applyLoadedPageDelta: options.applyLoadedPageDelta,
 		clearClearedCommands: options.clearClearedCommands,
 		emitHook,
 		onInitConnectionState: () => {
@@ -127,7 +141,37 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		if (socket.value?.readyState !== WebSocket.OPEN) {
 			return false;
 		}
-		socket.value.send(JSON.stringify({ type, data }));
+
+		let outgoing = data as any;
+		if (outgoing && typeof outgoing === "object") {
+			outgoing = { ...outgoing };
+		}
+
+		if (type === "page-change" && outgoing) {
+			if (typeof outgoing.pageId === "number") {
+				outgoing.pageId = statePageToProtocol(outgoing.pageId);
+			}
+			if (typeof outgoing.prevPageId === "number") {
+				outgoing.prevPageId = statePageToProtocol(outgoing.prevPageId);
+			}
+			if (typeof outgoing.nextPageId === "number") {
+				outgoing.nextPageId = statePageToProtocol(outgoing.nextPageId);
+			}
+		}
+
+		if (type === "mouseMove" && outgoing && typeof outgoing.pageId === "number") {
+			outgoing.pageId = statePageToProtocol(outgoing.pageId);
+		}
+
+		if ((type === "push-cmd" || type === "cmd-start" || type === "cmd-stop") && outgoing) {
+			if (outgoing.cmd && typeof outgoing.cmd === "object") {
+				outgoing.cmd = commandToProtocol(outgoing.cmd);
+			} else if (typeof outgoing.pageId === "number") {
+				outgoing = commandToProtocol(outgoing);
+			}
+		}
+
+		socket.value.send(JSON.stringify({ type, data: outgoing }));
 		return true;
 	};
 
@@ -146,10 +190,11 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				socket.value.close();
 			}
 
-			const wsUrl = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:4646/ws";
+			const wsBaseUrl = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:4646/ws";
 			const tokenStr = Array.isArray(options.token.value)
 				? (options.token.value[0] ?? "")
 				: options.token.value || "";
+			const wsUrl = `${wsBaseUrl.replace(/\/ws$/, "")}/ws?pageId=${statePageToProtocol(options.currentPageId.value)}`;
 			socket.value = new WebSocket(wsUrl, [tokenStr]);
 
 			socket.value.onopen = () => {

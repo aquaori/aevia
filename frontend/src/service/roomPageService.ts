@@ -1,4 +1,4 @@
-// File role: page navigation and page-creation orchestration for the whiteboard room.
+// File role: page navigation orchestration driven by backend page-window responses.
 import type { Ref } from "vue";
 import {
 	recordPageSwitchEnd,
@@ -10,6 +10,7 @@ import { useRoomSessionEmitHook } from "./roomSessionContext";
 interface RoomPageServiceOptions {
 	currentPageId: Ref<number>;
 	totalPages: Ref<number>;
+	loadedPageIds: Ref<number[]>;
 	username: Ref<string>;
 	userId: Ref<string>;
 	closeOverview: () => void;
@@ -21,14 +22,16 @@ interface RoomPageServiceOptions {
 
 export const createRoomPageService = (options: RoomPageServiceOptions) => {
 	const emitHook = useRoomSessionEmitHook();
+
 	const resetViewportState = () => {
 		options.renderCanvas();
 		options.setTool(options.currentTool.value);
 	};
 
-	const goToPage = (index: number) => {
+	const applyRemotePageChange = (index: number, nextTotalPages = options.totalPages.value) => {
 		const fromPageId = options.currentPageId.value;
 		const switchStart = recordPageSwitchStart(fromPageId, index);
+		options.totalPages.value = Math.max(1, nextTotalPages);
 		options.currentPageId.value = index;
 		setRuntimeSnapshot({ currentPageId: index, totalPages: options.totalPages.value });
 		options.closeOverview();
@@ -37,49 +40,47 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		recordPageSwitchEnd(fromPageId, index, performance.now() - switchStart);
 	};
 
-	const prevPage = () => {
-		if (options.currentPageId.value <= 0) return;
-		const fromPageId = options.currentPageId.value;
-		const toPageId = fromPageId - 1;
-		const switchStart = recordPageSwitchStart(fromPageId, toPageId);
-		options.currentPageId.value -= 1;
-		setRuntimeSnapshot({
-			currentPageId: options.currentPageId.value,
-			totalPages: options.totalPages.value,
+	const requestPageChange = (index: number) => {
+		if (index < 0) return false;
+		return options.send("page-change", {
+			prevPageId: options.currentPageId.value,
+			nextPageId: index,
 		});
-		resetViewportState();
-		emitHook("page:changed", { pageId: options.currentPageId.value });
-		recordPageSwitchEnd(fromPageId, toPageId, performance.now() - switchStart);
 	};
 
-	const nextPage = () => {
-		const fromPageId = options.currentPageId.value;
-		if (options.currentPageId.value === options.totalPages.value - 1) {
-			options.totalPages.value += 1;
-			setRuntimeSnapshot({ totalPages: options.totalPages.value });
-			options.send("cmd-page-add", {
-				userId: options.userId.value,
-				username: options.username.value ?? "未知用户",
-				totalPages: options.totalPages.value,
-			});
+	const requestPageAdd = () => {
+		const nextTotalPages = options.totalPages.value + 1;
+		const created = options.send("cmd-page-add", {
+			userId: options.userId.value,
+			username: Array.isArray(options.username.value)
+				? (options.username.value[0] ?? "")
+				: options.username.value,
+			totalPages: nextTotalPages,
+		});
+		if (!created) {
+			return false;
 		}
 
-		options.currentPageId.value += 1;
-		const toPageId = options.currentPageId.value;
-		setRuntimeSnapshot({ currentPageId: toPageId, totalPages: options.totalPages.value });
-		const switchStart = recordPageSwitchStart(fromPageId, toPageId);
-		resetViewportState();
-		emitHook("page:changed", { pageId: options.currentPageId.value });
-		recordPageSwitchEnd(fromPageId, toPageId, performance.now() - switchStart);
+		options.totalPages.value = nextTotalPages;
+		setRuntimeSnapshot({ totalPages: nextTotalPages });
+		return requestPageChange(nextTotalPages - 1);
 	};
 
-	const addPageAndOpenLast = () => {
-		nextPage();
-		goToPage(options.totalPages.value - 1);
-	};
+	const goToPage = (index: number) => requestPageChange(index);
+
+	const prevPage = () =>
+		options.currentPageId.value <= 0 ? false : requestPageChange(options.currentPageId.value - 1);
+
+	const nextPage = () =>
+		options.currentPageId.value >= options.totalPages.value - 1
+			? requestPageAdd()
+			: requestPageChange(options.currentPageId.value + 1);
+
+	const addPageAndOpenLast = () => requestPageAdd();
 
 	return {
 		goToPage,
+		applyRemotePageChange,
 		prevPage,
 		nextPage,
 		addPageAndOpenLast,

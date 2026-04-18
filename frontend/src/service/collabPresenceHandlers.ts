@@ -1,6 +1,7 @@
 // File role: remote collaboration handlers for presence, cursors, selections, and member state.
 import { toast } from "vue-sonner";
 import type { CollabIncomingMessage, CollabMessageDispatcherOptions } from "./collabDispatcherTypes";
+import { protocolPageToState } from "./collabProtocol";
 
 export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOptions) => {
 	const cursorColors = [
@@ -57,7 +58,7 @@ export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOpt
 			userName,
 			x,
 			y,
-			pageId: pageId ?? 0,
+			pageId: protocolPageToState(pageId),
 			color: getCursorColor(userId),
 			lastUpdate: Date.now(),
 		});
