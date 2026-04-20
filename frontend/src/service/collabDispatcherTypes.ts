@@ -1,7 +1,38 @@
 // File role: shared types for collaboration transport and message dispatching.
 import type { Ref } from "vue";
 import type { EditorHookMap } from "../utils/editorTypes";
-import type { Command, Point, RemoteCursor } from "../utils/type";
+import type { Command, FlatPoint, Point, RemoteCursor } from "../utils/type";
+
+export interface InitRenderChunkCommandDictionaryEntry {
+	cmdIndex: number;
+	cmdId: string;
+	userId: string;
+	tool: "pen" | "eraser";
+	color: string;
+	size: number;
+	isDeleted: boolean;
+}
+
+export interface InitRenderChunkMetaPayload {
+	snapshotVersion?: number;
+	chunkIndex?: number;
+	isLastChunk?: boolean;
+	pointCount?: number;
+	commands?: InitRenderChunkCommandDictionaryEntry[];
+	lamportStart?: number;
+	lamportEnd?: number;
+}
+
+export interface PageChangeRenderChunkMetaPayload {
+	requestId?: number;
+	snapshotVersion?: number;
+	chunkIndex?: number;
+	isLastChunk?: boolean;
+	pointCount?: number;
+	commands?: InitRenderChunkCommandDictionaryEntry[];
+	lamportStart?: number;
+	lamportEnd?: number;
+}
 
 export interface CollabMessageDispatcherOptions {
 	userId: Ref<string>;
@@ -38,8 +69,24 @@ export interface CollabMessageDispatcherOptions {
 		source?: "local" | "remote"
 	) => void;
 	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
+	beginInitRenderStream?: (pageId?: number) => void;
+	appendInitRenderChunk?: (points: FlatPoint[]) => void;
+	appendInitRenderBinaryChunk?: (
+		meta: InitRenderChunkMetaPayload | PageChangeRenderChunkMetaPayload,
+		buffer: ArrayBuffer
+	) => void;
+	finishInitRenderStream?: () => void;
+	syncWorkerScene?: (commands: Command[], pageId: number, transformingCmdIds?: string[]) => void;
+	renderSceneFromFlatPoints?: (points: FlatPoint[], pageId: number) => void;
 	goToPage: (page: number) => void;
-	applyRemotePageChange: (page: number, totalPages?: number) => void;
+	applyRemotePageChange: (
+		page: number,
+		totalPages?: number,
+		config?: { deferRender?: boolean; requestId?: number }
+	) => void;
+	getActivePageChangeRequestId?: () => number | null;
+	getActivePageChangeTargetId?: () => number | null;
+	clearActivePageChangeRequest?: (requestId?: number) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
 	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;

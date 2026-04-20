@@ -4,6 +4,10 @@ import {
 	recordWorkerIncrementalRender,
 } from "../instrumentation/runtimeInstrumentation";
 import type { Command, FlatPoint, Point } from "../utils/type";
+import type {
+	InitRenderChunkCommandDictionaryEntry,
+	InitRenderChunkMetaPayload,
+} from "./collabDispatcherTypes";
 
 interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
@@ -31,6 +35,17 @@ interface DirtyRectRequest {
 
 interface MergeDirtyRectsRequest {
 	rects: DirtyRectRequest[];
+}
+
+interface InitRenderBinaryChunkRequest {
+	snapshotVersion: number;
+	chunkIndex: number;
+	isLastChunk: boolean;
+	pointCount: number;
+	commands: InitRenderChunkCommandDictionaryEntry[];
+	lamportStart?: number;
+	lamportEnd?: number;
+	buffer: ArrayBuffer;
 }
 
 interface ViewportPayload {
@@ -76,8 +91,17 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	let pendingMainCanvasRequest: MainCanvasRenderRequest | null = null;
 	let pendingMainCanvasRafId: number | null = null;
 	let pendingIncrementFlushRafId: number | null = null;
+	let streamedInitPoints: FlatPoint[] = [];
 	const pendingRequests = new Map<string, (points: FlatPoint[]) => void>();
 	const pendingIncrements = new Map<string, PendingIncrement>();
+
+	const cancelPendingMainCanvasRequest = () => {
+		pendingMainCanvasRequest = null;
+		if (pendingMainCanvasRafId !== null) {
+			cancelAnimationFrame(pendingMainCanvasRafId);
+			pendingMainCanvasRafId = null;
+		}
+	};
 
 	const flushMainCanvasRequest = () => {
 		pendingMainCanvasRafId = null;
@@ -203,6 +227,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 					source === "local" ? "local" : "remote",
 					Number(durationMs || 0)
 				);
+				return;
+			}
+
+			if (type === "init-render-points-decoded") {
+				const decodedPoints = (event.data.points as FlatPoint[]) ?? [];
+				if (decodedPoints.length === 0) return;
+				streamedInitPoints.push(...decodedPoints);
+				options.onMainPoints([...streamedInitPoints]);
 			}
 		};
 	};
@@ -258,6 +290,105 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const renderMainCanvas = (payload: MainCanvasRenderRequest) => {
 		if (!worker) return;
 		scheduleMainCanvasRequest(payload);
+	};
+
+	const beginInitRenderStream = (pageId?: number) => {
+		streamedInitPoints = [];
+		cancelPendingMainCanvasRequest();
+		if (!worker) return;
+		if (offscreenEnabled) {
+			worker.postMessage({
+				type: "begin-init-stream",
+				data: {
+					pageId,
+				},
+			});
+			return;
+		}
+		options.onMainPoints([]);
+	};
+
+	const appendInitRenderChunk = (points: FlatPoint[]) => {
+		if (points.length === 0) return;
+		if (!worker) return;
+
+		if (offscreenEnabled) {
+			worker.postMessage({
+				type: "append-init-points",
+				data: {
+					points,
+				},
+			});
+			return;
+		}
+
+		streamedInitPoints.push(...points);
+		options.onMainPoints([...streamedInitPoints]);
+	};
+
+	const appendInitRenderBinaryChunk = (
+		meta: InitRenderChunkMetaPayload,
+		buffer: ArrayBuffer
+	) => {
+		if (!worker) return;
+
+		const request: InitRenderBinaryChunkRequest = {
+			snapshotVersion: Number(meta.snapshotVersion ?? 0),
+			chunkIndex: Number(meta.chunkIndex ?? 0),
+			isLastChunk: meta.isLastChunk === true,
+			pointCount: Number(meta.pointCount ?? 0),
+			commands: Array.isArray(meta.commands) ? meta.commands : [],
+			lamportStart:
+				typeof meta.lamportStart === "number" ? meta.lamportStart : undefined,
+			lamportEnd: typeof meta.lamportEnd === "number" ? meta.lamportEnd : undefined,
+			buffer,
+		};
+
+		worker.postMessage(
+			{
+				type: "append-init-binary-chunk",
+				data: request,
+			},
+			[buffer]
+		);
+	};
+
+	const finishInitRenderStream = () => {
+		if (!worker || !offscreenEnabled) return;
+		worker.postMessage({ type: "finish-init-stream" });
+	};
+
+	const syncWorkerScene = (
+		commands: Command[],
+		pageId: number,
+		transformingCmdIds: string[] = []
+	) => {
+		if (!worker || !offscreenEnabled) return;
+		worker.postMessage({
+			type: "sync-scene",
+			data: {
+				commands: commands.map(cloneCommand),
+				pageId,
+				transformingCmdIds: [...transformingCmdIds],
+			},
+		});
+	};
+
+	const renderSceneFromFlatPoints = (points: FlatPoint[], pageId: number) => {
+		cancelPendingMainCanvasRequest();
+		streamedInitPoints = points;
+		if (!worker) return;
+		if (!offscreenEnabled) {
+			options.onMainPoints(streamedInitPoints);
+			return;
+		}
+		worker.postMessage({
+			type: "render-flat-points-scene",
+			data: {
+				pageId,
+				points: streamedInitPoints,
+			},
+		});
 	};
 
 	const renderIncrementalCommand = (
@@ -329,11 +460,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const dispose = () => {
 		pendingRequests.clear();
 		pendingIncrements.clear();
-		pendingMainCanvasRequest = null;
-		if (pendingMainCanvasRafId !== null) {
-			cancelAnimationFrame(pendingMainCanvasRafId);
-			pendingMainCanvasRafId = null;
-		}
+		cancelPendingMainCanvasRequest();
 		if (pendingIncrementFlushRafId !== null) {
 			cancelAnimationFrame(pendingIncrementFlushRafId);
 			pendingIncrementFlushRafId = null;
@@ -354,6 +481,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		requestFlatPoints,
 		requestMergeDirtyRects,
 		renderMainCanvas,
+		beginInitRenderStream,
+		appendInitRenderChunk,
+		appendInitRenderBinaryChunk,
+		finishInitRenderStream,
+		syncWorkerScene,
+		renderSceneFromFlatPoints,
 		renderIncrementalCommand,
 		renderSinglePointCommand,
 		renderDirtyRect,

@@ -60,7 +60,7 @@
 	import RoomHeader from "../components/RoomHeader.vue";
 	import { fetchPageOverview, type PageOverviewItem } from "../service/pageOverviewService";
 	import type { SelectionState } from "../utils/editorTypes";
-	import type { Command, Point } from "../utils/type";
+	import type { Command, FlatPoint, Point } from "../utils/type";
 
 	// 路由钩子，获取URL中的token参数
 	const router = useRouter();
@@ -243,8 +243,9 @@
 
 	const workerBridge = createRenderWorkerBridge({
 		onMainPoints: (points) => {
-			commandStore.updateLastSortedPoints(points);
-			renderWithPoints(points);
+			const currentPagePoints = points.filter((point) => point.pageId === currentPageId.value);
+			commandStore.updateLastSortedPoints(currentPagePoints);
+			renderWithPoints(currentPagePoints);
 		},
 		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects as any),
 	});
@@ -294,9 +295,26 @@
 		requestSceneRefresh: refreshWorkerScene,
 		renderIncrementalCommand,
 		renderSinglePointCommand,
+		beginInitRenderStream: (pageId?: number) => workerBridge.beginInitRenderStream(pageId),
+		appendInitRenderChunk: (points: FlatPoint[]) => workerBridge.appendInitRenderChunk(points),
+		appendInitRenderBinaryChunk: (meta, buffer) =>
+			workerBridge.appendInitRenderBinaryChunk(meta, buffer),
+		finishInitRenderStream: () => workerBridge.finishInitRenderStream(),
+		syncWorkerScene: (
+			nextCommands: Command[],
+			pageId: number,
+			transformingCmdIds: string[] = []
+		) =>
+			workerBridge.syncWorkerScene(nextCommands, pageId, transformingCmdIds),
+		renderSceneFromFlatPoints: (points: FlatPoint[], pageId: number) =>
+			workerBridge.renderSceneFromFlatPoints(points, pageId),
 		goToPage,
-		applyRemotePageChange: (page, nextTotalPages) =>
-			roomPageService.applyRemotePageChange(page, nextTotalPages),
+		applyRemotePageChange: (page, nextTotalPages, config) =>
+			roomPageService.applyRemotePageChange(page, nextTotalPages, config),
+		getActivePageChangeRequestId: () => roomPageService.getActivePageChangeRequestId(),
+		getActivePageChangeTargetId: () => roomPageService.getActivePageChangeTargetId(),
+		clearActivePageChangeRequest: (requestId) =>
+			roomPageService.clearActivePageChangeRequest(requestId),
 		setTool: roomEditorController.setTool,
 		insertCommand,
 		replaceLoadedPageWindow,

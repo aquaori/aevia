@@ -28,6 +28,13 @@ export interface RuntimeInstrumentationAdapter {
 	): void;
 	recordInitReceived?(payloadBytes: number, commandCount: number): void;
 	recordInitParsed?(payloadBytes: number, commandCount: number, durationMs: number): void;
+	recordInitChunkParsed?(payloadBytes: number, durationMs: number): void;
+	recordInitChunkHandled?(
+		payloadBytes: number,
+		commandCount: number,
+		flatPointCount: number,
+		durationMs: number
+	): void;
 	recordCommandsHydrated?(commandCount: number, durationMs: number): void;
 	recordRenderStart?(reason: RenderReason, points?: number): number;
 	recordRenderEnd?(reason: RenderReason, points: number, durationMs: number): void;
@@ -88,6 +95,24 @@ export const recordInitReceived = (payloadBytes: number, commandCount: number) =
 
 export const recordInitParsed = (payloadBytes: number, commandCount: number, durationMs: number) => {
 	activeAdapter?.recordInitParsed?.(payloadBytes, commandCount, durationMs);
+};
+
+export const recordInitChunkParsed = (payloadBytes: number, durationMs: number) => {
+	activeAdapter?.recordInitChunkParsed?.(payloadBytes, durationMs);
+};
+
+export const recordInitChunkHandled = (
+	payloadBytes: number,
+	commandCount: number,
+	flatPointCount: number,
+	durationMs: number
+) => {
+	activeAdapter?.recordInitChunkHandled?.(
+		payloadBytes,
+		commandCount,
+		flatPointCount,
+		durationMs
+	);
 };
 
 export const recordCommandsHydrated = (commandCount: number, durationMs: number) => {

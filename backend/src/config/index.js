@@ -11,4 +11,9 @@ module.exports = {
         path.join(process.cwd(), "data", "whiteboard.sqlite"),
     INIT_PRELOAD_PAGE_COUNT: Number(process.env.INIT_PRELOAD_PAGE_COUNT || 2),
     PAGE_CACHE_RADIUS: Number(process.env.PAGE_CACHE_RADIUS || 1),
+    INIT_COMMAND_CHUNK_SIZE: Number(process.env.INIT_COMMAND_CHUNK_SIZE || 100),
+    INIT_FLAT_POINT_CHUNK_SIZE: Number(
+        process.env.INIT_FLAT_POINT_CHUNK_SIZE || 2000,
+    ),
+    PAGE_CHANGE_DEBOUNCE_MS: Number(process.env.PAGE_CHANGE_DEBOUNCE_MS || 80),
 };

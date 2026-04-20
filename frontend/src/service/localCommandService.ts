@@ -143,11 +143,9 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 			if (
 				command.userId === options.userId.value &&
 				command.pageId === options.currentPageId.value &&
-				!command.isDeleted
+				!command.isDeleted &&
+				command.type !== "clear"
 			) {
-				if (command.type === "clear") {
-					return { ok: false, error: "Clear commands cannot be undone" };
-				}
 
 				options.currentCommandIndex.value = index;
 				options.send("undo-cmd", { cmdId: command.id });

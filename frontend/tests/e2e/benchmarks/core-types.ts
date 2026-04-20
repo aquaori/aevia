@@ -126,6 +126,7 @@ export interface BenchmarkCliOptions {
 	shapes: DatasetShape[];
 	runs: number;
 	warmup: number;
+	caseTimeoutMs: number;
 	updateBaseline: boolean;
 	reportDir: string;
 	smoke: boolean;

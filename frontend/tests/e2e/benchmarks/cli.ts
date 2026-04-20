@@ -31,6 +31,7 @@ const parseCliOptions = (argv: string[]): BenchmarkCliOptions => {
 	);
 	const runs = Number(argMap.get("runs") || (smoke ? 1 : 5));
 	const warmup = Number(argMap.get("warmup") || (smoke ? 0 : 1));
+	const caseTimeoutMs = Number(argMap.get("case-timeout-ms") || (smoke ? 120000 : 300000));
 	const updateBaseline = argMap.get("update-baseline") === "true";
 	const reportDir =
 		argMap.get("report-dir") ||
@@ -43,6 +44,7 @@ const parseCliOptions = (argv: string[]): BenchmarkCliOptions => {
 		shapes,
 		runs,
 		warmup,
+		caseTimeoutMs,
 		updateBaseline,
 		reportDir,
 		smoke,

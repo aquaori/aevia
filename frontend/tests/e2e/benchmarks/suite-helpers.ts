@@ -50,6 +50,7 @@ const readBenchmarkRuntime = async (page: Page) =>
 		const commands = (window as any).__benchmarkCommands?.value || [];
 		return {
 			...runtime,
+			roomNavStartTs: (window as any).__benchmarkRoomNavStartTs ?? null,
 			commandCount: runtime.commandCount ?? commands.length,
 			lastCommandDigest:
 				runtime.lastCommandDigest ||

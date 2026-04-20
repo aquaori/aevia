@@ -92,6 +92,23 @@ const formatMetricKey = (key: string) =>
 		.replace(/\s+/g, " ")
 		.trim();
 
+const SMOKE_CASE_IDS = ["micro-render", "full-render", "latency", "incremental-render"];
+
+const withTimeout = async <T>(task: Promise<T>, timeoutMs: number, message: string): Promise<T> => {
+	let timer: NodeJS.Timeout | null = null;
+	const timeoutPromise = new Promise<T>((_, reject) => {
+		timer = setTimeout(() => {
+			reject(new Error(`${message} (>${timeoutMs}ms)`));
+		}, timeoutMs);
+	});
+
+	try {
+		return await Promise.race([task, timeoutPromise]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+};
+
 const buildCases = (options: BenchmarkCliOptions): BenchmarkCase[] => {
 	const cases: BenchmarkCase[] = [
 		{
@@ -268,13 +285,16 @@ const buildCases = (options: BenchmarkCliOptions): BenchmarkCase[] => {
 		},
 	];
 
-	if (options.smoke) {
-		return cases.filter((item) =>
-			["micro-render", "full-render", "latency", "incremental-render"].includes(item.id)
+	let selected = cases;
+	if (options.suites && options.suites.length > 0) {
+		selected = selected.filter(
+			(item) => options.suites!.includes(item.id) || options.suites!.includes(item.category)
 		);
 	}
-	if (!options.suites || options.suites.length === 0) return cases;
-	return cases.filter((item) => options.suites!.includes(item.id) || options.suites!.includes(item.category));
+	if (options.smoke && (!options.suites || options.suites.length === 0)) {
+		selected = selected.filter((item) => SMOKE_CASE_IDS.includes(item.id));
+	}
+	return selected;
 };
 
 const launchBrowser = async (runMode: BenchmarkRunMode, gpuEnabled: boolean): Promise<Browser> => {
@@ -328,15 +348,37 @@ const buildMarkdownReport = (results: BenchmarkCaseResult[], reportDir: string) 
 
 const executeCase = async (
 	benchmarkCase: BenchmarkCase,
-	context: BenchmarkContext
+	context: BenchmarkContext,
+	options: BenchmarkCliOptions
 ): Promise<BenchmarkCaseResult> => {
 	for (let run = 0; run < benchmarkCase.warmupRuns; run += 1) {
-		await benchmarkCase.collect(context);
+		await withTimeout(
+			benchmarkCase.collect(context),
+			options.caseTimeoutMs,
+			`warmup timeout: case=${benchmarkCase.id} run=${run + 1}`
+		);
 	}
 
 	const samples = [];
 	for (let run = 0; run < benchmarkCase.sampleRuns; run += 1) {
-		samples.push(await benchmarkCase.collect(context));
+		try {
+			const sample = await withTimeout(
+				benchmarkCase.collect(context),
+				options.caseTimeoutMs,
+				`sample timeout: case=${benchmarkCase.id} run=${run + 1}`
+			);
+			samples.push(sample);
+		} catch (error: any) {
+			samples.push({
+				status: "failed" as const,
+				durationMs: options.caseTimeoutMs,
+				metrics: {
+					scale: context.scale,
+					runIndex: run + 1,
+				},
+				error: error?.message || "sample execution failed",
+			});
+		}
 	}
 
 	const aggregate = aggregateSamples(samples);
@@ -392,10 +434,11 @@ const run = async () => {
 
 	for (const runMode of runModeMatrix(options.mode)) {
 		const environments = getEnvironmentMatrix(runMode);
+		const effectiveEnvironments = environments;
 		for (const gpuEnabled of [true, false]) {
 			const browser = await launchBrowser(runMode, gpuEnabled);
 			try {
-				for (const env of environments.filter((item) => item.gpuEnabled === gpuEnabled)) {
+				for (const env of effectiveEnvironments.filter((item) => item.gpuEnabled === gpuEnabled)) {
 					for (const benchmarkCase of benchmarkCases) {
 						const shapes = benchmarkCase.supportedShapes.filter((shape) =>
 							options.shapes.includes(shape)
@@ -422,7 +465,7 @@ const run = async () => {
 										SHAPE_LABELS[shape as DatasetShape]
 									} 规模=${scale ?? "不适用"}`
 								);
-								results.push(await executeCase(benchmarkCase, context));
+								results.push(await executeCase(benchmarkCase, context, options));
 							}
 						}
 					}

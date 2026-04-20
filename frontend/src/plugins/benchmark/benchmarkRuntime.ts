@@ -84,10 +84,18 @@ export interface BenchmarkRuntimeState {
 	lastInit:
 		| {
 				payloadBytes: number;
+				metaPayloadBytes: number;
+				chunkPayloadBytes: number;
 				commandCount: number;
 				receiveTs: number;
 				parseDurationMs: number;
+				chunkParseDurationMs: number;
+				chunkHandleDurationMs: number;
+				chunkCount: number;
+				chunkCommandCount: number;
+				chunkFlatPointCount: number;
 				hydrateDurationMs: number;
+				totalDurationMs: number;
 				visiblePaintTs?: number;
 				visiblePaintMs?: number;
 				canvasSignature?: string;
@@ -444,10 +452,18 @@ const recordInitReceived = (payloadBytes: number, commandCount: number) => {
 	pushEvent("init-received", { payloadBytes, commandCount });
 	runtime.lastInit = {
 		payloadBytes,
+		metaPayloadBytes: payloadBytes,
+		chunkPayloadBytes: 0,
 		commandCount,
 		receiveTs: performance.now(),
 		parseDurationMs: 0,
+		chunkParseDurationMs: 0,
+		chunkHandleDurationMs: 0,
+		chunkCount: 0,
+		chunkCommandCount: 0,
+		chunkFlatPointCount: 0,
 		hydrateDurationMs: 0,
+		totalDurationMs: 0,
 	};
 };
 
@@ -456,12 +472,60 @@ const recordInitParsed = (payloadBytes: number, commandCount: number, durationMs
 	if (!runtime) return;
 	pushEvent("init-parsed", { payloadBytes, commandCount, durationMs });
 	runtime.lastInit = {
-		payloadBytes,
+		payloadBytes: runtime.lastInit?.payloadBytes ?? payloadBytes,
+		metaPayloadBytes: runtime.lastInit?.metaPayloadBytes ?? payloadBytes,
+		chunkPayloadBytes: runtime.lastInit?.chunkPayloadBytes ?? 0,
 		commandCount,
 		receiveTs: runtime.lastInit?.receiveTs ?? performance.now(),
 		parseDurationMs: durationMs,
+		chunkParseDurationMs: runtime.lastInit?.chunkParseDurationMs ?? 0,
+		chunkHandleDurationMs: runtime.lastInit?.chunkHandleDurationMs ?? 0,
+		chunkCount: runtime.lastInit?.chunkCount ?? 0,
+		chunkCommandCount: runtime.lastInit?.chunkCommandCount ?? 0,
+		chunkFlatPointCount: runtime.lastInit?.chunkFlatPointCount ?? 0,
 		hydrateDurationMs: runtime.lastInit?.hydrateDurationMs ?? 0,
+		totalDurationMs: runtime.lastInit?.totalDurationMs ?? 0,
 	};
+};
+
+const recordInitChunkParsed = (payloadBytes: number, durationMs: number) => {
+	const runtime = ensureRuntime();
+	if (!runtime || !runtime.lastInit) return;
+	runtime.lastInit.chunkPayloadBytes += payloadBytes;
+	runtime.lastInit.payloadBytes += payloadBytes;
+	runtime.lastInit.chunkParseDurationMs += durationMs;
+	pushEvent("init-parsed", {
+		type: "chunk",
+		payloadBytes,
+		durationMs,
+		totalChunkPayloadBytes: runtime.lastInit.chunkPayloadBytes,
+		totalChunkParseDurationMs: runtime.lastInit.chunkParseDurationMs,
+	});
+};
+
+const recordInitChunkHandled = (
+	payloadBytes: number,
+	commandCount: number,
+	flatPointCount: number,
+	durationMs: number
+) => {
+	const runtime = ensureRuntime();
+	if (!runtime || !runtime.lastInit) return;
+	runtime.lastInit.chunkCount += 1;
+	runtime.lastInit.chunkCommandCount += commandCount;
+	runtime.lastInit.chunkFlatPointCount += flatPointCount;
+	runtime.lastInit.chunkHandleDurationMs += durationMs;
+	pushEvent("commands-hydrated", {
+		type: "chunk",
+		payloadBytes,
+		commandCount,
+		flatPointCount,
+		durationMs,
+		totalChunkCount: runtime.lastInit.chunkCount,
+		totalChunkCommandCount: runtime.lastInit.chunkCommandCount,
+		totalChunkFlatPointCount: runtime.lastInit.chunkFlatPointCount,
+		totalChunkHandleDurationMs: runtime.lastInit.chunkHandleDurationMs,
+	});
 };
 
 const recordCommandsHydrated = (commandCount: number, durationMs: number) => {
@@ -471,6 +535,7 @@ const recordCommandsHydrated = (commandCount: number, durationMs: number) => {
 	if (runtime.lastInit) {
 		runtime.lastInit.hydrateDurationMs = durationMs;
 		runtime.lastInit.commandCount = commandCount;
+		runtime.lastInit.totalDurationMs = Math.max(0, performance.now() - runtime.lastInit.receiveTs);
 		scheduleVisiblePaintMeasurement(`init:${commandCount}`, performance.now(), {
 			type: "init",
 			commandCount,
@@ -708,6 +773,8 @@ const benchmarkRuntimeInstrumentationAdapter: RuntimeInstrumentationAdapter = {
 	markRemoteCommandReceived,
 	recordInitReceived,
 	recordInitParsed,
+	recordInitChunkParsed,
+	recordInitChunkHandled,
 	recordCommandsHydrated,
 	recordRenderStart,
 	recordRenderEnd,
@@ -744,6 +811,8 @@ export {
 	markRemoteRenderEnd,
 	recordInitReceived,
 	recordInitParsed,
+	recordInitChunkParsed,
+	recordInitChunkHandled,
 	recordCommandsHydrated,
 	recordRenderStart,
 	recordRenderEnd,

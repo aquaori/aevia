@@ -9,7 +9,7 @@ export const useCommandStore = defineStore("command", () => {
 	const commandMap = new Map<string, Command>();
 	const pendingUpdates = ref<Map<string, Point[]>>(new Map());
 	const currentCommandIndex = ref(-1);
-	const lastSortedPoints = ref<FlatPoint[]>([]);
+	const lastSortedPoints = shallowRef<FlatPoint[]>([]);
 	const pendingRenderCallbacks = new Map<string, (points: FlatPoint[]) => void>();
 	const commands = computed<Command[]>(() => {
 		const merged = Array.from(pageCommands.value.values()).flat();
@@ -29,6 +29,28 @@ export const useCommandStore = defineStore("command", () => {
 			.forEach((command) => {
 			commandMap.set(command.id, command);
 		});
+	};
+
+	const foldBucketAfterClear = (bucket: Command[]) => {
+		if (bucket.length === 0) return bucket;
+		let lastClearIndex = -1;
+		for (let index = bucket.length - 1; index >= 0; index -= 1) {
+			if (bucket[index]?.type === "clear") {
+				lastClearIndex = index;
+				break;
+			}
+		}
+		return lastClearIndex >= 0 ? bucket.slice(lastClearIndex) : bucket;
+	};
+
+	const sortAndFoldBucket = (bucket: Command[]) => {
+		bucket.sort((left, right) => {
+			if (left.lamport !== right.lamport) {
+				return left.lamport - right.lamport;
+			}
+			return left.id.toLocaleLowerCase().localeCompare(right.id.toLocaleLowerCase());
+		});
+		return foldBucketAfterClear(bucket);
 	};
 
 	const ensurePageBucket = (pageId: number) => {
@@ -96,7 +118,7 @@ export const useCommandStore = defineStore("command", () => {
 	};
 
 	const updateLastSortedPoints = (points: FlatPoint[]) => {
-		lastSortedPoints.value = points;
+		lastSortedPoints.value = markRaw(points);
 	};
 
 	const setCurrentCommandIndex = (index: number) => {
@@ -120,13 +142,8 @@ export const useCommandStore = defineStore("command", () => {
 			nextBuckets.get(command.pageId)?.push(command);
 		});
 
-		nextBuckets.forEach((bucket) => {
-			bucket.sort((left, right) => {
-				if (left.lamport !== right.lamport) {
-					return left.lamport - right.lamport;
-				}
-				return left.id.toLocaleLowerCase().localeCompare(right.id.toLocaleLowerCase());
-			});
+		nextBuckets.forEach((bucket, pageId) => {
+			nextBuckets.set(pageId, sortAndFoldBucket(bucket));
 		});
 
 		pageCommands.value = nextBuckets;
@@ -161,13 +178,8 @@ export const useCommandStore = defineStore("command", () => {
 			nextBuckets.set(command.pageId, bucket);
 		});
 
-		nextBuckets.forEach((bucket) => {
-			bucket.sort((left, right) => {
-				if (left.lamport !== right.lamport) {
-					return left.lamport - right.lamport;
-				}
-				return left.id.toLocaleLowerCase().localeCompare(right.id.toLocaleLowerCase());
-			});
+		nextBuckets.forEach((bucket, pageId) => {
+			nextBuckets.set(pageId, sortAndFoldBucket(bucket));
 		});
 
 		pageCommands.value = nextBuckets;
@@ -187,7 +199,7 @@ export const useCommandStore = defineStore("command", () => {
 		}
 
 		const nextBuckets = new Map(pageCommands.value);
-		nextBuckets.set(clearCmd.pageId, bucket.filter((_, index) => index > clearCmdIndex));
+		nextBuckets.set(clearCmd.pageId, bucket.slice(clearCmdIndex));
 		pageCommands.value = nextBuckets;
 		rebuildCommandMap();
 

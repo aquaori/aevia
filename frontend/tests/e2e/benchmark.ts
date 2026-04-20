@@ -98,7 +98,7 @@ class WebSocketInjector {
 			this.ws.on("message", (data) => {
 				try {
 					const msg = JSON.parse(data.toString());
-					if (msg.type === "init") {
+					if (msg.type === "init-meta") {
 						this.isReady = true;
 						if (this.resolveInit) {
 							this.resolveInit();

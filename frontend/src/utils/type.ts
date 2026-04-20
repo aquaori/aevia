@@ -9,6 +9,7 @@ interface Point {
 // 展开后的点集
 interface FlatPoint extends Point {
 	cmdId: string;
+	pageId: number;
 	userId: string;
 	tool: "pen" | "eraser";
 	color: string;

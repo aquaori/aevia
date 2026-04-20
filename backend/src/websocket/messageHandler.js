@@ -1,6 +1,10 @@
 const WebSocket = require("ws");
 const config = require("../config");
 const roomService = require("../services/roomService");
+const {
+  buildRenderChunkDictionary,
+  encodeRenderChunkBinary,
+} = require("./renderChunkBinary");
 const Logger = require("../utils/logger");
 
 const normalizePageIds = (pageIds) =>
@@ -45,6 +49,145 @@ const broadcastToOthers = (roomId, excludeWs, messageObj, targetPageIds = null) 
     if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
       client.send(payload);
     }
+  });
+};
+
+const sendJson = (ws, messageObj) => {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify(messageObj));
+};
+
+const sendBinary = (ws, payload) => {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(payload, { binary: true });
+};
+
+const waitForNextTick = () => new Promise((resolve) => setImmediate(resolve));
+
+const sendPageChangeStream = async (ws, stream, requestId, generation) => {
+  if (!stream || ws.readyState !== WebSocket.OPEN) return;
+
+  const isCancelled = () =>
+    ws.readyState !== WebSocket.OPEN ||
+    !ws.pageChangeStreamState ||
+    ws.pageChangeStreamState.generation !== generation;
+
+  sendJson(ws, {
+    type: "page-change-meta",
+    data: {
+      requestId,
+      snapshotVersion: stream.snapshotVersion,
+      ...stream.meta,
+    },
+  });
+
+  sendJson(ws, {
+    type: "page-change-render-meta",
+    data: {
+      requestId,
+      snapshotVersion: stream.snapshotVersion,
+      pageId: stream.meta.pageId,
+      mode: stream.meta.mode,
+      totalChunks: stream.meta.chunkSummary.totalRenderChunks,
+      flatPointChunkSize: stream.meta.chunkSummary.flatPointChunkSize,
+      totalFlatPoints: stream.meta.chunkSummary.totalFlatPoints,
+    },
+  });
+
+  for (const chunk of stream.renderChunks) {
+    if (isCancelled()) return;
+
+    const flatPoints = chunk.flatPointChunk.items;
+    const { commandMap, commands } = buildRenderChunkDictionary(flatPoints);
+
+    sendJson(ws, {
+      type: "page-change-render-chunk-meta",
+      data: {
+        requestId,
+        snapshotVersion: stream.snapshotVersion,
+        chunkIndex: chunk.chunkIndex,
+        isLastChunk: chunk.isLastChunk,
+        pointCount: flatPoints.length,
+        commands,
+        lamportStart: chunk.flatPointChunk.lamportStart,
+        lamportEnd: chunk.flatPointChunk.lamportEnd,
+      },
+    });
+
+    sendBinary(
+      ws,
+      encodeRenderChunkBinary(
+        flatPoints,
+        commandMap,
+        stream.snapshotVersion,
+        chunk.chunkIndex,
+      ),
+    );
+
+    await waitForNextTick();
+  }
+
+  if (isCancelled()) return;
+
+  sendJson(ws, {
+    type: "page-change-render-done",
+    data: {
+      requestId,
+      snapshotVersion: stream.snapshotVersion,
+      totalChunks: stream.renderChunks.length,
+    },
+  });
+
+  sendJson(ws, {
+    type: "page-change-commands-meta",
+    data: {
+      requestId,
+      snapshotVersion: stream.snapshotVersion,
+      mode: stream.meta.mode,
+      loadedPageIds: stream.meta.loadedPageIds,
+      loadPageIds: stream.meta.loadPageIds,
+      unloadPageIds: stream.meta.unloadPageIds,
+      totalChunks: stream.meta.chunkSummary.totalCommandChunks,
+      commandChunkSize: stream.meta.chunkSummary.commandChunkSize,
+      totalCommands: stream.meta.chunkSummary.totalCommands,
+    },
+  });
+
+  for (const chunk of stream.commandChunks) {
+    if (isCancelled()) return;
+
+    sendJson(ws, {
+      type: "page-change-commands-chunk",
+      data: {
+        requestId,
+        snapshotVersion: stream.snapshotVersion,
+        chunkIndex: chunk.chunkIndex,
+        isLastChunk: chunk.isLastChunk,
+        commands: chunk.commandChunk.items,
+      },
+    });
+
+    await waitForNextTick();
+  }
+
+  if (isCancelled()) return;
+
+  sendJson(ws, {
+    type: "page-change-commands-done",
+    data: {
+      requestId,
+      snapshotVersion: stream.snapshotVersion,
+      totalChunks: stream.meta.chunkSummary.totalCommandChunks,
+    },
+  });
+
+  sendJson(ws, {
+    type: "page-change-complete",
+    data: {
+      requestId,
+      snapshotVersion: stream.snapshotVersion,
+      mode: stream.meta.mode,
+    },
   });
 };
 
@@ -111,7 +254,18 @@ const handlers = {
   },
 
   "cmd-batch-move": (ws, data) => {
-    broadcastToOthers(ws.roomId, ws, { type: "cmd-batch-move", data }, [ws.pageId]);
+    const targetPageIds = roomService.moveCommands(
+      ws.roomId,
+      data.cmdIds,
+      data.dx,
+      data.dy,
+    );
+    broadcastToOthers(
+      ws.roomId,
+      ws,
+      { type: "cmd-batch-move", data },
+      targetPageIds.length > 0 ? targetPageIds : [ws.pageId],
+    );
   },
 
   "cmd-batch-update": (ws, data) => {
@@ -160,25 +314,48 @@ const handlers = {
   "page-change": (ws, data) => {
     if (ws.readyState !== WebSocket.OPEN) return;
 
-    const hasDeltaCursor =
-      Number.isInteger(data?.prevPageId) && Number.isInteger(data?.nextPageId);
+    if (!ws.pageChangeStreamState) {
+      ws.pageChangeStreamState = {
+        generation: 0,
+        requestId: 0,
+        timer: null,
+      };
+    }
 
-    const pagePayload = hasDeltaCursor
-      ? roomService.getPageChangePayload(ws.roomId, data.prevPageId, data.nextPageId)
-      : roomService.getPageWindowPayload(ws.roomId, data.pageId);
+    const requestId = Number.isInteger(data?.requestId)
+      ? data.requestId
+      : ws.pageChangeStreamState.requestId + 1;
 
-    if (!pagePayload) return;
+    ws.pageChangeStreamState.requestId = requestId;
+    ws.pageChangeStreamState.generation += 1;
+    const generation = ws.pageChangeStreamState.generation;
 
-    ws.pageId = pagePayload.pageId;
-    ws.send(
-      JSON.stringify({
-        type: "page-change",
-        data: {
-          mode: hasDeltaCursor ? "delta" : "full",
-          ...pagePayload,
-        },
-      }),
-    );
+    if (ws.pageChangeStreamState.timer) {
+      clearTimeout(ws.pageChangeStreamState.timer);
+    }
+
+    ws.pageChangeStreamState.timer = setTimeout(() => {
+      if (
+        ws.readyState !== WebSocket.OPEN ||
+        !ws.pageChangeStreamState ||
+        ws.pageChangeStreamState.generation !== generation
+      ) {
+        return;
+      }
+
+      const stream = roomService.buildPageChangeStream(ws.roomId, {
+        prevPageId: data?.prevPageId,
+        nextPageId: data?.nextPageId,
+        pageId: data?.pageId,
+        clientLoadedPageIds: data?.clientLoadedPageIds,
+      });
+
+      if (!stream) return;
+
+      ws.pageId = stream.meta.pageId;
+      ws.pageChangeStreamState.timer = null;
+      void sendPageChangeStream(ws, stream, requestId, generation);
+    }, config.PAGE_CHANGE_DEBOUNCE_MS);
   },
 
   "get-member-list": (ws, data) => {

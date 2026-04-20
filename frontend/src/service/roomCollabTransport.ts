@@ -1,11 +1,19 @@
 // File role: websocket transport for room collaboration, reconnection, and raw message intake.
 import { ref, type Ref } from "vue";
 import { toast } from "vue-sonner";
-import type { Command, Point, RemoteCursor } from "../utils/type";
+import type { Command, FlatPoint, Point, RemoteCursor } from "../utils/type";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
-import { recordInitParsed, recordInitReceived } from "../instrumentation/runtimeInstrumentation";
+import {
+	recordInitChunkParsed,
+	recordInitParsed,
+	recordInitReceived,
+} from "../instrumentation/runtimeInstrumentation";
 import { useRoomSessionEmitHook } from "./roomSessionContext";
 import { commandToProtocol, statePageToProtocol } from "./collabProtocol";
+import type {
+	InitRenderChunkMetaPayload,
+	PageChangeRenderChunkMetaPayload,
+} from "./collabDispatcherTypes";
 
 interface RoomCollabTransportOptions {
 	token: Ref<string>;
@@ -44,8 +52,24 @@ interface RoomCollabTransportOptions {
 		source?: "local" | "remote"
 	) => void;
 	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
+	beginInitRenderStream?: (pageId?: number) => void;
+	appendInitRenderChunk?: (points: FlatPoint[]) => void;
+	appendInitRenderBinaryChunk?: (
+		meta: InitRenderChunkMetaPayload | PageChangeRenderChunkMetaPayload,
+		buffer: ArrayBuffer
+	) => void;
+	finishInitRenderStream?: () => void;
+	syncWorkerScene?: (commands: Command[], pageId: number, transformingCmdIds?: string[]) => void;
+	renderSceneFromFlatPoints?: (points: FlatPoint[], pageId: number) => void;
 	goToPage: (page: number) => void;
-	applyRemotePageChange: (page: number, totalPages?: number) => void;
+	applyRemotePageChange: (
+		page: number,
+		totalPages?: number,
+		config?: { deferRender?: boolean; requestId?: number }
+	) => void;
+	getActivePageChangeRequestId?: () => number | null;
+	getActivePageChangeTargetId?: () => number | null;
+	clearActivePageChangeRequest?: (requestId?: number) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
 	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;
@@ -67,6 +91,16 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	const MAX_RECONNECT = 5;
 	const RECONNECT_INTERVAL = 1000;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let pendingRenderBinaryChunk:
+		| {
+				kind: "init";
+				meta: InitRenderChunkMetaPayload;
+		  }
+		| {
+				kind: "page-change";
+				meta: PageChangeRenderChunkMetaPayload;
+		  }
+		| null = null;
 	const dispatcher = createCollabMessageDispatcher({
 		userId: options.userId,
 		roomId: options.roomId,
@@ -90,8 +124,17 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		requestSceneRefresh: options.requestSceneRefresh,
 		renderIncrementalCommand: options.renderIncrementalCommand,
 		renderSinglePointCommand: options.renderSinglePointCommand,
+		beginInitRenderStream: options.beginInitRenderStream,
+		appendInitRenderChunk: options.appendInitRenderChunk,
+		appendInitRenderBinaryChunk: options.appendInitRenderBinaryChunk,
+		finishInitRenderStream: options.finishInitRenderStream,
+		syncWorkerScene: options.syncWorkerScene,
+		renderSceneFromFlatPoints: options.renderSceneFromFlatPoints,
 		goToPage: options.goToPage,
 		applyRemotePageChange: options.applyRemotePageChange,
+		getActivePageChangeRequestId: options.getActivePageChangeRequestId,
+		getActivePageChangeTargetId: options.getActivePageChangeTargetId,
+		clearActivePageChangeRequest: options.clearActivePageChangeRequest,
 		setTool: options.setTool,
 		insertCommand: options.insertCommand,
 		replaceLoadedPageWindow: options.replaceLoadedPageWindow,
@@ -157,6 +200,11 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			if (typeof outgoing.nextPageId === "number") {
 				outgoing.nextPageId = statePageToProtocol(outgoing.nextPageId);
 			}
+			if (Array.isArray(outgoing.clientLoadedPageIds)) {
+				outgoing.clientLoadedPageIds = outgoing.clientLoadedPageIds.map((pageId: number) =>
+					statePageToProtocol(pageId)
+				);
+			}
 		}
 
 		if (type === "mouseMove" && outgoing && typeof outgoing.pageId === "number") {
@@ -196,6 +244,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				: options.token.value || "";
 			const wsUrl = `${wsBaseUrl.replace(/\/ws$/, "")}/ws?pageId=${statePageToProtocol(options.currentPageId.value)}`;
 			socket.value = new WebSocket(wsUrl, [tokenStr]);
+			socket.value.binaryType = "arraybuffer";
 
 			socket.value.onopen = () => {
 				emitHook("collab:connected", undefined);
@@ -203,20 +252,68 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 			socket.value.onmessage = (event) => {
 				try {
-					const parseStart = performance.now();
-					const payloadText = typeof event.data === "string" ? event.data : "";
-					const msg = JSON.parse(event.data);
-					if (msg.type === "init") {
-						const payloadBytes = new TextEncoder().encode(payloadText).length;
-						recordInitReceived(payloadBytes, msg.data?.commands?.length || 0);
-						recordInitParsed(
-							payloadBytes,
-							msg.data?.commands?.length || 0,
-							performance.now() - parseStart
+					if (typeof event.data === "string") {
+						const parseStart = performance.now();
+						const msg = JSON.parse(event.data);
+						if (msg.type === "init-meta") {
+						const commandCount = Number(
+							msg.data?.chunkSummary?.totalCommands ??
+								msg.data?.totalCommands ??
+								msg.data?.commandCount ??
+								msg.data?.commandsTotal ??
+								0
 						);
+							recordInitReceived(0, commandCount);
+							recordInitParsed(0, commandCount, performance.now() - parseStart);
+						} else if (
+							msg.type === "init-render-chunk-meta" ||
+							msg.type === "init-commands-chunk" ||
+							msg.type === "page-change-render-chunk-meta" ||
+							msg.type === "page-change-commands-chunk"
+						) {
+							recordInitChunkParsed(0, performance.now() - parseStart);
+						}
+
+						if (msg.type === "init-render-chunk-meta") {
+							pendingRenderBinaryChunk = {
+								kind: "init",
+								meta: (msg.data ?? {}) as InitRenderChunkMetaPayload,
+							};
+						} else if (msg.type === "page-change-render-chunk-meta") {
+							pendingRenderBinaryChunk = {
+								kind: "page-change",
+								meta: (msg.data ?? {}) as PageChangeRenderChunkMetaPayload,
+							};
+						}
+
+						emitHook("collab:message", { type: msg.type, payload: msg.data });
+						dispatcher.handleMessage(msg);
+						return;
 					}
-					emitHook("collab:message", { type: msg.type, payload: msg.data });
-					dispatcher.handleMessage(msg);
+
+					if (event.data instanceof ArrayBuffer) {
+						if (!pendingRenderBinaryChunk) {
+							console.error(
+								"[WebSocket Message Error]: Received render binary frame without pending meta."
+							);
+							return;
+						}
+
+						const pendingChunk = pendingRenderBinaryChunk;
+						pendingRenderBinaryChunk = null;
+						options.appendInitRenderBinaryChunk?.(pendingChunk.meta, event.data);
+						if (pendingChunk.kind === "init") {
+							dispatcher.handleInitRenderChunkBinary(pendingChunk.meta);
+							return;
+						}
+						dispatcher.handlePageChangeRenderChunkBinary(pendingChunk.meta);
+						return;
+					}
+
+					console.error(
+						"[WebSocket Message Error]: Unsupported WebSocket payload type.",
+						event.data
+					);
 				} catch (error) {
 					console.error(
 						"[WebSocket Message Error]: Failed to parse or process message.",
@@ -227,6 +324,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			};
 
 			socket.value.onclose = () => {
+				pendingRenderBinaryChunk = null;
 				if (isIntentionalClose.value) return;
 				if (!options.reconnectFailed.value) {
 					setTimeout(() => doReconnect(), 100);
