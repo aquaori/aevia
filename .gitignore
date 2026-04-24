@@ -15,3 +15,6 @@ packages/*/dist/
 
 .DS_Store
 Thumbs.db
+
+.codex/
+.vscode/
