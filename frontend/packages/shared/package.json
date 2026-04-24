@@ -1,0 +1,24 @@
+{
+  "name": "@collaborative-whiteboard/shared",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "require": "./cjs/index.cjs"
+    },
+    "./types/collab": {
+      "import": "./src/types/collab.ts"
+    },
+    "./protocol/collabProtocol": {
+      "import": "./src/protocol/collabProtocol.ts",
+      "require": "./cjs/protocol/collabProtocol.cjs"
+    }
+  },
+  "scripts": {
+    "build": "node -e \"console.log('Shared package is source-only for now.')\"",
+    "test": "node -e \"console.log('No shared tests configured yet.')\""
+  }
+}

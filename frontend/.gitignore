@@ -1,0 +1,17 @@
+node_modules/
+
+apps/*/node_modules/
+apps/*/dist/
+apps/*/.vite/
+apps/*/coverage/
+apps/*/playwright-report/
+apps/*/test-results/
+packages/*/node_modules/
+packages/*/dist/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+Thumbs.db
