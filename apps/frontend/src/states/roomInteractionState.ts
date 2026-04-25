@@ -20,15 +20,18 @@ export interface TransformAnimState {
 	initialBox: GroupBoxState | null;
 }
 
+export interface PointerHotState {
+	currentPathPoints: Point[];
+	pendingPoints: Point[];
+	lastSentPos: { x: number; y: number };
+}
+
 export const createRoomInteractionState = () => {
 	const cursorX = ref(0);
 	const cursorY = ref(0);
-	const mouseMoveCD = ref(false);
 	const isDrawing = ref(false);
 	const activePointerId = ref<number | null>(null);
 	const currentDrawingId = ref<string | null>(null);
-	const currentPathPoints = ref<Point[]>([]);
-	const pendingPoints = ref<Point[]>([]);
 	const selectedCommandIds = ref<Set<string>>(new Set());
 	const transformingCmdIds = ref<Set<string>>(new Set());
 	const transformAnim = ref<TransformAnimState | null>(null);
@@ -39,22 +42,23 @@ export const createRoomInteractionState = () => {
 	const dragStartPos = ref<{ x: number; y: number } | null>(null);
 	const interactionMode = ref<InteractionMode>("none");
 	const activeTransformHandle = ref<HandleType>(null);
-	const lastSentPos = ref({ x: 0, y: 0 });
 	const initialCmdsState = ref<Map<string, Point[]>>(new Map());
 	const initialGroupBox = ref<GroupBoxState | null>(null);
 	const lastX = ref(0);
 	const lastY = ref(0);
 	const lastWidth = ref(0);
+	const pointerHotState: PointerHotState = {
+		currentPathPoints: [],
+		pendingPoints: [],
+		lastSentPos: { x: 0, y: 0 },
+	};
 
 	return {
 		cursorX,
 		cursorY,
-		mouseMoveCD,
 		isDrawing,
 		activePointerId,
 		currentDrawingId,
-		currentPathPoints,
-		pendingPoints,
 		selectedCommandIds,
 		transformingCmdIds,
 		transformAnim,
@@ -63,12 +67,12 @@ export const createRoomInteractionState = () => {
 		dragStartPos,
 		interactionMode,
 		activeTransformHandle,
-		lastSentPos,
 		initialCmdsState,
 		initialGroupBox,
 		lastX,
 		lastY,
 		lastWidth,
+		pointerHotState,
 	};
 };
 

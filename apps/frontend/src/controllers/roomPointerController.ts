@@ -10,6 +10,7 @@ import {
 	recordIncrementalRenderStart,
 } from "../instrumentation/runtimeInstrumentation";
 import { getNextStrokeWidth, paintStrokeSample, resolveStrokeStyle } from "../service/strokeRasterizer";
+import type { PointerHotState } from "../states/roomInteractionState";
 
 type Tool = "pen" | "eraser" | "cursor";
 type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing";
@@ -34,7 +35,6 @@ interface RoomPointerControllerOptions {
 	currentDrawingId: Ref<string | null>;
 	cursorX: Ref<number>;
 	cursorY: Ref<number>;
-	mouseMoveCD: Ref<boolean>;
 	interactionMode: Ref<InteractionMode>;
 	activeTransformHandle: Ref<HandleType>;
 	dragStartPos: Ref<{ x: number; y: number } | null>;
@@ -50,9 +50,7 @@ interface RoomPointerControllerOptions {
 	lastXRef: Ref<number>;
 	lastYRef: Ref<number>;
 	lastWidthRef: Ref<number>;
-	lastSentPosRef: Ref<{ x: number; y: number }>;
-	currentPathPointsRef: Ref<Point[]>;
-	pendingPointsRef: Ref<Point[]>;
+	pointerHotState: PointerHotState;
 	interactionController: ReturnType<typeof import("../controllers/interactionController").createInteractionController>;
 	canvasRuntime: {
 		eraseDirtyRect: (rect: aabbBox, transformingCmdIds?: Set<string>) => void;
@@ -80,6 +78,227 @@ interface RoomPointerControllerOptions {
 }
 
 export const createRoomPointerController = (options: RoomPointerControllerOptions) => {
+	let frameRequestId: number | null = null;
+	let hasPendingCursorFrame = false;
+	let hasPendingPointerSync = false;
+	let latestCursorFrame = { x: 0, y: 0 };
+	let pendingStrokeSamples: Array<{ x: number; y: number; pressure: number; pointerType: string }> = [];
+
+	const scheduleFrameFlush = () => {
+		if (frameRequestId !== null) {
+			return;
+		}
+
+		frameRequestId = window.requestAnimationFrame(() => {
+			frameRequestId = null;
+			flushFrameWork();
+			if (
+				hasPendingCursorFrame ||
+				hasPendingPointerSync ||
+				pendingStrokeSamples.length > 0
+			) {
+				scheduleFrameFlush();
+			}
+		});
+	};
+
+	const cancelFrameFlush = () => {
+		if (frameRequestId !== null) {
+			window.cancelAnimationFrame(frameRequestId);
+			frameRequestId = null;
+		}
+	};
+
+	const queueCursorFrame = (x: number, y: number) => {
+		latestCursorFrame = { x, y };
+		hasPendingCursorFrame = true;
+		scheduleFrameFlush();
+	};
+
+	const flushCursorFrame = () => {
+		if (!hasPendingCursorFrame) return;
+		options.cursorX.value = latestCursorFrame.x;
+		options.cursorY.value = latestCursorFrame.y;
+		hasPendingCursorFrame = false;
+	};
+
+	const flushPointerSync = () => {
+		if (!hasPendingPointerSync) return;
+		options.pointerHotState.lastSentPos = options.interactionController.syncPointerPosition({
+			canvas: canvasRef.value,
+			cursorX: latestCursorFrame.x,
+			cursorY: latestCursorFrame.y,
+			userId: options.userId.value,
+			userName:
+				(Array.isArray(options.username.value)
+					? options.username.value[0]
+					: options.username.value) ?? options.userId.value.split("-")[0],
+			currentPageId: options.currentPageId.value,
+			interactionMode: options.interactionMode.value,
+			selectedCommandIds: options.selectedCommandIds.value,
+			dragStartPos: options.dragStartPos.value,
+			selectionRect: options.selectionRect.value,
+			lastSentPos: options.pointerHotState.lastSentPos,
+			send: options.send,
+		});
+		hasPendingPointerSync = false;
+	};
+
+	const flushStrokeSamples = () => {
+		if (
+			pendingStrokeSamples.length === 0 ||
+			!options.currentDrawingId.value ||
+			options.currentTool.value === "cursor" ||
+			!canvasRef.value
+		) {
+			return;
+		}
+
+		const samples = pendingStrokeSamples;
+		pendingStrokeSamples = [];
+
+		const dpr = window.devicePixelRatio || 1;
+		const width = canvasRef.value.width / dpr;
+		const height = canvasRef.value.height / dpr;
+		const localCmdId = options.currentDrawingId.value;
+		let nextX = options.lastXRef.value;
+		let nextY = options.lastYRef.value;
+		let nextWidth = options.lastWidthRef.value;
+		const normalizedPoints: Point[] = [];
+		let incrementalStartedAt = 0;
+
+		if (!options.isOffscreenMainCanvas?.() && ctx.value) {
+			incrementalStartedAt = recordIncrementalRenderStart(localCmdId, samples.length, "local");
+		}
+
+		for (const sample of samples) {
+			const dist = Math.hypot(sample.x - nextX, sample.y - nextY);
+			const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
+			const simulatedPressure =
+				sample.pointerType === "pen" ? sample.pressure : clamp(1 - dist / 100, 0.3, 1);
+			const usedPressure = sample.pointerType === "pen" ? sample.pressure : simulatedPressure;
+			const lamport = useLamportStore().getNextLamport();
+
+			if (!options.isOffscreenMainCanvas?.()) {
+				useLamportStore().pushToQueue({
+					x: sample.x,
+					y: sample.y,
+					p: usedPressure,
+					lamport,
+					lastX: nextX,
+					lastY: nextY,
+					lastWidth: nextWidth,
+					cmdId: localCmdId,
+					userId: options.userId.value,
+					tool: options.currentTool.value,
+					color: options.currentColor.value,
+					size: options.currentSize.value,
+					isDeleted: false,
+				});
+			}
+
+			const normalizedPoint = {
+				x: sample.x / width,
+				y: sample.y / height,
+				p: usedPressure,
+				lamport,
+			};
+			normalizedPoints.push(normalizedPoint);
+			options.pointerHotState.currentPathPoints.push(normalizedPoint);
+			options.pointerHotState.pendingPoints.push(normalizedPoint);
+
+			if (options.isOffscreenMainCanvas?.()) {
+				nextWidth =
+					options.currentTool.value === "eraser"
+						? options.currentSize.value
+						: getNextStrokeWidth({
+								tool: options.currentTool.value,
+								baseSize: options.currentSize.value,
+								pressure: usedPressure,
+								previousState: {
+									x: nextX,
+									y: nextY,
+									width: nextWidth,
+								},
+								x: sample.x,
+								y: sample.y,
+								logicalWidth: width,
+						  });
+			} else if (ctx.value) {
+				const paintResult = paintStrokeSample({
+					ctx: ctx.value,
+					sample: normalizedPoint,
+					previousState: {
+						x: nextX,
+						y: nextY,
+						width: nextWidth,
+					},
+					tool: options.currentTool.value,
+					color: options.currentColor.value,
+					baseSize: options.currentSize.value,
+					logicalWidth: width,
+					logicalHeight: height,
+				});
+				nextWidth = paintResult.width;
+			}
+
+			nextX = sample.x;
+			nextY = sample.y;
+		}
+
+		if (normalizedPoints.length === 0) return;
+
+		if (options.isOffscreenMainCanvas?.()) {
+			options.renderIncrementalCommand?.(
+				{
+					id: localCmdId,
+					type: "path",
+					tool: options.currentTool.value,
+					color: options.currentColor.value,
+					size: options.currentSize.value,
+					timestamp: Date.now(),
+					userId: options.userId.value,
+					roomId: Array.isArray(options.roomId.value)
+						? options.roomId.value[0] || ""
+						: options.roomId.value,
+					pageId: options.currentPageId.value,
+					isDeleted: false,
+					lamport: normalizedPoints[normalizedPoints.length - 1]?.lamport ?? useLamportStore().lamport,
+					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+				},
+				normalizedPoints
+			);
+		} else if (ctx.value) {
+			recordIncrementalRenderEnd(
+				localCmdId,
+				normalizedPoints.length,
+				"local",
+				performance.now() - incrementalStartedAt
+			);
+		}
+
+		options.lastXRef.value = nextX;
+		options.lastYRef.value = nextY;
+		options.lastWidthRef.value = nextWidth;
+
+		if (options.pointerHotState.pendingPoints.length > 0) {
+			options.pushCommand(
+				{
+					id: localCmdId,
+					points: options.pointerHotState.pendingPoints,
+				},
+				"update"
+			);
+			options.pointerHotState.pendingPoints = [];
+		}
+	};
+
+	const flushFrameWork = () => {
+		flushCursorFrame();
+		flushPointerSync();
+		flushStrokeSamples();
+	};
+
 	const finalizeDrop = () => {
 		options.transformingCmdIds.value.clear();
 		options.transformAnim.value = null;
@@ -145,7 +364,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				options.lastXRef.value = cursorAction.x;
 				options.lastYRef.value = cursorAction.y;
 				options.dragStartPos.value = cursorAction.normalizedPoint;
-				options.lastSentPosRef.value = cursorAction.normalizedPoint;
+				options.pointerHotState.lastSentPos = cursorAction.normalizedPoint;
 				options.selectedCommandIds.value = new Set(cursorAction.selectedIds);
 				options.initialCmdsState.value = cursorAction.initialCmdsState;
 				options.initialGroupBox.value = cursorAction.groupBox;
@@ -167,8 +386,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.activeMenu.value = null;
 
 		const { x, y, pressure } = options.interactionController.getCoordinates(canvasRef.value, e);
-		options.cursorX.value = x;
-		options.cursorY.value = y;
+		queueCursorFrame(x, y);
 		options.lastXRef.value = x;
 		options.lastYRef.value = y;
 
@@ -183,8 +401,8 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		const lamport = useLamportStore().getNextLamport();
 
 		const p0 = { x: x / width, y: y / height, p: initialPressure, lamport };
-		options.currentPathPointsRef.value = [p0];
-		options.pendingPointsRef.value = [];
+		options.pointerHotState.currentPathPoints = [p0];
+		options.pointerHotState.pendingPoints = [];
 
 		const id = uuidv4();
 		options.currentDrawingId.value = id;
@@ -212,7 +430,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			{
 				id,
 				type: "path",
-				points: options.currentPathPointsRef.value,
+				points: options.pointerHotState.currentPathPoints,
 				tool: options.currentTool.value,
 				color: options.currentColor.value,
 				size: options.currentSize.value,
@@ -252,33 +470,9 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 
 	const draw = (e: PointerEvent) => {
 		const { x, y, pressure } = options.interactionController.getCoordinates(canvasRef.value, e);
-		options.cursorX.value = x;
-		options.cursorY.value = y;
-
-		if (!options.mouseMoveCD.value) {
-			options.mouseMoveCD.value = true;
-			options.lastSentPosRef.value = options.interactionController.syncPointerPosition({
-				canvas: canvasRef.value,
-				cursorX: options.cursorX.value,
-				cursorY: options.cursorY.value,
-				userId: options.userId.value,
-				userName:
-					(Array.isArray(options.username.value)
-						? options.username.value[0]
-						: options.username.value) ?? options.userId.value.split("-")[0],
-				currentPageId: options.currentPageId.value,
-				interactionMode: options.interactionMode.value,
-				selectedCommandIds: options.selectedCommandIds.value,
-				dragStartPos: options.dragStartPos.value,
-				selectionRect: options.selectionRect.value,
-				lastSentPos: options.lastSentPosRef.value,
-				send: options.send,
-			});
-		} else {
-			setTimeout(() => {
-				options.mouseMoveCD.value = false;
-			}, 30);
-		}
+		queueCursorFrame(x, y);
+		hasPendingPointerSync = true;
+		scheduleFrameFlush();
 
 		if (!options.isDrawing.value) return;
 		if (e.pointerId !== options.activePointerId.value) return;
@@ -322,134 +516,27 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			return;
 		}
 
-		const dist = Math.hypot(x - options.lastXRef.value, y - options.lastYRef.value);
+		const lastQueuedSample = pendingStrokeSamples[pendingStrokeSamples.length - 1];
+		const prevX = lastQueuedSample?.x ?? options.lastXRef.value;
+		const prevY = lastQueuedSample?.y ?? options.lastYRef.value;
+		const dist = Math.hypot(x - prevX, y - prevY);
 		if (dist < 2) return;
 
-		const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
-		const simulatedPressure = e.pointerType === "pen" ? pressure : clamp(1 - dist / 100, 0.3, 1);
-		const usedPressure = e.pointerType === "pen" ? pressure : simulatedPressure;
-
-		const dpr = window.devicePixelRatio || 1;
-		const width = canvasRef.value!.width / dpr;
-		const height = canvasRef.value!.height / dpr;
-
-		const lamport = useLamportStore().getNextLamport();
-		if (!options.isOffscreenMainCanvas?.()) {
-			useLamportStore().pushToQueue({
-				x,
-				y,
-				p: usedPressure,
-				lamport,
-				lastX: options.lastXRef.value,
-				lastY: options.lastYRef.value,
-				lastWidth: options.lastWidthRef.value,
-				cmdId: options.currentDrawingId.value || "",
-				userId: options.userId.value,
-				tool: options.currentTool.value,
-				color: options.currentColor.value,
-				size: options.currentSize.value,
-				isDeleted: false,
-			});
-		}
-
-		const normalizedPoint = { x: x / width, y: y / height, p: usedPressure, lamport };
-		let nextState = {
+		pendingStrokeSamples.push({
 			x,
 			y,
-			width: options.lastWidthRef.value,
-		};
-		if (options.isOffscreenMainCanvas?.()) {
-			const nextWidth =
-				options.currentTool.value === "eraser"
-					? options.currentSize.value
-					: getNextStrokeWidth({
-							tool: options.currentTool.value,
-							baseSize: options.currentSize.value,
-							pressure: usedPressure,
-							previousState: {
-								x: options.lastXRef.value,
-								y: options.lastYRef.value,
-								width: options.lastWidthRef.value,
-							},
-							x,
-							y,
-							logicalWidth: width,
-					  });
-			options.renderIncrementalCommand?.(
-				{
-					id: options.currentDrawingId.value || "",
-					type: "path",
-					tool: options.currentTool.value,
-					color: options.currentColor.value,
-					size: options.currentSize.value,
-					timestamp: Date.now(),
-					userId: options.userId.value,
-					roomId: Array.isArray(options.roomId.value)
-						? options.roomId.value[0] || ""
-						: options.roomId.value,
-					pageId: options.currentPageId.value,
-					isDeleted: false,
-					lamport,
-					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-				},
-				[normalizedPoint]
-			);
-			nextState = {
-				x,
-				y,
-				width: nextWidth,
-			};
-		} else if (ctx.value) {
-			const incrementalStartedAt = recordIncrementalRenderStart(
-				options.currentDrawingId.value || undefined,
-				1,
-				"local"
-			);
-			nextState = paintStrokeSample({
-				ctx: ctx.value,
-				sample: normalizedPoint,
-				previousState: {
-					x: options.lastXRef.value,
-					y: options.lastYRef.value,
-					width: options.lastWidthRef.value,
-				},
-				tool: options.currentTool.value,
-				color: options.currentColor.value,
-				baseSize: options.currentSize.value,
-				logicalWidth: width,
-				logicalHeight: height,
-			});
-			recordIncrementalRenderEnd(
-				options.currentDrawingId.value || undefined,
-				1,
-				"local",
-				performance.now() - incrementalStartedAt
-			);
-		}
-
-		options.lastXRef.value = x;
-		options.lastYRef.value = y;
-		options.lastWidthRef.value = nextState.width;
-
-		const newPoint = normalizedPoint;
-		options.currentPathPointsRef.value.push(newPoint);
-		options.pendingPointsRef.value.push(newPoint);
-
-		if (options.pendingPointsRef.value.length >= 1) {
-			options.pushCommand(
-				{
-					id: options.currentDrawingId.value || undefined,
-					points: options.pendingPointsRef.value,
-				},
-				"update"
-			);
-			options.pendingPointsRef.value = [];
-		}
+			pressure,
+			pointerType: e.pointerType,
+		});
+		scheduleFrameFlush();
 	};
 
 	const stopDrawing = (e: PointerEvent) => {
 		if (!options.isDrawing.value) return;
 		if (e.pointerId !== options.activePointerId.value) return;
+
+		flushFrameWork();
+		cancelFrameFlush();
 
 		const cmdId = options.currentDrawingId.value;
 		const cmd = cmdId ? options.commandMap.get(cmdId) : undefined;
@@ -467,12 +554,12 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.pushCommand(
 			{
 				id: options.currentDrawingId.value || undefined,
-				points: options.pendingPointsRef.value || [],
+				points: options.pointerHotState.pendingPoints || [],
 				box: cmd?.box,
 			},
 			"stop"
 		);
-		options.pendingPointsRef.value = [];
+		options.pointerHotState.pendingPoints = [];
 
 		if (options.currentTool.value === "cursor") {
 			const cursorStopResult = options.interactionController.finishCursorInteraction({
@@ -523,12 +610,12 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		}
 
 		if (
-			options.currentPathPointsRef.value.length === 1 &&
+			options.pointerHotState.currentPathPoints.length === 1 &&
 			canvasRef.value &&
 			!options.isOffscreenMainCanvas?.()
 		) {
 			const dpr = window.devicePixelRatio || 1;
-			const p0 = options.currentPathPointsRef.value[0] || { x: 0, y: 0, p: 0.5, lamport: 0 };
+			const p0 = options.pointerHotState.currentPathPoints[0] || { x: 0, y: 0, p: 0.5, lamport: 0 };
 			const width = canvasRef.value.width / dpr;
 			const height = canvasRef.value.height / dpr;
 			if (options.isOffscreenMainCanvas?.()) {
@@ -573,18 +660,18 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			}
 		}
 
-		if (options.pendingPointsRef.value.length > 0) {
+		if (options.pointerHotState.pendingPoints.length > 0) {
 			options.pushCommand(
 				{
 					id: options.currentDrawingId.value || undefined,
-					points: options.pendingPointsRef.value,
+					points: options.pointerHotState.pendingPoints,
 				},
 				"update"
 			);
-			options.pendingPointsRef.value = [];
+			options.pointerHotState.pendingPoints = [];
 		}
 
-		options.currentPathPointsRef.value = [];
+		options.pointerHotState.currentPathPoints = [];
 		options.currentDrawingId.value = null;
 		options.isDrawing.value = false;
 		options.activePointerId.value = null;
@@ -598,5 +685,19 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		draw,
 		stopDrawing,
 		finalizeDrop,
+		cancelLocalDrawing: (cmdId?: string | null) => {
+			if (cmdId && options.currentDrawingId.value !== cmdId) {
+				return;
+			}
+			pendingStrokeSamples = [];
+			hasPendingPointerSync = false;
+			hasPendingCursorFrame = false;
+			cancelFrameFlush();
+			options.pointerHotState.currentPathPoints = [];
+			options.pointerHotState.pendingPoints = [];
+			options.currentDrawingId.value = null;
+			options.isDrawing.value = false;
+			options.activePointerId.value = null;
+		},
 	};
 };

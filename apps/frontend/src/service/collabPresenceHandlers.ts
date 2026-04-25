@@ -4,6 +4,20 @@ import type { CollabIncomingMessage, CollabMessageDispatcherOptions } from "./co
 import { protocolPageToState } from "@collaborative-whiteboard/shared";
 
 export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOptions) => {
+	let cursorFlushFrameId: number | null = null;
+	const pendingCursorUpdates = new Map<
+		string,
+		{
+			userId: string;
+			userName: string;
+			x: number;
+			y: number;
+			pageId: number;
+			color: string;
+			lastUpdate: number;
+		}
+	>();
+
 	const cursorColors = [
 		"#ef4444",
 		"#f97316",
@@ -26,6 +40,26 @@ export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOpt
 		}
 		const colorIndex = Math.abs(hash) % cursorColors.length;
 		return cursorColors[colorIndex] ?? cursorColors[0] ?? "#ef4444";
+	};
+
+	const flushPendingCursorUpdates = () => {
+		cursorFlushFrameId = null;
+		if (pendingCursorUpdates.size === 0) return;
+
+		pendingCursorUpdates.forEach((cursor, userId) => {
+			options.remoteCursors.value.set(userId, cursor);
+		});
+		pendingCursorUpdates.clear();
+	};
+
+	const scheduleCursorFlush = () => {
+		if (cursorFlushFrameId !== null) {
+			return;
+		}
+
+		cursorFlushFrameId = window.requestAnimationFrame(() => {
+			flushPendingCursorUpdates();
+		});
 	};
 
 	const handleOnlineCountChange = (msg: CollabIncomingMessage) => {
@@ -57,7 +91,7 @@ export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOpt
 			userName ||
 			options.memberList.value.find((member) => member[0] === userId)?.[1] ||
 			userId;
-		options.remoteCursors.value.set(userId, {
+		pendingCursorUpdates.set(userId, {
 			userId,
 			userName: resolvedUserName,
 			x,
@@ -66,6 +100,7 @@ export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOpt
 			color: getCursorColor(userId),
 			lastUpdate: Date.now(),
 		});
+		scheduleCursorFlush();
 	};
 
 	const handleMemberList = (msg: CollabIncomingMessage) => {
@@ -74,6 +109,7 @@ export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOpt
 
 	const handleMouseLeave = (msg: CollabIncomingMessage) => {
 		const { userId } = msg.data;
+		pendingCursorUpdates.delete(userId);
 		options.remoteCursors.value.delete(userId);
 		options.remoteSelectionRects.value.delete(userId);
 	};

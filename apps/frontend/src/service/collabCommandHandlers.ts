@@ -246,6 +246,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	const commandStore = useCommandStore();
 	let initStreamState: InitStreamState | null = null;
 	let pageChangeStreamState: PageChangeStreamState | null = null;
+	let remoteUpdateFlushFrameId: number | null = null;
+	const pendingRemoteCommandUpdates = new Map<string, Point[]>();
 
 	const getLoadedCommandsSnapshot = () =>
 		Array.from(commandStore.pageCommands.values()).flat() as Command[];
@@ -293,6 +295,50 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			logicalHeight: height,
 		});
 		ctx.value.restore();
+	};
+
+	const flushPendingRemoteCommandUpdates = (targetCmdId?: string) => {
+		const flushEntries =
+			typeof targetCmdId === "string"
+				? pendingRemoteCommandUpdates.has(targetCmdId)
+					? [[targetCmdId, pendingRemoteCommandUpdates.get(targetCmdId) ?? []] as const]
+					: []
+				: Array.from(pendingRemoteCommandUpdates.entries());
+
+		if (typeof targetCmdId === "string") {
+			pendingRemoteCommandUpdates.delete(targetCmdId);
+		} else {
+			pendingRemoteCommandUpdates.clear();
+			remoteUpdateFlushFrameId = null;
+		}
+
+		flushEntries.forEach(([cmdId, points]) => {
+			if (!points.length) return;
+
+			const localCmd = options.commandMap.get(cmdId);
+			if (localCmd) {
+				if (!localCmd.points) {
+					localCmd.points = markRaw([...points]);
+				} else {
+					localCmd.points.push(...points);
+				}
+				renderIncrement(localCmd, points);
+				return;
+			}
+
+			const existingPendingPoints = options.pendingUpdates.value.get(cmdId) ?? [];
+			options.pendingUpdates.value.set(cmdId, [...existingPendingPoints, ...points]);
+		});
+	};
+
+	const scheduleRemoteUpdateFlush = () => {
+		if (remoteUpdateFlushFrameId !== null) {
+			return;
+		}
+
+		remoteUpdateFlushFrameId = window.requestAnimationFrame(() => {
+			flushPendingRemoteCommandUpdates();
+		});
 	};
 
 	const normalizeFlatPoints = (points: unknown, fallbackPageId?: number): FlatPoint[] => {
@@ -1235,20 +1281,13 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			const cmdId = msg.data.cmdId;
 			const points = (msg.data.points ?? []) as Point[];
 			if (!points.length) return;
-
-			const localCmd = options.commandMap.get(cmdId);
-			if (localCmd) {
-				if (!localCmd.points) {
-					localCmd.points = markRaw([...points]);
-				} else {
-					localCmd.points.push(...points);
-				}
+			const existingPoints = pendingRemoteCommandUpdates.get(cmdId);
+			if (existingPoints) {
+				existingPoints.push(...points);
 			} else {
-				options.pendingUpdates.value.set(cmdId, points);
-				return;
+				pendingRemoteCommandUpdates.set(cmdId, [...points]);
 			}
-
-			renderIncrement(localCmd, points);
+			scheduleRemoteUpdateFlush();
 			return;
 		}
 
@@ -1258,6 +1297,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			}
 
 			const cmdId = msg.data.cmdId;
+			flushPendingRemoteCommandUpdates(cmdId);
 			delete lastWidths[cmdId];
 			const stopPoints = (msg.data.points ?? msg.data.cmd?.points ?? []) as Point[];
 			const localCmd = options.commandMap.get(cmdId);

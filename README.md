@@ -256,6 +256,7 @@ const newWidth = clamp(lastWidth * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
 - 补全了ws消息反馈逻辑
 - 新增delete-cmd消息类型
 - 部分高频热点消息类型改为了二进制传输
+- 优化了实时渲染算法，将增量数据与vue响应式解耦合
 
 ### 2026.04.24
 

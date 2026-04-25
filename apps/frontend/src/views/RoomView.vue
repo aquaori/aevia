@@ -117,12 +117,9 @@
 	const {
 		cursorX,
 		cursorY,
-		mouseMoveCD,
 		isDrawing,
 		activePointerId,
 		currentDrawingId,
-		currentPathPoints,
-		pendingPoints,
 		selectedCommandIds,
 		transformingCmdIds,
 		transformAnim,
@@ -131,12 +128,12 @@
 		dragStartPos,
 		interactionMode,
 		activeTransformHandle,
-		lastSentPos,
 		initialCmdsState,
 		initialGroupBox,
 		lastX,
 		lastY,
 		lastWidth,
+		pointerHotState,
 	} = createRoomInteractionState();
 
 	const interactionController = createInteractionController();
@@ -271,15 +268,7 @@
 	const goToPage = (index: number) => roomPageService.goToPage(index);
 	const requestCurrentPageResync = () => roomPageService.requestCurrentPageResync();
 	const cancelRejectedLocalCommand = (cmdId: string) => {
-		if (currentDrawingId.value !== cmdId) {
-			return;
-		}
-
-		currentDrawingId.value = null;
-		currentPathPoints.value = [];
-		pendingPoints.value = [];
-		isDrawing.value = false;
-		activePointerId.value = null;
+		roomPointerControllerRef.value?.cancelLocalDrawing(cmdId);
 	};
 
 
@@ -423,7 +412,6 @@
 		currentDrawingId,
 		cursorX,
 		cursorY,
-		mouseMoveCD,
 		interactionMode,
 		activeTransformHandle,
 		dragStartPos,
@@ -439,9 +427,7 @@
 		lastXRef: lastX,
 		lastYRef: lastY,
 		lastWidthRef: lastWidth,
-		lastSentPosRef: lastSentPos,
-		currentPathPointsRef: currentPathPoints,
-		pendingPointsRef: pendingPoints,
+		pointerHotState,
 		interactionController,
 		canvasRuntime,
 		renderIncrementalCommand: (cmd, points, source) => renderIncrementalCommand(cmd, points, source),
