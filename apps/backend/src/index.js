@@ -122,6 +122,11 @@ function sendBinary(ws, payload) {
 function sendInitStream(ws, room, initStream) {
     if (!initStream) return;
 
+    const memberList = [...room.clients].map((client) => [
+        client.userId,
+        client.userName,
+    ]);
+
     sendJson(ws, {
         type: "init-meta",
         data: {
@@ -131,6 +136,7 @@ function sendInitStream(ws, room, initStream) {
             roomId: ws.roomId,
             roomName: room.name,
             onlineCount: room.clients.size,
+            memberList,
             snapshotVersion: initStream.snapshotVersion,
             ...initStream.meta,
         },
@@ -258,7 +264,7 @@ wss.on("connection", (ws, req, decoded) => {
         }
     });
 
-    ws.on("message", (msg) => handleWsMessage(ws, msg));
+    ws.on("message", (msg, isBinary) => handleWsMessage(ws, msg, isBinary));
 
     ws.on("close", () => {
         offlineUsers.set(ws.userId, Date.now() + 60000);

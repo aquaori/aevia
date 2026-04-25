@@ -89,6 +89,7 @@ export interface CollabMessageDispatcherOptions {
 	clearActivePageChangeRequest?: (requestId?: number) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
+	removeCommand: (cmdId: string) => Command | null;
 	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;
 	applyLoadedPageDelta: (input: {
 		loadedPageIds: number[];
@@ -97,6 +98,8 @@ export interface CollabMessageDispatcherOptions {
 		commands: Command[];
 	}) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
+	requestCurrentPageResync?: () => boolean;
+	cancelRejectedLocalCommand?: (cmdId: string) => void;
 	onInitConnectionState: () => void;
 	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }

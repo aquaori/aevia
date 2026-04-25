@@ -113,6 +113,7 @@
 	const commandMap = commandStore.commandMap;
 	const insertCommand = commandStore.insertCommand;
 	const clearClearedCommands = commandStore.clearClearedCommands;
+	const removeCommand = commandStore.removeCommand;
 	const {
 		cursorX,
 		cursorY,
@@ -268,6 +269,18 @@
 	const stopDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.stopDrawing(e);
 
 	const goToPage = (index: number) => roomPageService.goToPage(index);
+	const requestCurrentPageResync = () => roomPageService.requestCurrentPageResync();
+	const cancelRejectedLocalCommand = (cmdId: string) => {
+		if (currentDrawingId.value !== cmdId) {
+			return;
+		}
+
+		currentDrawingId.value = null;
+		currentPathPoints.value = [];
+		pendingPoints.value = [];
+		isDrawing.value = false;
+		activePointerId.value = null;
+	};
 
 
 	const roomCollabTransport = createRoomCollabTransport({
@@ -317,9 +330,12 @@
 			roomPageService.clearActivePageChangeRequest(requestId),
 		setTool: roomEditorController.setTool,
 		insertCommand,
+		removeCommand,
 		replaceLoadedPageWindow,
 		applyLoadedPageDelta,
 		clearClearedCommands,
+		requestCurrentPageResync,
+		cancelRejectedLocalCommand,
 	});
 	const isReconnecting = roomCollabTransport.isReconnecting;
 	const reconnectCount = roomCollabTransport.reconnectCount;

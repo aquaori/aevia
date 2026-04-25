@@ -14,6 +14,12 @@ import type {
 	InitRenderChunkMetaPayload,
 	PageChangeRenderChunkMetaPayload,
 } from "./collabDispatcherTypes";
+import {
+	decodeRealtimeBinaryMessage,
+	encodeCmdUpdateBinary,
+	encodeMouseMoveBinary,
+	hasRealtimeBinaryMagic,
+} from "./realtimeBinary";
 
 interface RoomCollabTransportOptions {
 	token: Ref<string>;
@@ -72,6 +78,7 @@ interface RoomCollabTransportOptions {
 	clearActivePageChangeRequest?: (requestId?: number) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	insertCommand: (cmd: Command) => void;
+	removeCommand: (cmdId: string) => Command | null;
 	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;
 	applyLoadedPageDelta: (input: {
 		loadedPageIds: number[];
@@ -80,6 +87,8 @@ interface RoomCollabTransportOptions {
 		commands: Command[];
 	}) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
+	requestCurrentPageResync?: () => boolean;
+	cancelRejectedLocalCommand?: (cmdId: string) => void;
 }
 
 export const createRoomCollabTransport = (options: RoomCollabTransportOptions) => {
@@ -137,9 +146,12 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		clearActivePageChangeRequest: options.clearActivePageChangeRequest,
 		setTool: options.setTool,
 		insertCommand: options.insertCommand,
+		removeCommand: options.removeCommand,
 		replaceLoadedPageWindow: options.replaceLoadedPageWindow,
 		applyLoadedPageDelta: options.applyLoadedPageDelta,
 		clearClearedCommands: options.clearClearedCommands,
+		requestCurrentPageResync: options.requestCurrentPageResync,
+		cancelRejectedLocalCommand: options.cancelRejectedLocalCommand,
 		emitHook,
 		onInitConnectionState: () => {
 			if (isReconnecting.value) {
@@ -219,6 +231,27 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			}
 		}
 
+		if (type === "mouseMove" && outgoing) {
+			socket.value.send(
+				encodeMouseMoveBinary({
+					pageId: outgoing.pageId ?? 0,
+					x: outgoing.x ?? 0,
+					y: outgoing.y ?? 0,
+				})
+			);
+			return true;
+		}
+
+		if (type === "cmd-update" && outgoing) {
+			socket.value.send(
+				encodeCmdUpdateBinary({
+					cmdId: outgoing.cmdId ?? "",
+					points: Array.isArray(outgoing.points) ? outgoing.points : [],
+				})
+			);
+			return true;
+		}
+
 		socket.value.send(JSON.stringify({ type, data: outgoing }));
 		return true;
 	};
@@ -292,6 +325,13 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 					}
 
 					if (event.data instanceof ArrayBuffer) {
+						if (hasRealtimeBinaryMagic(event.data)) {
+							const msg = decodeRealtimeBinaryMessage(event.data);
+							emitHook("collab:message", { type: msg.type, payload: msg.data });
+							dispatcher.handleMessage(msg);
+							return;
+						}
+
 						if (!pendingRenderBinaryChunk) {
 							console.error(
 								"[WebSocket Message Error]: Received render binary frame without pending meta."

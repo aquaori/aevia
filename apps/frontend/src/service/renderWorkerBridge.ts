@@ -103,6 +103,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		}
 	};
 
+	const cancelPendingIncrementFlush = () => {
+		pendingIncrements.clear();
+		if (pendingIncrementFlushRafId !== null) {
+			cancelAnimationFrame(pendingIncrementFlushRafId);
+			pendingIncrementFlushRafId = null;
+		}
+	};
+
 	const flushMainCanvasRequest = () => {
 		pendingMainCanvasRafId = null;
 		if (!worker || !pendingMainCanvasRequest) return;
@@ -295,6 +303,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const beginInitRenderStream = (pageId?: number) => {
 		streamedInitPoints = [];
 		cancelPendingMainCanvasRequest();
+		cancelPendingIncrementFlush();
 		if (!worker) return;
 		if (offscreenEnabled) {
 			worker.postMessage({
@@ -364,6 +373,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		transformingCmdIds: string[] = []
 	) => {
 		if (!worker || !offscreenEnabled) return;
+		cancelPendingMainCanvasRequest();
+		cancelPendingIncrementFlush();
 		worker.postMessage({
 			type: "sync-scene",
 			data: {
@@ -376,6 +387,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const renderSceneFromFlatPoints = (points: FlatPoint[], pageId: number) => {
 		cancelPendingMainCanvasRequest();
+		cancelPendingIncrementFlush();
 		streamedInitPoints = points;
 		if (!worker) return;
 		if (!offscreenEnabled) {
@@ -459,12 +471,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const dispose = () => {
 		pendingRequests.clear();
-		pendingIncrements.clear();
 		cancelPendingMainCanvasRequest();
-		if (pendingIncrementFlushRafId !== null) {
-			cancelAnimationFrame(pendingIncrementFlushRafId);
-			pendingIncrementFlushRafId = null;
-		}
+		cancelPendingIncrementFlush();
 		worker?.postMessage({ type: "dispose" });
 		worker?.terminate();
 		worker = null;

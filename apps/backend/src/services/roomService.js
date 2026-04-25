@@ -67,6 +67,10 @@ class RoomService {
       DELETE FROM commands
       WHERE room_id = ? AND page_id = ?
     `);
+    this.deleteCommandStmt = this.db.prepare(`
+      DELETE FROM commands
+      WHERE room_id = ? AND cmd_id = ?
+    `);
     this.deleteAllCommandsStmt = this.db.prepare(`
       DELETE FROM commands
       WHERE room_id = ?
@@ -691,6 +695,10 @@ class RoomService {
     return row ? JSON.parse(row.payload) : null;
   }
 
+  hasCommand(roomId, cmdId) {
+    return Boolean(this.getCommandStmt.get(roomId, cmdId));
+  }
+
   getCommandPageId(roomId, cmdId) {
     const cmd = this.getCommand(roomId, cmdId);
     return cmd?.pageId ?? null;
@@ -729,6 +737,18 @@ class RoomService {
       this.deleteAllCommandsStmt.run(roomId);
       this.clearRoomFlatPoints(roomId);
     }
+    return true;
+  }
+
+  deleteCommand(roomId, cmdId) {
+    if (!this.hasRoom(roomId) || !cmdId) return false;
+
+    const result = this.deleteCommandStmt.run(roomId, cmdId);
+    if (result.changes <= 0) {
+      return false;
+    }
+
+    this.removeCommandFlatPoints(roomId, cmdId);
     return true;
   }
 

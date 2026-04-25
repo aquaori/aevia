@@ -53,9 +53,11 @@ interface InitStreamState {
 interface InitMetaPayload {
 	status?: string;
 	userId?: string;
+	userName?: string;
 	roomId?: string;
 	roomName?: string;
 	onlineCount?: number;
+	memberList?: unknown;
 	snapshotVersion?: number;
 	totalPage?: number;
 	pageId?: number;
@@ -199,6 +201,16 @@ interface PageChangeDonePayload {
 	snapshotVersion?: number;
 }
 
+interface OperationRejectedPayload {
+	opType?: string;
+	code?: string;
+	reason?: string;
+	cmdId?: string | null;
+	pageId?: number | null;
+	shouldRefresh?: boolean;
+	shouldResync?: boolean;
+}
+
 interface PageChangeStreamState {
 	requestId: number;
 	snapshotVersion: number;
@@ -237,6 +249,14 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 	const getLoadedCommandsSnapshot = () =>
 		Array.from(commandStore.pageCommands.values()).flat() as Command[];
+
+	const syncWorkerSnapshot = () => {
+		options.syncWorkerScene?.(
+			getLoadedCommandsSnapshot(),
+			options.currentPageId.value,
+			[]
+		);
+	};
 
 	const renderIncrement = (cmd: Command, points: Point[]) => {
 		if (options.renderIncrementalCommand) {
@@ -444,14 +464,26 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const currentPageId = protocolPageToState(meta.pageId);
 		const loadedPageIds = normalizeLoadedPageIds(meta.loadedPageIds);
 		const nextLoadedPageIds = loadedPageIds.length > 0 ? loadedPageIds : [currentPageId];
+		const nextMemberList = Array.isArray(meta.memberList)
+			? meta.memberList.filter(
+					(member): member is [string, string] =>
+						Array.isArray(member) &&
+						typeof member[0] === "string" &&
+						typeof member[1] === "string"
+			  )
+			: [];
 		const totalPages = Number(meta.totalPage ?? 1) || 1;
 		const lastLamport = Number(meta.maxLamport ?? meta.lastLamport ?? 0) || 0;
 		const snapshotVersion = Number(meta.snapshotVersion ?? 0) || 0;
 
 		options.userId.value = String(meta.userId ?? options.userId.value);
+		options.username.value = String(meta.userName ?? options.username.value);
 		options.roomId.value = String(meta.roomId ?? options.roomId.value);
 		options.roomName.value = String(meta.roomName ?? options.roomName.value);
 		options.onlineCount.value = Number(meta.onlineCount ?? options.onlineCount.value);
+		if (nextMemberList.length > 0) {
+			options.memberList.value = nextMemberList;
+		}
 		options.totalPages.value = totalPages;
 		options.replaceLoadedPageWindow(nextLoadedPageIds, []);
 		options.loadedPageIds.value = nextLoadedPageIds;
@@ -1191,6 +1223,13 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		if (pushType === "update") {
 			if (msg.data.lamport) {
 				useLamportStore().syncLamport(msg.data.lamport);
+			} else if (Array.isArray(msg.data.points) && msg.data.points.length > 0) {
+				const maxLamport = Math.max(
+					...msg.data.points.map((point: Point) => Number(point?.lamport ?? 0))
+				);
+				if (Number.isFinite(maxLamport)) {
+					useLamportStore().syncLamport(maxLamport);
+				}
 			}
 
 			const cmdId = msg.data.cmdId;
@@ -1341,6 +1380,92 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 	};
 
+	const handleDeleteCommand = (msg: CollabIncomingMessage) => {
+		const cmdId = typeof msg.data?.cmdId === "string" ? msg.data.cmdId : "";
+		if (!cmdId) return;
+
+		const removed = options.removeCommand(cmdId);
+		if (!removed) return;
+		syncWorkerSnapshot();
+
+		if (options.requestSceneRefresh) {
+			options.requestSceneRefresh();
+			return;
+		}
+
+		const dirtyRect =
+			removed.pageId === options.currentPageId.value ? getCommandDirtyRect(removed) : null;
+		if (dirtyRect) {
+			options.requestDirtyRender?.(dirtyRect);
+			return;
+		}
+
+		options.renderCanvas();
+	};
+
+	const handleOperationRejected = (msg: CollabIncomingMessage) => {
+		const payload = (msg.data ?? {}) as OperationRejectedPayload;
+		const opType = String(payload.opType ?? "unknown");
+		const cmdId = typeof payload.cmdId === "string" ? payload.cmdId : null;
+		const cmd = cmdId ? options.commandMap.get(cmdId) ?? null : null;
+		const shouldResync =
+			payload.shouldResync === true ||
+			opType === "push-cmd" ||
+			opType === "cmd-update" ||
+			opType === "cmd-stop" ||
+			opType === "cmd-batch-move" ||
+			opType === "cmd-batch-update" ||
+			opType === "cmd-batch-stop";
+		const rejectionMessage = payload.reason || "Server rejected the latest operation.";
+
+		if (cmdId) {
+			options.pendingUpdates.value.delete(cmdId);
+			options.cancelRejectedLocalCommand?.(cmdId);
+		}
+
+		if (opType === "cmd-start" && cmdId) {
+			const removed = options.removeCommand(cmdId);
+			syncWorkerSnapshot();
+			const dirtyRect =
+				removed && removed.pageId === options.currentPageId.value
+					? getCommandDirtyRect(removed)
+					: null;
+
+			if (options.requestSceneRefresh) {
+				options.requestSceneRefresh();
+			} else if (dirtyRect && payload.shouldRefresh !== false) {
+				options.requestDirtyRender?.(dirtyRect);
+			} else {
+				options.renderCanvas();
+			}
+		} else if ((opType === "undo-cmd" || opType === "redo-cmd") && cmd) {
+			cmd.isDeleted = opType === "redo-cmd";
+			options.syncCommandState?.(cmd);
+			if (options.requestSceneRefresh) {
+				options.requestSceneRefresh();
+			} else {
+				const dirtyRect =
+					cmd.pageId === options.currentPageId.value ? getCommandDirtyRect(cmd) : null;
+				if (dirtyRect && payload.shouldRefresh !== false) {
+					options.requestDirtyRender?.(dirtyRect);
+				} else {
+					options.renderCanvas();
+				}
+			}
+			options.setTool(options.currentTool.value);
+		} else if (payload.shouldRefresh !== false) {
+			options.requestSceneRefresh?.();
+		}
+
+		if (shouldResync) {
+			options.requestCurrentPageResync?.();
+		}
+
+		toast.error(rejectionMessage, {
+			description: payload.code ? `${opType} | ${payload.code}` : opType,
+		});
+	};
+
 	return {
 		handleInitMeta,
 		handleInitRenderMeta,
@@ -1365,7 +1490,9 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		handlePushCommand,
 		handleBatchMove,
 		handleBatchUpdate,
+		handleDeleteCommand,
 		handlePageAdd,
 		handleUndoRedo,
+		handleOperationRejected,
 	};
 };

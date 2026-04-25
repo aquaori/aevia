@@ -102,6 +102,8 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 
 	const goToPage = (index: number) => requestPageChange(index);
 
+	const requestCurrentPageResync = () => requestPageChange(options.currentPageId.value);
+
 	const prevPage = () =>
 		options.currentPageId.value <= 0 ? false : requestPageChange(options.currentPageId.value - 1);
 
@@ -129,6 +131,7 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 
 	return {
 		goToPage,
+		requestCurrentPageResync,
 		applyRemotePageChange,
 		getActivePageChangeRequestId,
 		getActivePageChangeTargetId,

@@ -53,9 +53,13 @@ export const createCollabPresenceHandlers = (options: CollabMessageDispatcherOpt
 
 	const handleMouseMove = (msg: CollabIncomingMessage) => {
 		const { userId, userName, x, y, pageId } = msg.data;
+		const resolvedUserName =
+			userName ||
+			options.memberList.value.find((member) => member[0] === userId)?.[1] ||
+			userId;
 		options.remoteCursors.value.set(userId, {
 			userId,
-			userName,
+			userName: resolvedUserName,
 			x,
 			y,
 			pageId: protocolPageToState(pageId),

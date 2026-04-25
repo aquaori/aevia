@@ -113,6 +113,16 @@ export const createCollabMessageDispatcher = (options: CollabMessageDispatcherOp
 			return;
 		}
 
+		if (msg.type === "op-rejected") {
+			commandHandlers.handleOperationRejected(msg);
+			return;
+		}
+
+		if (msg.type === "delete-cmd") {
+			commandHandlers.handleDeleteCommand(msg);
+			return;
+		}
+
 		if (msg.type === "cmd-batch-move") {
 			commandHandlers.handleBatchMove(msg);
 			return;

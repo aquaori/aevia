@@ -206,6 +206,45 @@ export const useCommandStore = defineStore("command", () => {
 		return true;
 	};
 
+	const removeCommand = (cmdId: string) => {
+		if (!commandMap.has(cmdId)) {
+			return null;
+		}
+
+		let removedCommand: Command | null = null;
+		let mutated = false;
+		const nextBuckets = new Map<number, Command[]>();
+
+		pageCommands.value.forEach((bucket, pageId) => {
+			const nextBucket = bucket.filter((command) => {
+				const shouldKeep = command.id !== cmdId;
+				if (!shouldKeep && !removedCommand) {
+					removedCommand = command;
+				}
+				if (!shouldKeep) {
+					mutated = true;
+				}
+				return shouldKeep;
+			});
+
+			if (nextBucket.length > 0) {
+				nextBuckets.set(pageId, nextBucket);
+			} else if (loadedPageIds.value.includes(pageId)) {
+				nextBuckets.set(pageId, []);
+			}
+		});
+
+		if (!mutated) {
+			return null;
+		}
+
+		pageCommands.value = nextBuckets;
+		pendingUpdates.value.delete(cmdId);
+		rebuildCommandMap();
+		currentCommandIndex.value = commands.value.length - 1;
+		return removedCommand;
+	};
+
 	const pruneDeletedCommandsAfterPointer = (userId: string, pageId: number, pointer: number) => {
 		if (pointer < 0) {
 			return [];
@@ -258,6 +297,7 @@ export const useCommandStore = defineStore("command", () => {
 		replaceLoadedPageWindow,
 		applyLoadedPageDelta,
 		clearClearedCommands,
+		removeCommand,
 		pruneDeletedCommandsAfterPointer,
 	};
 });
