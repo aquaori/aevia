@@ -18,6 +18,15 @@
 	const router = useRouter();
 	const userStore = useUserStore();
 
+	const applySessionAuth = (payload: {
+		sessionToken?: string;
+		token?: string;
+		expiresAt?: number | null;
+	}) => {
+		userStore.setToken(payload.sessionToken || payload.token || "");
+		userStore.setSessionExpiresAt(payload.expiresAt ?? null);
+	};
+
 	// --- 状态 ---
 	type Mode = "join" | "create";
 	const mode = ref<Mode>("join");
@@ -195,8 +204,7 @@
 									)
 									.then((joinRes) => {
 										if (joinRes.data.code == 200) {
-											const token = joinRes.data.data.token;
-											userStore.setToken(token);
+											applySessionAuth(joinRes.data.data);
 											router.push({ name: "room" });
 										} else {
 											toast.error("加入房间失败，请重试");
@@ -294,8 +302,7 @@
 							)
 							.then((res) => {
 								if (res.data.code == 200) {
-									const token = res.data.data.token;
-									userStore.setToken(token);
+									applySessionAuth(res.data.data);
 									router.push({ name: "room" });
 								} else {
 									toast.error("房间不存在！");
@@ -324,8 +331,7 @@
 				})
 				.then((res) => {
 					if (res.data.code == 200) {
-						const token = res.data.data.token;
-						userStore.setToken(token);
+						applySessionAuth(res.data.data);
 						router.push({ name: "room" });
 					} else {
 						toast.error("房间不存在！");

@@ -4,11 +4,16 @@ import { ref } from 'vue'
 
 export const useUserStore = defineStore('user', () => {
     const token = ref('')
+    const sessionExpiresAt = ref<number | null>(null)
     const userId = ref('')
     const username = ref('')
 
     const setToken = (newToken: string) => {
         token.value = newToken
+    }
+
+    const setSessionExpiresAt = (value: number | null) => {
+        sessionExpiresAt.value = value
     }
 
     const setUserId = (newUserId: string) => {
@@ -23,6 +28,10 @@ export const useUserStore = defineStore('user', () => {
         token.value = ''
     }
 
+    const clearSessionExpiresAt = () => {
+        sessionExpiresAt.value = null
+    }
+
     const clearUserId = () => {
         userId.value = ''
     }
@@ -33,11 +42,26 @@ export const useUserStore = defineStore('user', () => {
 
     const clearAll = () => {
         clearToken()
+        clearSessionExpiresAt()
         clearUserId()
         clearUsername()
     }
 
-    return { token, userId, username, setToken, setUserId, setUsername, clearToken, clearUserId, clearUsername, clearAll };
+    return {
+        token,
+        sessionExpiresAt,
+        userId,
+        username,
+        setToken,
+        setSessionExpiresAt,
+        setUserId,
+        setUsername,
+        clearToken,
+        clearSessionExpiresAt,
+        clearUserId,
+        clearUsername,
+        clearAll
+    };
 }, {
     persist: {
         storage: sessionStorage

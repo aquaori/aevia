@@ -20,9 +20,11 @@ import {
 	encodeMouseMoveBinary,
 	hasRealtimeBinaryMagic,
 } from "./realtimeBinary";
+import { renewRoomSession as renewRoomSessionRequest } from "./sessionApi";
 
 interface RoomCollabTransportOptions {
 	token: Ref<string>;
+	sessionExpiresAt: Ref<number | null>;
 	userId: Ref<string>;
 	roomId: Ref<string>;
 	username: Ref<string>;
@@ -33,6 +35,7 @@ interface RoomCollabTransportOptions {
 	currentPageId: Ref<number>;
 	currentTool: Ref<"pen" | "eraser" | "cursor">;
 	reconnectFailed: Ref<boolean>;
+	reconnectFailureMessage: Ref<string>;
 	commands: Ref<Command[]>;
 	currentCommandIndex: Ref<number>;
 	pendingUpdates: Ref<Map<string, Point[]>>;
@@ -89,6 +92,8 @@ interface RoomCollabTransportOptions {
 	clearClearedCommands: (cmd: Command) => boolean;
 	requestCurrentPageResync?: () => boolean;
 	cancelRejectedLocalCommand?: (cmdId: string) => void;
+	persistSessionAuth?: (payload: { sessionToken: string; expiresAt: number | null }) => void;
+	onSessionExpired?: () => void;
 }
 
 export const createRoomCollabTransport = (options: RoomCollabTransportOptions) => {
@@ -98,8 +103,20 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	const isReconnecting = ref(false);
 	const reconnectCount = ref(0);
 	const MAX_RECONNECT = 5;
-	const RECONNECT_INTERVAL = 1000;
+	const RECONNECT_BASE_DELAY_MS = 1000;
+	const RECONNECT_BACKOFF_FACTOR = 2;
+	const RECONNECT_MAX_DELAY_MS = 15000;
+	const RECONNECT_JITTER_RATIO = 0.35;
+	const RECONNECT_JITTER_MAX_MS = 2500;
+	const SESSION_RENEWAL_LEEWAY_MS = 2 * 60 * 1000;
+	const SESSION_RENEW_RETRY_DELAY_MS = 30 * 1000;
+	const DEFAULT_RECONNECT_FAILURE_MESSAGE = "服务器连接超时，请返回首页或重新尝试连接。";
+	const SESSION_EXPIRED_FAILURE_MESSAGE = "会话已过期，请返回首页重新加入房间。";
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let sessionRenewTimer: ReturnType<typeof setTimeout> | null = null;
+	let sessionRenewInFlight: Promise<boolean> | null = null;
+	let isBrowserOffline = typeof navigator !== "undefined" ? !navigator.onLine : false;
+	let browserConnectivityListenersBound = false;
 	let pendingRenderBinaryChunk:
 		| {
 				kind: "init";
@@ -110,6 +127,230 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				meta: PageChangeRenderChunkMetaPayload;
 		  }
 		| null = null;
+
+	const clearReconnectTimer = () => {
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+	};
+
+	const clearSessionRenewTimer = () => {
+		if (sessionRenewTimer) {
+			clearTimeout(sessionRenewTimer);
+			sessionRenewTimer = null;
+		}
+	};
+
+	const hasActiveSocketConnection = () => {
+		return (
+			socket.value?.readyState === WebSocket.OPEN ||
+			socket.value?.readyState === WebSocket.CONNECTING
+		);
+	};
+
+	const updateReconnectFailureMessage = (message = DEFAULT_RECONNECT_FAILURE_MESSAGE) => {
+		options.reconnectFailureMessage.value = message;
+	};
+
+	const clearReconnectState = () => {
+		clearReconnectTimer();
+		isReconnecting.value = false;
+		reconnectCount.value = 0;
+		options.reconnectFailed.value = false;
+		updateReconnectFailureMessage();
+	};
+
+	const persistSessionAuth = (sessionToken: string, expiresAt: number | null) => {
+		options.token.value = sessionToken;
+		options.sessionExpiresAt.value = expiresAt;
+		options.persistSessionAuth?.({ sessionToken, expiresAt });
+	};
+
+	const markReconnectFailed = (message = DEFAULT_RECONNECT_FAILURE_MESSAGE) => {
+		clearReconnectTimer();
+		clearSessionRenewTimer();
+		isReconnecting.value = false;
+		options.reconnectFailed.value = true;
+		updateReconnectFailureMessage(message);
+	};
+
+	const getReconnectDelay = (attempt: number) => {
+		const exponent = Math.max(0, attempt - 1);
+		const backoffDelay = Math.min(
+			RECONNECT_BASE_DELAY_MS * RECONNECT_BACKOFF_FACTOR ** exponent,
+			RECONNECT_MAX_DELAY_MS
+		);
+		const jitterWindow = Math.min(
+			Math.round(backoffDelay * RECONNECT_JITTER_RATIO),
+			RECONNECT_JITTER_MAX_MS
+		);
+		const jitter = jitterWindow > 0 ? Math.floor(Math.random() * (jitterWindow + 1)) : 0;
+		return backoffDelay + jitter;
+	};
+
+	const handleBrowserOnline = () => {
+		isBrowserOffline = false;
+		if (isIntentionalClose.value || options.reconnectFailed.value || hasActiveSocketConnection()) {
+			return;
+		}
+		scheduleReconnect(0);
+	};
+
+	const handleBrowserOffline = () => {
+		isBrowserOffline = true;
+		if (isIntentionalClose.value || hasActiveSocketConnection()) return;
+		isReconnecting.value = true;
+		clearReconnectTimer();
+	};
+
+	const bindBrowserConnectivityListeners = () => {
+		if (browserConnectivityListenersBound || typeof window === "undefined") return;
+		window.addEventListener("online", handleBrowserOnline);
+		window.addEventListener("offline", handleBrowserOffline);
+		browserConnectivityListenersBound = true;
+	};
+
+	const unbindBrowserConnectivityListeners = () => {
+		if (!browserConnectivityListenersBound || typeof window === "undefined") return;
+		window.removeEventListener("online", handleBrowserOnline);
+		window.removeEventListener("offline", handleBrowserOffline);
+		browserConnectivityListenersBound = false;
+	};
+
+	const scheduleSessionRenewal = () => {
+		clearSessionRenewTimer();
+		const expiresAt = options.sessionExpiresAt.value;
+		if (!expiresAt || !options.token.value) return;
+
+		const renewDelay = Math.max(expiresAt - Date.now() - SESSION_RENEWAL_LEEWAY_MS, 0);
+		sessionRenewTimer = setTimeout(() => {
+			sessionRenewTimer = null;
+			void renewSessionToken("background");
+		}, renewDelay);
+	};
+
+	const handleSessionExpired = () => {
+		if (isIntentionalClose.value && !options.token.value) {
+			return;
+		}
+
+		isIntentionalClose.value = true;
+		clearReconnectTimer();
+		clearSessionRenewTimer();
+		isReconnecting.value = false;
+		reconnectCount.value = 0;
+		options.reconnectFailed.value = true;
+		updateReconnectFailureMessage(SESSION_EXPIRED_FAILURE_MESSAGE);
+		pendingRenderBinaryChunk = null;
+		if (socket.value) {
+			socket.value.onclose = null;
+			socket.value.onerror = null;
+			socket.value.onmessage = null;
+			socket.value.close();
+			socket.value = null;
+		}
+		persistSessionAuth("", null);
+		options.onSessionExpired?.();
+		toast.error("会话已过期，请重新加入房间。");
+	};
+
+	const renewSessionToken = async (reason: "background" | "connect" = "background") => {
+		if (!options.token.value) {
+			handleSessionExpired();
+			return false;
+		}
+		if (sessionRenewInFlight) {
+			return sessionRenewInFlight;
+		}
+
+		sessionRenewInFlight = (async () => {
+			try {
+				const payload = await renewRoomSessionRequest(options.token.value);
+				const nextToken = payload.sessionToken || payload.token || "";
+				if (!nextToken) {
+					handleSessionExpired();
+					return false;
+				}
+				persistSessionAuth(nextToken, payload.expiresAt ?? null);
+				scheduleSessionRenewal();
+				return true;
+			} catch (error: any) {
+				const status = error?.response?.status;
+				if (status === 401 || status === 403) {
+					handleSessionExpired();
+					return false;
+				}
+				if (reason === "background") {
+					clearSessionRenewTimer();
+					sessionRenewTimer = setTimeout(() => {
+						sessionRenewTimer = null;
+						void renewSessionToken("background");
+					}, SESSION_RENEW_RETRY_DELAY_MS);
+					return false;
+				}
+
+				const expiresAt = options.sessionExpiresAt.value;
+				if (expiresAt && expiresAt <= Date.now()) {
+					handleSessionExpired();
+					return false;
+				}
+				return true;
+			} finally {
+				sessionRenewInFlight = null;
+			}
+		})();
+
+		return sessionRenewInFlight;
+	};
+
+	const ensureSessionFreshForConnection = async () => {
+		const tokenValue = Array.isArray(options.token.value)
+			? (options.token.value[0] ?? "")
+			: options.token.value || "";
+		if (!tokenValue) {
+			handleSessionExpired();
+			return false;
+		}
+
+		const expiresAt = options.sessionExpiresAt.value;
+		if (!expiresAt) return true;
+		const remainingMs = expiresAt - Date.now();
+		if (remainingMs <= 0) {
+			handleSessionExpired();
+			return false;
+		}
+		if (remainingMs <= SESSION_RENEWAL_LEEWAY_MS) {
+			return renewSessionToken("connect");
+		}
+		return true;
+	};
+
+	const scheduleReconnect = (delayOverride?: number) => {
+		if (isIntentionalClose.value || options.reconnectFailed.value || hasActiveSocketConnection()) {
+			return;
+		}
+		if (reconnectCount.value >= MAX_RECONNECT) {
+			markReconnectFailed();
+			return;
+		}
+
+		isReconnecting.value = true;
+		if (isBrowserOffline) {
+			clearReconnectTimer();
+			return;
+		}
+		if (reconnectTimer) return;
+
+		const nextAttempt = reconnectCount.value + 1;
+		const reconnectDelay =
+			typeof delayOverride === "number" ? delayOverride : getReconnectDelay(nextAttempt);
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = null;
+			doReconnect();
+		}, reconnectDelay);
+	};
+
 	const dispatcher = createCollabMessageDispatcher({
 		userId: options.userId,
 		roomId: options.roomId,
@@ -156,35 +397,46 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		onInitConnectionState: () => {
 			if (isReconnecting.value) {
 				toast.success("重连成功");
-				isReconnecting.value = false;
-				reconnectCount.value = 0;
-				if (reconnectTimer) clearTimeout(reconnectTimer);
+				clearReconnectState();
 			} else {
+				clearReconnectState();
 				toast.success("已加入房间");
 			}
+			scheduleSessionRenewal();
 		},
 	});
 
 	const doReconnect = () => {
-		if (isIntentionalClose.value) return;
+		if (isIntentionalClose.value || options.reconnectFailed.value || hasActiveSocketConnection()) {
+			return;
+		}
 		if (reconnectCount.value >= MAX_RECONNECT) {
-			isReconnecting.value = false;
-			options.reconnectFailed.value = true;
+			markReconnectFailed();
+			return;
+		}
+		if (typeof navigator !== "undefined") {
+			isBrowserOffline = !navigator.onLine;
+		}
+		if (isBrowserOffline) {
+			isReconnecting.value = true;
 			return;
 		}
 
 		isReconnecting.value = true;
 		reconnectCount.value += 1;
-		if (reconnectTimer) clearTimeout(reconnectTimer);
-		reconnectTimer = setTimeout(() => {
-			connect();
-		}, RECONNECT_INTERVAL);
+		connect();
 	};
 
 	const retryReconnect = () => {
-		options.reconnectFailed.value = false;
-		isReconnecting.value = false;
-		reconnectCount.value = 0;
+		isIntentionalClose.value = false;
+		clearReconnectState();
+		if (typeof navigator !== "undefined") {
+			isBrowserOffline = !navigator.onLine;
+		}
+		if (isBrowserOffline) {
+			isReconnecting.value = true;
+			return;
+		}
 		doReconnect();
 	};
 
@@ -258,12 +510,28 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 	const disconnect = () => {
 		isIntentionalClose.value = true;
-		if (reconnectTimer) clearTimeout(reconnectTimer);
+		clearReconnectTimer();
+		clearSessionRenewTimer();
+		unbindBrowserConnectivityListeners();
 		socket.value?.close();
 	};
 
-	const connect = () => {
+	const connect = async () => {
 		try {
+			if (isIntentionalClose.value || hasActiveSocketConnection()) return;
+			bindBrowserConnectivityListeners();
+			if (typeof navigator !== "undefined") {
+				isBrowserOffline = !navigator.onLine;
+			}
+			if (isBrowserOffline) {
+				scheduleReconnect();
+				return;
+			}
+			const sessionReady = await ensureSessionFreshForConnection();
+			if (!sessionReady || isIntentionalClose.value) {
+				return;
+			}
+			clearReconnectTimer();
 			if (socket.value) {
 				socket.value.onclose = null;
 				socket.value.onerror = null;
@@ -281,6 +549,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 			socket.value.onopen = () => {
 				emitHook("collab:connected", undefined);
+				scheduleSessionRenewal();
 			};
 
 			socket.value.onmessage = (event) => {
@@ -365,10 +634,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 			socket.value.onclose = () => {
 				pendingRenderBinaryChunk = null;
+				clearSessionRenewTimer();
+				socket.value = null;
 				if (isIntentionalClose.value) return;
-				if (!options.reconnectFailed.value) {
-					setTimeout(() => doReconnect(), 100);
-				}
+				scheduleReconnect();
 			};
 
 			socket.value.onerror = (error) => {
@@ -376,10 +645,11 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			};
 		} catch (error) {
 			console.error("Failed to connect to WebSocket:", error);
-			toast.error("服务器连接失败");
-			if (!isIntentionalClose.value && !options.reconnectFailed.value) {
-				setTimeout(() => doReconnect(), 100);
+			if (!options.reconnectFailed.value) {
+				toast.error("服务器连接失败");
 			}
+			socket.value = null;
+			scheduleReconnect();
 		}
 	};
 

@@ -108,6 +108,19 @@ const isValidCommand = (cmd) =>
   (cmd.points === undefined || isValidPoints(cmd.points)) &&
   (cmd.box === undefined || cmd.box === null || isValidBox(cmd.box));
 
+const normalizeCommandIdentity = (ws, cmd) => ({
+  ...cmd,
+  userId: ws.userId,
+  roomId: ws.roomId,
+});
+
+const withTrustedIdentity = (ws, data = {}) => ({
+  ...data,
+  userId: ws.userId,
+  userName: ws.userName,
+  username: ws.userName,
+});
+
 const rejectOperation = (ws, opType, options = {}) => {
   const {
     code = "INVALID_OPERATION",
@@ -313,7 +326,8 @@ const handlers = {
       return;
     }
 
-    if (!data?.cmd || !isValidCommand(data.cmd)) {
+    const normalizedCommand = normalizeCommandIdentity(ws, data?.cmd);
+    if (!normalizedCommand || !isValidCommand(normalizedCommand)) {
       rejectOperation(ws, "push-cmd", {
         code: "INVALID_COMMAND_FORMAT",
         reason: "Command payload is malformed.",
@@ -322,26 +336,31 @@ const handlers = {
       return;
     }
 
-    const targetPageId = Number.isInteger(data.cmd.pageId) ? data.cmd.pageId : ws.pageId;
+    const targetPageId = Number.isInteger(normalizedCommand.pageId) ? normalizedCommand.pageId : ws.pageId;
     let accepted = false;
 
-    if (data.cmd.type === "clear") {
-      accepted = roomService.clearCommands(ws.roomId, data.cmd.pageId);
+    if (normalizedCommand.type === "clear") {
+      accepted = roomService.clearCommands(ws.roomId, normalizedCommand.pageId);
     } else {
-      accepted = roomService.saveCommand(ws.roomId, data.cmd);
+      accepted = roomService.saveCommand(ws.roomId, normalizedCommand);
     }
 
     if (!accepted) {
       rejectOperation(ws, "push-cmd", {
         code: "COMMAND_REJECTED",
         reason: "Server rejected the command.",
-        cmdId: data.cmd.id,
+        cmdId: normalizedCommand.id,
         pageId: targetPageId,
       });
       return;
     }
 
-    broadcastToOthers(ws.roomId, ws, { type: "push-cmd", pushType: "normal", data }, [targetPageId]);
+    broadcastToOthers(
+      ws.roomId,
+      ws,
+      { type: "push-cmd", pushType: "normal", data: { ...data, cmd: normalizedCommand } },
+      [targetPageId],
+    );
   },
 
   "cmd-start": (ws, data) => {
@@ -354,7 +373,8 @@ const handlers = {
       return;
     }
 
-    if (!data?.cmd || !isValidCommand(data.cmd)) {
+    const normalizedCommand = normalizeCommandIdentity(ws, data?.cmd);
+    if (!normalizedCommand || !isValidCommand(normalizedCommand)) {
       rejectOperation(ws, "cmd-start", {
         code: "INVALID_COMMAND_FORMAT",
         reason: "Command payload is malformed.",
@@ -363,27 +383,32 @@ const handlers = {
       return;
     }
 
-    if (roomService.hasCommand(ws.roomId, data.cmd.id)) {
+    if (roomService.hasCommand(ws.roomId, normalizedCommand.id)) {
       rejectOperation(ws, "cmd-start", {
         code: "DUPLICATE_COMMAND",
         reason: "Command already exists.",
-        cmdId: data.cmd.id,
-        pageId: data.cmd.pageId,
+        cmdId: normalizedCommand.id,
+        pageId: normalizedCommand.pageId,
       });
       return;
     }
 
-    if (roomService.saveCommand(ws.roomId, data.cmd)) {
-      const targetPageId = Number.isInteger(data.cmd?.pageId) ? data.cmd.pageId : ws.pageId;
-      broadcastToOthers(ws.roomId, ws, { type: "push-cmd", pushType: "start", data }, [targetPageId]);
+    if (roomService.saveCommand(ws.roomId, normalizedCommand)) {
+      const targetPageId = Number.isInteger(normalizedCommand?.pageId) ? normalizedCommand.pageId : ws.pageId;
+      broadcastToOthers(
+        ws.roomId,
+        ws,
+        { type: "push-cmd", pushType: "start", data: { ...data, cmd: normalizedCommand } },
+        [targetPageId],
+      );
       return;
     }
 
     rejectOperation(ws, "cmd-start", {
       code: "COMMAND_REJECTED",
       reason: "Server failed to persist the command.",
-      cmdId: data.cmd.id,
-      pageId: data.cmd.pageId,
+      cmdId: normalizedCommand.id,
+      pageId: normalizedCommand.pageId,
     });
   },
 
@@ -600,7 +625,7 @@ const handlers = {
   },
 
   mouseLeave: (ws, data) => {
-    broadcastToOthers(ws.roomId, ws, { type: "mouseLeave", data }, [ws.pageId]);
+    broadcastToOthers(ws.roomId, ws, { type: "mouseLeave", data: withTrustedIdentity(ws, data) }, [ws.pageId]);
   },
 
   "cmd-batch-move": (ws, data) => {
@@ -636,7 +661,7 @@ const handlers = {
     broadcastToOthers(
       ws.roomId,
       ws,
-      { type: "cmd-batch-move", data },
+      { type: "cmd-batch-move", data: withTrustedIdentity(ws, data) },
       targetPageIds.length > 0 ? targetPageIds : [ws.pageId],
     );
   },
@@ -676,7 +701,7 @@ const handlers = {
     broadcastToOthers(
       ws.roomId,
       ws,
-      { type: "cmd-batch-update", data },
+      { type: "cmd-batch-update", data: withTrustedIdentity(ws, data) },
       targetPageIds.length > 0 ? targetPageIds : [ws.pageId],
     );
   },
@@ -719,18 +744,26 @@ const handlers = {
     broadcastToOthers(
       ws.roomId,
       ws,
-      { type: "cmd-batch-stop", data },
+      { type: "cmd-batch-stop", data: withTrustedIdentity(ws, data) },
       targetPageIds.length > 0 ? targetPageIds : [ws.pageId],
     );
   },
 
   "box-selection": (ws, data) => {
-    broadcastToOthers(ws.roomId, ws, { type: "box-selection", data }, [ws.pageId]);
+    broadcastToOthers(ws.roomId, ws, { type: "box-selection", data: withTrustedIdentity(ws, data) }, [ws.pageId]);
   },
 
   "cmd-page-add": (ws, data) => {
     roomService.incrementTotalPage(ws.roomId);
-    broadcastToOthers(ws.roomId, ws, { type: "cmd-page-add", data });
+    const room = roomService.getRoom(ws.roomId);
+    const totalPages = room?.totalPage ?? data?.totalPages ?? 1;
+    broadcastToOthers(ws.roomId, ws, {
+      type: "cmd-page-add",
+      data: {
+        ...withTrustedIdentity(ws, data),
+        totalPages,
+      },
+    });
   },
 
   "page-change": (ws, data) => {

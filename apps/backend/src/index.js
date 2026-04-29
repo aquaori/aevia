@@ -5,7 +5,7 @@ const { protocolPageToState } = require("./shared/collabProtocol");
 const app = require("./app");
 const config = require("./config");
 const roomService = require("./services/roomService");
-const authService = require("./services/authService");
+const { authService } = require("./services/authService");
 const handleWsMessage = require("./websocket/messageHandler");
 const {
     buildRenderChunkDictionary,
@@ -14,17 +14,6 @@ const {
 const Logger = require("./utils/logger");
 
 const server = http.createServer(app);
-const SERVER_START_TIME = Date.now();
-const offlineUsers = new Map();
-
-setInterval(() => {
-    const now = Date.now();
-    for (const [userId, expiredAt] of offlineUsers.entries()) {
-        if (now > expiredAt) {
-            offlineUsers.delete(userId);
-        }
-    }
-}, 60000);
 
 const wss = new WebSocket.Server({
     noServer: true,
@@ -53,35 +42,14 @@ server.on("upgrade", (request, socket, head) => {
         return socket.destroy();
     }
 
-    const decoded = authService.verifyToken(token, { ignoreExpiration: true });
+    const decoded = authService.verifySessionToken(token);
     if (!decoded || !roomService.hasRoom(decoded.roomId)) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        return socket.destroy();
-    }
-
-    if (decoded.iat && decoded.iat * 1000 < SERVER_START_TIME) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         return socket.destroy();
     }
 
     const room = roomService.getRoom(decoded.roomId);
     if (decoded.roomCreatedAt !== room.createdAt) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        return socket.destroy();
-    }
-
-    const now = Date.now();
-    const isTokenExpired = decoded.exp && decoded.exp * 1000 < now;
-    const offlineExpire = offlineUsers.get(decoded.userId);
-
-    if (offlineExpire) {
-        if (now <= offlineExpire) {
-            offlineUsers.delete(decoded.userId);
-        } else {
-            socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-            return socket.destroy();
-        }
-    } else if (isTokenExpired) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         return socket.destroy();
     }
@@ -234,6 +202,7 @@ wss.on("connection", (ws, req, decoded) => {
         requestUrl.searchParams.get("pageId"),
     );
 
+    ws.isAlive = true;
     ws.roomId = decoded.roomId;
     ws.userId = decoded.userId;
     ws.userName = decoded.userName;
@@ -265,10 +234,11 @@ wss.on("connection", (ws, req, decoded) => {
     });
 
     ws.on("message", (msg, isBinary) => handleWsMessage(ws, msg, isBinary));
+    ws.on("pong", () => {
+        ws.isAlive = true;
+    });
 
     ws.on("close", () => {
-        offlineUsers.set(ws.userId, Date.now() + 60000);
-
         roomService.removeClient(ws.roomId, ws);
         Logger.wsEvent("left", ws.userName, ws.userId, ws.roomId);
 
@@ -288,6 +258,26 @@ wss.on("connection", (ws, req, decoded) => {
             }
         });
     });
+});
+
+const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((client) => {
+        if (client.readyState !== WebSocket.OPEN) {
+            return;
+        }
+
+        if (client.isAlive === false) {
+            client.terminate();
+            return;
+        }
+
+        client.isAlive = false;
+        client.ping();
+    });
+}, config.WS_HEARTBEAT_INTERVAL_MS);
+
+wss.on("close", () => {
+    clearInterval(heartbeatInterval);
 });
 
 const { setupProcessListeners } = require("./utils/errorHandler");

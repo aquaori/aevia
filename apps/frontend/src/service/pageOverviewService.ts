@@ -1,5 +1,5 @@
 // File role: fetch lightweight page overview metadata for the room overview panel.
-import axios from "axios";
+import { fetchProtectedPageOverview } from "./sessionApi";
 
 export interface PageOverviewItem {
 	pageId: number;
@@ -15,11 +15,10 @@ interface PageOverviewResponse {
 	};
 }
 
-export const fetchPageOverview = async (roomId: string) => {
-	const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:4646";
-	const response = await axios.get<PageOverviewResponse>(`${apiUrl}/get-page-review?roomId=${roomId}`);
+export const fetchPageOverview = async (roomId: string, sessionToken: string) => {
+	const response = (await fetchProtectedPageOverview(roomId, sessionToken)) as PageOverviewResponse["data"];
 	return {
-		totalPages: response.data?.data?.totalPage ?? 0,
-		pages: response.data?.data?.pages ?? [],
+		totalPages: response?.totalPage ?? 0,
+		pages: response?.pages ?? [],
 	};
 };

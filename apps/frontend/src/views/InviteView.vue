@@ -5,6 +5,7 @@
 	import axios from "axios";
 	import { toast } from "vue-sonner";
 	import { useUserStore } from "../store/userStore";
+	import { getInviteMeta } from "../service/sessionApi";
 
 	const userStore = useUserStore();
 	const route = useRoute();
@@ -16,20 +17,17 @@
 	const username = ref(localStorage.getItem("wb_username") || "");
 	const password = ref("");
 	const isLoading = ref(false);
+	const passwordRequired = ref(false);
 
 	const mockRoomName = ref(roomName); // Mock data
 
 	onMounted(() => {
 		userStore.clearAll();
-		axios
-			.get(
-				`${import.meta.env.VITE_API_URL || "http://127.0.0.1:4646"}/get-token-info?token=${token}`
-			)
-			.then((res) => {
-				if (res.data.code === 200) {
-					roomId.value = res.data.data.roomId;
-					roomName.value = res.data.data.roomName;
-				}
+		getInviteMeta(token)
+			.then((meta) => {
+				roomId.value = meta.roomId;
+				roomName.value = meta.roomName;
+				passwordRequired.value = meta.passwordRequired;
 			})
 			.catch((err) => {
 				console.error("Error fetching room info: ", err.response?.data?.msg || "未知错误");
@@ -51,7 +49,8 @@
 				.then((res) => {
 					if (res.data.code === 200) {
 						localStorage.setItem("wb_username", username.value);
-						userStore.setToken(res.data.data.token);
+						userStore.setToken(res.data.data.sessionToken || res.data.data.token);
+						userStore.setSessionExpiresAt(res.data.data.expiresAt ?? null);
 						router.push({ name: "room" });
 					} else {
 						console.error("Error joining room: ", res.data.msg || "未知错误");
@@ -141,7 +140,7 @@
 						<div class="group">
 							<label
 								class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1"
-								>房间密码 (如有)</label
+								>房间密码 {{ passwordRequired ? "(必填)" : "(如有)" }}</label
 							>
 							<div
 								class="relative transition-all duration-300 focus-within:transform focus-within:-translate-y-1"

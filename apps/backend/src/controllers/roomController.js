@@ -1,6 +1,13 @@
 const roomService = require("../services/roomService");
-const authService = require("../services/authService");
+const { authService } = require("../services/authService");
+const passwordService = require("../services/passwordService");
 const { v4: uuidv4 } = require("uuid");
+
+const buildSessionResponse = (token, expiresAt) => ({
+  sessionToken: token,
+  token,
+  expiresAt,
+});
 
 const createRoom = (req, res) => {
   const { roomId, roomName, password } = req.body;
@@ -8,7 +15,11 @@ const createRoom = (req, res) => {
     return res.status(400).json({ code: 400, msg: "Room ID is required" });
   }
   
-  const success = roomService.createRoom(roomId, roomName, password);
+  const success = roomService.createRoom(
+    roomId,
+    roomName,
+    passwordService.hashPassword(password || "")
+  );
   if (!success) {
     return res.status(400).json({ code: 400, msg: "Room already exists" });
   }
@@ -51,55 +62,101 @@ const joinRoom = (req, res) => {
     return res.status(400).json({ code: 400, msg: "Room does not exist" });
   }
 
-  if (room.password && room.password !== password) {
+  const normalizedPassword = password || "";
+  if (!passwordService.verifyPassword(normalizedPassword, room.password)) {
     return res.status(400).json({ code: 400, msg: "Password incorrect" });
   }
 
+  if (room.password && !passwordService.isHashedPassword(room.password)) {
+    roomService.updateRoomPassword(room.roomId, passwordService.hashPassword(normalizedPassword));
+  }
+
   const userId = uuidv4();
-  const token = authService.generateToken({
+  const token = authService.generateSessionToken({
     userId,
     userName,
     roomId: roomIdStr,
     roomName: room.name,
     roomCreatedAt: room.createdAt,
   });
+  const expiresAt = authService.getTokenExpiresAt(authService.verifySessionToken(token));
 
-  res.status(200).json({ code: 200, msg: "success", data: { token } });
+  res.status(200).json({ code: 200, msg: "success", data: buildSessionResponse(token, expiresAt) });
 };
 
 const generateShareToken = (req, res) => {
-    // 接收前端传来的房间id
     const roomId = req.query.roomId;
-    if (!roomId) {
-        return res
-            .status(400)
-            .json({ code: 400, msg: "Room ID is required", data: [] });
+    const authRoomId = req.auth?.roomId;
+    if (roomId && authRoomId && roomId !== authRoomId) {
+        return res.status(403).json({ code: 403, msg: "Token room does not match request room" });
     }
-    if (!roomService.hasRoom(roomId)) {
+
+    const resolvedRoomId = authRoomId || roomId;
+    if (!resolvedRoomId) {
+        return res.status(400).json({ code: 400, msg: "Room ID is required", data: [] });
+    }
+
+    const room = roomService.getRoom(resolvedRoomId);
+    if (!room) {
         return res.status(400).json({
             code: 400,
             msg: "Room does not exist",
             data: [],
         });
     }
-    // 生成一个长期有效的 token 凭证返回给客户端，用于 WebSocket 连接时使用
-    const roomName = roomService.getRoom(roomId).name;
-    const password = roomService.getRoom(roomId).password || "";
-    const token = authService.generateToken({ roomId, roomName }, "1d"); // 1 天有效期
+
+    const inviteToken = authService.generateInviteToken({
+        roomId: room.roomId,
+        roomName: room.name,
+        roomCreatedAt: room.createdAt,
+        passwordRequired: Boolean(room.password),
+    });
     res.status(200).json({
         code: 200,
         msg: "success",
         data: {
-            token,
-            password: password || "",
+            inviteToken,
+            token: inviteToken,
+            passwordRequired: Boolean(room.password),
         },
     });
 };
 
+const getInviteMeta = (req, res) => {
+  const token = req.query.token;
+  if (!token) {
+    return res.status(400).json({ code: 400, msg: "Token required" });
+  }
+
+  const decoded = authService.verifyInviteToken(token);
+  if (!decoded) {
+    return res.status(400).json({ code: 400, msg: "Invalid invite token" });
+  }
+
+  const room = roomService.getRoom(decoded.roomId);
+  if (!room || decoded.roomCreatedAt !== room.createdAt) {
+    return res.status(400).json({ code: 400, msg: "Room does not exist" });
+  }
+
+  res.status(200).json({
+    code: 200,
+    msg: "success",
+    data: {
+      roomId: room.roomId,
+      roomName: room.name,
+      roomCreatedAt: room.createdAt,
+      passwordRequired: Boolean(room.password),
+    },
+  });
+};
+
 const getPageReview = (req, res) => {
-  const roomId = req.query.roomId;
+  const roomId = req.query.roomId || req.auth?.roomId;
   if (!roomId) {
     return res.status(400).json({ code: 400, msg: "Room ID is required" });
+  }
+  if (req.auth?.roomId && roomId !== req.auth.roomId) {
+    return res.status(403).json({ code: 403, msg: "Token room does not match request room" });
   }
 
   const pageReview = roomService.getPageReview(roomId);
@@ -114,11 +171,35 @@ const getPageReview = (req, res) => {
   });
 };
 
+const renewRoomSession = (req, res) => {
+  const room = roomService.getRoom(req.auth.roomId);
+  if (!room || room.createdAt !== req.auth.roomCreatedAt) {
+    return res.status(401).json({ code: 401, msg: "Room session is no longer valid" });
+  }
+
+  const token = authService.generateSessionToken({
+    userId: req.auth.userId,
+    userName: req.auth.userName,
+    roomId: room.roomId,
+    roomName: room.name,
+    roomCreatedAt: room.createdAt,
+  });
+  const expiresAt = authService.getTokenExpiresAt(authService.verifySessionToken(token));
+
+  res.status(200).json({
+    code: 200,
+    msg: "success",
+    data: buildSessionResponse(token, expiresAt),
+  });
+};
+
 module.exports = {
   createRoom,
   checkRoom,
   generateRoomId,
   joinRoom,
   generateShareToken,
+  getInviteMeta,
   getPageReview,
+  renewRoomSession,
 };

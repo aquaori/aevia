@@ -72,11 +72,13 @@
 		roomId,
 		roomName,
 		token,
+		sessionExpiresAt,
 		showNamePrompt,
 		newName,
 		onlineCount,
 		reconnectFailed,
-	} = createRoomSessionState(userStore.token || "");
+		reconnectFailureMessage,
+	} = createRoomSessionState(userStore.token || "", userStore.sessionExpiresAt);
 
 	// --- UI状态控制 (UI State) ---
 	// 当前激活的菜单 (画笔设置 / 橡皮设置 / 颜色盘 / 更多菜单)
@@ -151,7 +153,7 @@
 		pageOverviewLoading.value = true;
 		pageOverviewError.value = "";
 		try {
-			const overview = await fetchPageOverview(normalizedRoomId);
+			const overview = await fetchPageOverview(normalizedRoomId, token.value);
 			if (requestId !== pageOverviewRequestId) return;
 			pageOverviewTotalPages.value = overview.totalPages;
 			pageOverviewPages.value = overview.pages;
@@ -284,6 +286,8 @@
 		currentPageId,
 		currentTool,
 		reconnectFailed,
+		sessionExpiresAt,
+		reconnectFailureMessage,
 		commands,
 		currentCommandIndex,
 		pendingUpdates,
@@ -325,6 +329,13 @@
 		clearClearedCommands,
 		requestCurrentPageResync,
 		cancelRejectedLocalCommand,
+		persistSessionAuth: ({ sessionToken, expiresAt }) => {
+			userStore.setToken(sessionToken);
+			userStore.setSessionExpiresAt(expiresAt);
+		},
+		onSessionExpired: () => {
+			userStore.clearAll();
+		},
 	});
 	const isReconnecting = roomCollabTransport.isReconnecting;
 	const reconnectCount = roomCollabTransport.reconnectCount;
@@ -384,6 +395,7 @@
 		roomId,
 		roomName,
 		username,
+		token,
 		newName,
 		showNamePrompt,
 		hasCopied,
@@ -553,6 +565,7 @@
 			:reconnect-count="reconnectCount"
 			:max-reconnect="roomCollabTransport.MAX_RECONNECT"
 			:reconnect-failed="reconnectFailed"
+			:reconnect-failure-message="reconnectFailureMessage"
 			:on-retry-reconnect="roomCollabTransport.retryReconnect"
 			:on-back-home="() => router.push('/')"
 		/>

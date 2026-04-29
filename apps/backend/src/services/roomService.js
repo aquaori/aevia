@@ -80,6 +80,11 @@ class RoomService {
       SET total_page = total_page + 1
       WHERE room_id = ?
     `);
+    this.updateRoomPasswordStmt = this.db.prepare(`
+      UPDATE rooms
+      SET password = ?
+      WHERE room_id = ?
+    `);
   }
 
   initialize() {
@@ -738,6 +743,12 @@ class RoomService {
       this.clearRoomFlatPoints(roomId);
     }
     return true;
+  }
+
+  updateRoomPassword(roomId, password) {
+    if (!this.hasRoom(roomId)) return false;
+    const result = this.updateRoomPasswordStmt.run(password, roomId);
+    return result.changes > 0;
   }
 
   deleteCommand(roomId, cmdId) {

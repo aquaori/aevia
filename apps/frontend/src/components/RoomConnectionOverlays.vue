@@ -6,6 +6,7 @@
 		reconnectCount: number;
 		maxReconnect: number;
 		reconnectFailed: boolean;
+		reconnectFailureMessage?: string;
 		onRetryReconnect: () => void;
 		onBackHome: () => void;
 	}>();
@@ -50,7 +51,7 @@
 			</div>
 			<h3 class="text-lg sm:text-xl font-bold text-slate-800 mb-1 sm:mb-2">连接失败</h3>
 			<p class="text-slate-500 mb-4 sm:mb-6 text-xs sm:text-base">
-				服务器连接超时，请返回首页或重新尝试连接。
+				{{ props.reconnectFailureMessage || "服务器连接超时，请返回首页或重新尝试连接。" }}
 			</p>
 			<div class="flex gap-2 sm:gap-3 w-full">
 				<button
