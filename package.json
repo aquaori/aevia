@@ -16,7 +16,7 @@
     "build:backend": "npm run build --workspace @collaborative-whiteboard/backend",
     "start": "npm run start --workspace @collaborative-whiteboard/backend",
     "preview": "npm run preview --workspace @collaborative-whiteboard/frontend",
-    "test": "npm run test --workspace @collaborative-whiteboard/frontend",
+    "test": "npm run test:e2e --workspace @collaborative-whiteboard/frontend",
     "test:frontend": "npm run test --workspace @collaborative-whiteboard/frontend"
   }
 }

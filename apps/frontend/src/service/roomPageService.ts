@@ -1,10 +1,5 @@
 // File role: page navigation orchestration driven by backend page-window responses.
 import type { Ref } from "vue";
-import {
-	recordPageSwitchEnd,
-	recordPageSwitchStart,
-	setRuntimeSnapshot,
-} from "../instrumentation/runtimeInstrumentation";
 import { useRoomSessionEmitHook } from "./roomSessionContext";
 
 interface RoomPageServiceOptions {
@@ -41,11 +36,8 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		nextTotalPages = options.totalPages.value,
 		config: ApplyRemotePageChangeOptions = {}
 	) => {
-		const fromPageId = options.currentPageId.value;
-		const switchStart = recordPageSwitchStart(fromPageId, index);
 		options.totalPages.value = Math.max(1, nextTotalPages);
 		options.currentPageId.value = index;
-		setRuntimeSnapshot({ currentPageId: index, totalPages: options.totalPages.value });
 		options.closeOverview();
 		if (!config.deferRender) {
 			resetViewportState();
@@ -58,7 +50,6 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		) {
 			activePageChangeRequestId = null;
 		}
-		recordPageSwitchEnd(fromPageId, index, performance.now() - switchStart);
 	};
 
 	const requestPageChange = (index: number) => {
@@ -69,7 +60,6 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		activePageChangeRequestId = requestId;
 		activePageChangeTargetId = index;
 		options.currentPageId.value = index;
-		setRuntimeSnapshot({ currentPageId: index, totalPages: options.totalPages.value });
 		options.closeOverview();
 		resetViewportState();
 		emitHook("page:changed", { pageId: index });
@@ -96,7 +86,6 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		}
 
 		options.totalPages.value = nextTotalPages;
-		setRuntimeSnapshot({ totalPages: nextTotalPages });
 		return requestPageChange(nextTotalPages - 1);
 	};
 

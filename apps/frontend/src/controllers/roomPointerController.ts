@@ -4,11 +4,6 @@ import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
 import { canvasRef, ctx } from "../service/canvas";
 import type { Command, Point, aabbBox } from "@collaborative-whiteboard/shared";
-import {
-	markLocalInputStart,
-	recordIncrementalRenderEnd,
-	recordIncrementalRenderStart,
-} from "../instrumentation/runtimeInstrumentation";
 import { getNextStrokeWidth, paintStrokeSample, resolveStrokeStyle } from "../service/strokeRasterizer";
 import type { PointerHotState } from "../states/roomInteractionState";
 
@@ -165,11 +160,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		let nextY = options.lastYRef.value;
 		let nextWidth = options.lastWidthRef.value;
 		const normalizedPoints: Point[] = [];
-		let incrementalStartedAt = 0;
-
-		if (!options.isOffscreenMainCanvas?.() && ctx.value) {
-			incrementalStartedAt = recordIncrementalRenderStart(localCmdId, samples.length, "local");
-		}
 
 		for (const sample of samples) {
 			const dist = Math.hypot(sample.x - nextX, sample.y - nextY);
@@ -267,13 +257,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
 				},
 				normalizedPoints
-			);
-		} else if (ctx.value) {
-			recordIncrementalRenderEnd(
-				localCmdId,
-				normalizedPoints.length,
-				"local",
-				performance.now() - incrementalStartedAt
 			);
 		}
 
@@ -406,7 +389,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 
 		const id = uuidv4();
 		options.currentDrawingId.value = id;
-		markLocalInputStart(id);
 
 		if (!options.isOffscreenMainCanvas?.()) {
 			useLamportStore().pushToQueue({
@@ -637,11 +619,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
 				});
 			} else if (ctx.value) {
-				const incrementalStartedAt = recordIncrementalRenderStart(
-					options.currentDrawingId.value || undefined,
-					1,
-					"local"
-				);
 				paintStrokeSample({
 					ctx: ctx.value,
 					sample: p0,
@@ -651,12 +628,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 					logicalWidth: width,
 					logicalHeight: height,
 				});
-				recordIncrementalRenderEnd(
-					options.currentDrawingId.value || undefined,
-					1,
-					"local",
-					performance.now() - incrementalStartedAt
-				);
 			}
 		}
 

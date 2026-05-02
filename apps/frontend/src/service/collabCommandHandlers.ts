@@ -12,15 +12,6 @@ import type {
 	InitRenderChunkMetaPayload,
 	PageChangeRenderChunkMetaPayload,
 } from "./collabDispatcherTypes";
-import {
-	recordInitChunkHandled,
-	markRemoteCommandReceived,
-	recordCommandsHydrated,
-	recordRedoEnd,
-	recordRedoStart,
-	recordUndoEnd,
-	recordUndoStart,
-} from "../instrumentation/runtimeInstrumentation";
 import { paintStrokeSample } from "./strokeRasterizer";
 import {
 	normalizeCommandFromProtocol,
@@ -458,19 +449,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			initStreamState.commandsNextChunkIndex += 1;
 			if (!chunk) continue;
 
-			const chunkHandleStart = performance.now();
-			const chunkPayloadBytes = Number((chunk as { __payloadBytes?: number }).__payloadBytes ?? 0);
 			const normalizedCommands = getChunkCommands(chunk);
 			if (normalizedCommands.length > 0) {
 				initStreamState.commandsBuffer.push(...normalizedCommands);
 			}
-
-			recordInitChunkHandled(
-				chunkPayloadBytes,
-				normalizedCommands.length,
-				0,
-				performance.now() - chunkHandleStart
-			);
 		}
 	};
 
@@ -484,7 +466,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		if (initStreamState.commandsReady) return;
 
-		const hydrateStart = performance.now();
 		options.replaceLoadedPageWindow(
 			initStreamState.loadedPageIds,
 			initStreamState.commandsBuffer
@@ -496,10 +477,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			[]
 		);
 		useLamportStore().syncLamport(initStreamState.lastLamport);
-		recordCommandsHydrated(
-			initStreamState.commandsBuffer.length,
-			performance.now() - hydrateStart
-		);
 		initStreamState.commandsReady = true;
 		tryCompleteInitStream();
 	};
@@ -1205,11 +1182,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	const handlePushCommand = (msg: CollabIncomingMessage) => {
 		const cmd = msg.data.cmd ? normalizeCommandFromProtocol(msg.data.cmd as Command) : undefined;
 		const pushType = msg.pushType as "normal" | "start" | "update" | "stop";
-		const remoteCommandId = cmd?.id || msg.data.cmdId;
-		const remotePointCount = (msg.data.points ?? cmd?.points ?? []).length || 0;
-		if (remoteCommandId) {
-			markRemoteCommandReceived(remoteCommandId, pushType, remotePointCount);
-		}
 
 		if ((pushType === "normal" || pushType === "start") && cmd) {
 			options.emitHook?.("command:before-apply", {
@@ -1388,15 +1360,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	const handleUndoRedo = (msg: CollabIncomingMessage) => {
-		const timer =
-			msg.type === "undo-cmd" ? recordUndoStart("remote") : recordRedoStart("remote");
 		const cmd = options.commandMap.get(msg.data.cmdId);
 		if (!cmd) {
-			if (msg.type === "undo-cmd") {
-				recordUndoEnd("remote", 0);
-			} else {
-				recordRedoEnd("remote", 0);
-			}
 			return;
 		}
 		cmd.isDeleted = msg.type === "undo-cmd";
@@ -1413,11 +1378,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			}
 		}
 		options.setTool(options.currentTool.value);
-		if (msg.type === "undo-cmd") {
-			recordUndoEnd("remote", performance.now() - timer);
-		} else {
-			recordRedoEnd("remote", performance.now() - timer);
-		}
 	};
 
 	const handleDeleteCommand = (msg: CollabIncomingMessage) => {

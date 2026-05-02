@@ -3,11 +3,6 @@ import { ref, type Ref } from "vue";
 import { toast } from "vue-sonner";
 import type { Command, FlatPoint, Point, RemoteCursor } from "@collaborative-whiteboard/shared";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
-import {
-	recordInitChunkParsed,
-	recordInitParsed,
-	recordInitReceived,
-} from "../instrumentation/runtimeInstrumentation";
 import { useRoomSessionEmitHook } from "./roomSessionContext";
 import { commandToProtocol, statePageToProtocol } from "@collaborative-whiteboard/shared";
 import type {
@@ -555,26 +550,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			socket.value.onmessage = (event) => {
 				try {
 					if (typeof event.data === "string") {
-						const parseStart = performance.now();
 						const msg = JSON.parse(event.data);
-						if (msg.type === "init-meta") {
-						const commandCount = Number(
-							msg.data?.chunkSummary?.totalCommands ??
-								msg.data?.totalCommands ??
-								msg.data?.commandCount ??
-								msg.data?.commandsTotal ??
-								0
-						);
-							recordInitReceived(0, commandCount);
-							recordInitParsed(0, commandCount, performance.now() - parseStart);
-						} else if (
-							msg.type === "init-render-chunk-meta" ||
-							msg.type === "init-commands-chunk" ||
-							msg.type === "page-change-render-chunk-meta" ||
-							msg.type === "page-change-commands-chunk"
-						) {
-							recordInitChunkParsed(0, performance.now() - parseStart);
-						}
 
 						if (msg.type === "init-render-chunk-meta") {
 							pendingRenderBinaryChunk = {

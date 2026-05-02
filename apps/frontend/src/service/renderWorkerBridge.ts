@@ -1,8 +1,4 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
-import {
-	recordWorkerFullRender,
-	recordWorkerIncrementalRender,
-} from "../instrumentation/runtimeInstrumentation";
 import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
 import type {
 	InitRenderChunkCommandDictionaryEntry,
@@ -204,7 +200,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		});
 
 		worker.onmessage = (event) => {
-			const { type, points, rects, requestId, durationMs, commandId, source } = event.data;
+			const { type, points, rects, requestId } = event.data;
 
 			if (type === "flat-points-result") {
 				if (requestId && pendingRequests.has(requestId)) {
@@ -220,21 +216,6 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 			if (type === "merge-dirty-rects-result") {
 				options.onDirtyRects?.(rects ?? []);
-				return;
-			}
-
-			if (type === "benchmark-render-full-complete") {
-				recordWorkerFullRender(Number(points || 0), Number(durationMs || 0));
-				return;
-			}
-
-			if (type === "benchmark-incremental-complete") {
-				recordWorkerIncrementalRender(
-					commandId,
-					Number(points || 0),
-					source === "local" ? "local" : "remote",
-					Number(durationMs || 0)
-				);
 				return;
 			}
 

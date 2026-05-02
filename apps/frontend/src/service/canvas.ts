@@ -4,13 +4,6 @@ import type { Command, FlatPoint, LastWidthInfo, Point } from "@collaborative-wh
 import { useLamportStore } from "../store/lamportStore";
 import { useCommandStore } from "../store/commandStore";
 import {
-	isRuntimeDebugLoggingEnabled,
-	recordIncrementalRenderEnd,
-	recordIncrementalRenderStart,
-	recordRenderEnd,
-	recordRenderStart,
-} from "../instrumentation/runtimeInstrumentation";
-import {
 	createStrokeStateFromSample,
 	getNextStrokeWidth,
 	paintStrokeSample,
@@ -51,7 +44,6 @@ const renderIncrementPoint = (
 		return;
 	}
 
-	const incrementalStart = recordIncrementalRenderStart(cmd.id, points.length, source);
 	const baseSize = cmd.size || 3;
 	const startIndex = (cmd.points?.length || 0) - points.length;
 
@@ -104,7 +96,6 @@ const renderIncrementPoint = (
 		}
 	});
 
-	recordIncrementalRenderEnd(cmd.id, points.length, source, performance.now() - incrementalStart);
 };
 
 const renderPointSequence = (
@@ -115,9 +106,7 @@ const renderPointSequence = (
 	isDirtyRender = false,
 	startTime?: number
 ) => {
-	const renderStart =
-		startTime ||
-		recordRenderStart(isDirtyRender ? "dirty" : "full", Array.isArray(points) ? points.length : 0);
+	const renderStart = startTime || performance.now();
 	if (!points) return;
 
 	const lastPointsMap: Record<string, StrokeState> = {};
@@ -136,14 +125,7 @@ const renderPointSequence = (
 		});
 	});
 
-	const renderEnd = performance.now();
-	recordRenderEnd(isDirtyRender ? "dirty" : "full", points.length, renderEnd - renderStart);
-	if (isRuntimeDebugLoggingEnabled()) {
-		const logPrefix = isDirtyRender ? "[dirty-redraw]" : "[full-render]";
-		console.log(
-			`${logPrefix} points=${points.length} duration=${(renderEnd - renderStart).toFixed(2)}ms`
-		);
-	}
+	void renderStart;
 };
 
 const pointIntersectsDirtyRect = (
@@ -441,7 +423,7 @@ const renderClippedPointSequence = (
 const renderWithPoints = (sortedPoints: FlatPoint[]) => {
 	if (!canvasRef.value || !ctx.value) return;
 
-	const renderStart = recordRenderStart("full", sortedPoints.length);
+	const renderStart = performance.now();
 	const dpr = window.devicePixelRatio || 1;
 	const physicalWidth = canvasRef.value.width;
 	const physicalHeight = canvasRef.value.height;

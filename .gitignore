@@ -6,6 +6,7 @@ apps/*/.vite/
 apps/*/coverage/
 apps/*/playwright-report/
 apps/*/test-results/
+apps/*/tests/e2e/external/reports/
 packages/*/node_modules/
 packages/*/dist/
 

@@ -24,10 +24,6 @@
 		renderIncrementPoint,
 	} from "../service/canvas";
 	import { createWhiteboardSession } from "../service/whiteboardSession";
-	import {
-		createBenchmarkPlugin,
-		shouldEnableBenchmarkRuntime,
-	} from "../plugins/benchmark/benchmarkPlugin";
 	import { createRoomCollabTransport } from "../service/roomCollabTransport";
 	import { createRoomUiState } from "../states/roomUiState";
 	import { createCanvasRuntime } from "../service/canvasRuntime";
@@ -500,14 +496,6 @@
 		requestRender: renderCanvas,
 		requestOverlayRender: roomCanvasOverlay.render,
 	});
-	if (shouldEnableBenchmarkRuntime()) {
-		session.use(
-			createBenchmarkPlugin({
-				commands,
-				currentColor,
-			})
-		);
-	}
 	roomSessionRef.value = session;
 	const roomLifecycleController = createRoomLifecycleController({
 		roomCanvasOverlay,

@@ -1,10 +1,6 @@
 // File role: utility helpers for dirty-rect based redraw calculations.
 import { useCommandStore } from "../store/commandStore";
 import { renderClippedPointSequence } from "../service/canvas";
-import {
-	recordDirtyRedrawEnd,
-	recordDirtyRedrawStart,
-} from "../instrumentation/runtimeInstrumentation";
 
 const reRenderDirtyRect = (
 	dirtyRect: any,
@@ -25,11 +21,10 @@ const reRenderDirtyRect = (
 			? [...dirtyRect.candidateCommandIds]
 			: undefined,
 	};
-	const dirtyStart = recordDirtyRedrawStart(dirtyRectSnapshot);
 	const dpr = window.devicePixelRatio || 1;
 	const canvasW = canvasRef.width / dpr;
 	const canvasH = canvasRef.height / dpr;
-	const pointCount = renderClippedPointSequence(
+	renderClippedPointSequence(
 		ctx,
 		canvasW,
 		canvasH,
@@ -37,8 +32,6 @@ const reRenderDirtyRect = (
 		dirtyRectSnapshot,
 		transformingCmdIds
 	);
-
-	recordDirtyRedrawEnd(dirtyRectSnapshot, performance.now() - dirtyStart, pointCount);
 };
 
 export { reRenderDirtyRect };

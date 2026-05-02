@@ -603,14 +603,8 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-full") {
-		const startedAt = performance.now();
 		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
-		const pointCount = renderFullScene();
-		self.postMessage({
-			type: "benchmark-render-full-complete",
-			points: pointCount,
-			durationMs: performance.now() - startedAt,
-		});
+		renderFullScene();
 		return;
 	}
 
@@ -652,15 +646,7 @@ self.onmessage = (event: MessageEvent) => {
 
 	if (type === "render-increment-batch") {
 		(data as IncrementBatchItem[]).forEach((entry) => {
-			const startedAt = performance.now();
-			const pointCount = renderIncrementalPoints(entry.cmd, entry.points);
-			self.postMessage({
-				type: "benchmark-incremental-complete",
-				commandId: entry.cmd.id,
-				source: entry.source,
-				points: pointCount,
-				durationMs: performance.now() - startedAt,
-			});
+			renderIncrementalPoints(entry.cmd, entry.points);
 		});
 		return;
 	}
@@ -672,14 +658,8 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-flat-points-scene") {
-		const startedAt = performance.now();
 		currentPageId = data.pageId as number;
-		const pointCount = renderPointsToCanvas((data.points as FlatPoint[]) ?? []);
-		self.postMessage({
-			type: "benchmark-render-full-complete",
-			points: pointCount,
-			durationMs: performance.now() - startedAt,
-		});
+		renderPointsToCanvas((data.points as FlatPoint[]) ?? []);
 		return;
 	}
 
@@ -712,15 +692,9 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "rerender-scene") {
-		const startedAt = performance.now();
 		currentPageId = data.pageId as number;
 		currentTransformingIds = new Set((data.transformingCmdIds as string[]) ?? []);
-		const pointCount = renderFullScene();
-		self.postMessage({
-			type: "benchmark-render-full-complete",
-			points: pointCount,
-			durationMs: performance.now() - startedAt,
-		});
+		renderFullScene();
 		return;
 	}
 
