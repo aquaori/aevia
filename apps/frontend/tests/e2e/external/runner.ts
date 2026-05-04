@@ -1,6 +1,16 @@
 import path from "path";
 import { chromium, type Browser, type LaunchOptions } from "playwright";
+import {
+	applyPerformanceRegressions,
+	buildExternalReport,
+	createBaselineFromResults,
+	loadBaselineFile,
+	loadBudgetFile,
+	loadReportResults,
+	writeBaselineFile,
+} from "./baseline";
 import { dateTag, parseConfig } from "./config";
+import { buildLearningArtifacts, importHistoryFromReport, loadHistoryEntries, shouldFailForLearning } from "./learning";
 import { ensureDir, writeReports } from "./reporter";
 import type { CaseResult, EnvironmentId, ExternalConfig, RunMode, SuiteContext } from "./types";
 import {
@@ -61,8 +71,38 @@ const runWithBrowser = async (config: ExternalConfig, reportRoot: string, artifa
 	}
 };
 
+const setBaselineFromSource = (config: ExternalConfig) => {
+	if (!config.baselineSource) {
+		throw new Error("baseline source is required when --action=set-baseline");
+	}
+	const { filePath, results } = loadReportResults(config.baselineSource);
+	const baseline = createBaselineFromResults(results, filePath, config.suite);
+	writeBaselineFile(config.baselineFile, baseline);
+	console.log(`[external-e2e] baseline updated: ${config.baselineFile}`);
+	console.log(`[external-e2e] baseline source: ${filePath}`);
+	console.log(`[external-e2e] baseline cases: ${Object.keys(baseline.cases).length}`);
+};
+
+const importHistory = (config: ExternalConfig) => {
+	if (!config.baselineSource) {
+		throw new Error("history source is required when --action=import-history");
+	}
+	const result = importHistoryFromReport(config, config.baselineSource);
+	console.log(`[external-e2e] history file: ${result.historyFile}`);
+	console.log(`[external-e2e] imported entries: ${result.imported}`);
+	console.log(`[external-e2e] total entries: ${result.total}`);
+};
+
 const main = async () => {
 	const config = parseConfig(process.argv.slice(2));
+	if (config.action === "set-baseline") {
+		setBaselineFromSource(config);
+		return;
+	}
+	if (config.action === "import-history") {
+		importHistory(config);
+		return;
+	}
 	const reportRoot = path.join(config.reportDir, dateTag());
 	const artifactRoot = path.join(reportRoot, "artifacts");
 	ensureDir(artifactRoot);
@@ -81,10 +121,56 @@ const main = async () => {
 		results = await runWithBrowser(config, reportRoot, artifactRoot);
 	}
 
-	const reportPath = writeReports(reportRoot, config, results);
+	const baseline = loadBaselineFile(config.baselineFile);
+	const budgets = loadBudgetFile(config.budgetsFile);
+	const regressions = applyPerformanceRegressions(config, results, baseline, budgets);
+	const historyEntries = loadHistoryEntries(config.historyFile);
+	const learningArtifacts = buildLearningArtifacts(config, results, historyEntries, baseline);
+	if (config.saveBaseline) {
+		writeBaselineFile(
+			config.baselineFile,
+			createBaselineFromResults(results, path.join(reportRoot, "external-results.json"), config.suite)
+		);
+		console.log(`[external-e2e] saved baseline: ${config.baselineFile}`);
+	}
+	const learningFailure = shouldFailForLearning(config, learningArtifacts.learnedRegressions);
+	if (learningFailure.shouldFail) {
+		for (const message of learningFailure.messages) {
+			console.error(`[external-e2e] learned-regression: ${message}`);
+		}
+		for (const result of results) {
+			if (result.learning?.status === "confirmed" || result.learning?.status === "suspected") {
+				result.status = "failed";
+				result.failureType = "performance";
+				if (!result.error) {
+					const messages = result.learning.checks
+						.filter((check) => check.status === result.learning?.status)
+						.map((check) => check.message);
+					result.error = messages.join("；");
+				}
+			}
+		}
+	}
+	const report = buildExternalReport(
+		config,
+		results,
+		regressions,
+		learningArtifacts.learning,
+		learningArtifacts.learnedRegressions,
+		learningArtifacts.baselineRecommendations
+	);
+	const reportPath = writeReports(reportRoot, report);
+	if (config.importCurrentToHistory) {
+		const imported = importHistoryFromReport(config, path.join(reportRoot, "external-results.json"));
+		console.log(
+			`[external-e2e] imported current report into history: +${imported.imported} entries (total=${imported.total})`
+		);
+	}
 	const failed = results.filter((result) => result.status === "failed");
 	console.log(`[external-e2e] wrote report: ${reportPath}`);
-	console.log(`[external-e2e] passed=${results.length - failed.length} failed=${failed.length}`);
+	console.log(
+		`[external-e2e] passed=${report.summary.passed} failed=${report.summary.failed} learnedConfirmed=${report.summary.learningConfirmed} learnedSuspected=${report.summary.learningSuspected} recurringAnomalies=${report.summary.learningRecurringAnomalies} ruleSuspected=${report.summary.learningRuleSuspected}`
+	);
 	if (failed.length > 0) {
 		failed.forEach((result) => {
 			console.error(`[external-e2e] ${result.id} failed (${result.failureType}): ${result.error || "unknown"}`);

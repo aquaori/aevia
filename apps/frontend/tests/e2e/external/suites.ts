@@ -114,6 +114,18 @@ const percentile = (values: number[], p: number) => {
 	return values[index]!;
 };
 
+const median = (values: number[]) => {
+	if (values.length === 0) return 0;
+	const sorted = [...values].sort((a, b) => a - b);
+	const mid = Math.floor(sorted.length / 2);
+	return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!;
+};
+
+const medianAbsoluteDeviation = (values: number[], center: number) => {
+	if (values.length === 0) return 0;
+	return median(values.map((value) => Math.abs(value - center)));
+};
+
 const aggregateSamples = (samples: CaseSample[]): Record<string, MetricStats> => {
 	const keys = new Set<string>();
 	for (const sample of samples) {
@@ -144,6 +156,60 @@ const medianMetrics = (aggregate: Record<string, MetricStats>): MetricMap => {
 		metrics[`${key}Median`] = stats.median;
 	}
 	return metrics;
+};
+
+const assessSampleQuality = (id: string, samples: CaseSample[]) => {
+	const measuredPassed = samples.filter((sample) => !sample.warmup && sample.status === "passed");
+	for (const sample of measuredPassed) {
+		sample.qualityStatus = "valid";
+	}
+
+	if (id.startsWith("full-render-")) {
+		const ratios = measuredPassed
+			.map((sample) => sample.metrics.nonBlankRatio)
+			.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+		const ratioMedian = median(ratios);
+		const ratioFloor = Math.max(0.02, ratioMedian * 0.6);
+		for (const sample of measuredPassed) {
+			const ratio = sample.metrics.nonBlankRatio;
+			if (typeof ratio === "number" && ratio < ratioFloor) {
+				sample.qualityStatus = "invalid_quality";
+				sample.qualityReason = `nonBlankRatio ${ratio.toFixed(4)} 低于质量下限 ${ratioFloor.toFixed(4)}`;
+			}
+		}
+	}
+
+	const validMeasured = measuredPassed.filter((sample) => sample.qualityStatus === "valid");
+	if (validMeasured.length < 3) return;
+
+	const outlierMetrics = id.startsWith("full-render-")
+		? ["firstNonBlankMs", "visuallyStableMs"]
+		: id === "incremental-remote-first-pixel"
+			? ["remoteFirstPixelMs"]
+			: id === "local-realtime-first-pixel"
+				? ["inputToFirstPixelMs"]
+				: [];
+
+	for (const metric of outlierMetrics) {
+		const values = validMeasured
+			.map((sample) => sample.metrics[metric])
+			.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+		if (values.length < 3) continue;
+		const logs = values.map((value) => Math.log(value));
+		const center = median(logs);
+		const mad = medianAbsoluteDeviation(logs, center);
+		if (mad === 0) continue;
+		const sigma = 1.4826 * mad;
+		for (const sample of validMeasured) {
+			const value = sample.metrics[metric];
+			if (typeof value !== "number" || value <= 0) continue;
+			const zScore = Math.abs((Math.log(value) - center) / sigma);
+			if (zScore > 3) {
+				sample.qualityStatus = "outlier";
+				sample.qualityReason = `${metric} 偏离同组样本中位数过大 (robust z=${zScore.toFixed(2)})`;
+			}
+		}
+	}
 };
 
 const runSampledCase = async (
@@ -178,10 +244,36 @@ const runSampledCase = async (
 			});
 		}
 	}
+	assessSampleQuality(id, samples);
 	const measuredSamples = samples.filter((sample) => !sample.warmup);
 	const failedSample = measuredSamples.find((sample) => sample.status === "failed");
-	const passedSamples = measuredSamples.filter((sample) => sample.status === "passed");
-	const aggregate = aggregateSamples(passedSamples);
+	const validSamples = measuredSamples.filter(
+		(sample) => sample.status === "passed" && (sample.qualityStatus === undefined || sample.qualityStatus === "valid")
+	);
+	const invalidSamples = measuredSamples.filter(
+		(sample) => sample.status === "passed" && sample.qualityStatus && sample.qualityStatus !== "valid"
+	);
+	if (!failedSample && validSamples.length === 0) {
+		return withMeta(context, id, {
+			id,
+			scale: options.scale,
+			status: "failed",
+			failureType: "performance",
+			durationMs: performance.now() - startedAt,
+			metrics: {
+				environment: context.config.environment,
+				runMode: context.config.mode,
+				runs: context.config.runs,
+				warmup: context.config.warmup,
+				validSampleCount: 0,
+				invalidSampleCount: invalidSamples.length,
+			},
+			samples,
+			aggregate: {},
+			error: invalidSamples.map((sample) => sample.qualityReason || "invalid sample").join("；"),
+		});
+	}
+	const aggregate = aggregateSamples(validSamples);
 	return withMeta(context, id, {
 		id,
 		scale: options.scale,
@@ -193,6 +285,8 @@ const runSampledCase = async (
 			runMode: context.config.mode,
 			runs: context.config.runs,
 			warmup: context.config.warmup,
+			validSampleCount: validSamples.length,
+			invalidSampleCount: invalidSamples.length,
 			...medianMetrics(aggregate),
 		},
 		samples,

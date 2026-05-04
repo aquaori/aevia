@@ -19,3 +19,6 @@ Thumbs.db
 
 .codex/
 .vscode/
+tests/reports/
+apps/frontend/tests/e2e/external/baselines/*
+apps/frontend/tests/e2e/external/history/*

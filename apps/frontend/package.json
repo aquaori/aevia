@@ -10,10 +10,16 @@
 		"test": "npm run test:e2e:smoke",
 		"test:e2e:health": "npx tsx tests/e2e/external/runner.ts --suite=harness-health --mode=headless",
 		"test:e2e:smoke": "npx tsx tests/e2e/external/runner.ts --suite=correctness-smoke --mode=headless",
+		"test:e2e:smoke:ci": "npx tsx tests/e2e/external/runner.ts --suite=correctness-smoke --mode=headless --reporter=json",
 		"test:e2e": "npx tsx tests/e2e/external/runner.ts --suite=correctness-full --mode=headless",
 		"benchmark:external": "npx tsx tests/e2e/external/runner.ts --suite=performance-external --mode=headless",
+		"benchmark:external:ci": "npx tsx tests/e2e/external/runner.ts --suite=performance-external --mode=headless --reporter=json",
+		"benchmark:external:json": "npx tsx tests/e2e/external/runner.ts --suite=performance-external --mode=headless --reporter=json",
+		"benchmark:external:learn": "npx tsx tests/e2e/external/runner.ts --suite=performance-external --mode=headless --import-current-to-history=true",
 		"benchmark:external:headed": "npx tsx tests/e2e/external/runner.ts --suite=performance-external --mode=headed",
-		"benchmark:external:full": "npm run benchmark:external && npm run benchmark:external:headed"
+		"benchmark:external:full": "npm run benchmark:external && npm run benchmark:external:headed",
+		"benchmark:external:set-baseline": "npx tsx tests/e2e/external/runner.ts --action=set-baseline --suite=performance-external",
+		"benchmark:external:import-history": "npx tsx tests/e2e/external/runner.ts --action=import-history --suite=performance-external"
 	},
 	"dependencies": {
 		"@collaborative-whiteboard/shared": "0.0.0",
