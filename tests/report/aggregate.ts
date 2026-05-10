@@ -27,7 +27,15 @@ const escapeHtml = (value: string) =>
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;");
 
-const findLatestExternalReport = () => {
+const listExternalResultFiles = (dir: string) =>
+	fs
+		.readdirSync(dir)
+		.map((entry) => path.join(dir, entry))
+		.filter((filePath) => fs.statSync(filePath).isFile())
+		.filter((filePath) => path.basename(filePath).endsWith("-external-results.json"))
+		.sort((left, right) => fs.statSync(left).mtimeMs - fs.statSync(right).mtimeMs);
+
+const findLatestExternalReports = () => {
 	const baseDir = path.join(
 		rootDir,
 		"apps",
@@ -38,13 +46,19 @@ const findLatestExternalReport = () => {
 		"reports",
 		"latest"
 	);
-	if (!fs.existsSync(baseDir)) return null;
-	const candidates = fs
+	if (!fs.existsSync(baseDir)) return [];
+	const runDirs = fs
 		.readdirSync(baseDir)
-		.map((entry) => path.join(baseDir, entry, "external-results.json"))
-		.filter((filePath) => fs.existsSync(filePath))
+		.map((entry) => path.join(baseDir, entry))
+		.filter((filePath) => fs.statSync(filePath).isDirectory())
 		.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
-	return candidates[0] || null;
+	for (const runDir of runDirs) {
+		const groupedFiles = listExternalResultFiles(runDir);
+		if (groupedFiles.length > 0) return groupedFiles;
+		const legacyFile = path.join(runDir, "external-results.json");
+		if (fs.existsSync(legacyFile)) return [legacyFile];
+	}
+	return listExternalResultFiles(baseDir);
 };
 
 const vitestFiles = {
@@ -89,9 +103,11 @@ const vitestSummary = (payload: JsonRecord | null) => {
 	};
 };
 
-const externalSummary = (payload: JsonRecord | null) => {
-	const summary = payload?.summary as JsonRecord | undefined;
-	if (!summary) {
+const externalSummary = (payloads: JsonRecord[]) => {
+	const summaries = payloads
+		.map((payload) => payload.summary as JsonRecord | undefined)
+		.filter((summary): summary is JsonRecord => Boolean(summary));
+	if (summaries.length === 0) {
 		return {
 			status: "missing",
 			total: 0,
@@ -100,31 +116,43 @@ const externalSummary = (payload: JsonRecord | null) => {
 			learningConfirmed: 0,
 			learningSuspected: 0,
 			ruleSuspected: 0,
+			hardBoundaryCount: 0,
+			softBoundaryCount: 0,
 		};
 	}
-	const failed = Number(summary.failed ?? 0);
-	const learningConfirmed = Number(summary.learningConfirmed ?? 0);
+	const sum = (key: string) => summaries.reduce((total, summary) => total + Number(summary[key] ?? 0), 0);
+	const failed = sum("failed");
+	const learningConfirmed = sum("learningConfirmed");
 	return {
 		status: failed > 0 || learningConfirmed > 0 ? "failed" : "passed",
-		total: Number(summary.total ?? 0),
-		passed: Number(summary.passed ?? 0),
+		total: sum("total"),
+		passed: sum("passed"),
 		failed,
 		learningConfirmed,
-		learningSuspected: Number(summary.learningSuspected ?? 0),
-		ruleSuspected: Number(summary.learningRuleSuspected ?? 0),
+		learningSuspected: sum("learningSuspected"),
+		ruleSuspected: sum("learningRuleSuspected"),
+		hardBoundaryCount: sum("hardBoundaryCount"),
+		softBoundaryCount: sum("softBoundaryCount"),
 	};
 };
 
-const collectFailures = (external: JsonRecord | null) => {
-	const results = Array.isArray(external?.results) ? (external.results as JsonRecord[]) : [];
-	return results
-		.filter((result) => result.status === "failed")
-		.map((result) => ({
-			id: String(result.id ?? "unknown"),
-			environment: String(result.environment ?? ""),
-			failureType: String(result.failureType ?? ""),
-			error: String(result.error ?? ""),
-		}));
+const collectFailures = (externals: JsonRecord[]) => {
+	const failures: JsonRecord[] = [];
+	for (const external of externals) {
+		const results = Array.isArray(external.results) ? (external.results as JsonRecord[]) : [];
+		for (const result of results) {
+			if (result.status !== "failed") continue;
+			failures.push({
+				suite: String((external.config as JsonRecord | undefined)?.suite ?? ""),
+				caseSet: String((external.config as JsonRecord | undefined)?.caseSet ?? ""),
+				id: String(result.id ?? "unknown"),
+				environment: String(result.environment ?? ""),
+				failureType: String(result.failureType ?? ""),
+				error: String(result.error ?? ""),
+			});
+		}
+	}
+	return failures;
 };
 
 const makeCard = (title: string, summary: ReturnType<typeof vitestSummary> | ReturnType<typeof externalSummary>) => `
@@ -196,14 +224,16 @@ const buildHtml = (report: JsonRecord) => {
 </html>`;
 };
 
-const externalPath = findLatestExternalReport();
+const externalPaths = findLatestExternalReports();
 const vitest = {
 	unit: readJson<JsonRecord>(vitestFiles.unit),
 	integration: readJson<JsonRecord>(vitestFiles.integration),
 	browser: readJson<JsonRecord>(vitestFiles.browser),
 	bench: readJson<JsonRecord>(vitestFiles.bench),
 };
-const external = readJson<JsonRecord>(externalPath || "");
+const externals = externalPaths
+	.map((externalPath) => readJson<JsonRecord>(externalPath))
+	.filter((payload): payload is JsonRecord => Boolean(payload));
 
 const report = {
 	generatedAt: new Date().toISOString(),
@@ -212,16 +242,16 @@ const report = {
 		integration: vitestSummary(vitest.integration),
 		browser: vitestSummary(vitest.browser),
 		bench: benchSummary(vitest.bench),
-		external: externalSummary(external),
+		external: externalSummary(externals),
 	},
 	vitest,
-	external,
+	external: externals.length === 1 ? externals[0] : externals,
 	artifacts: {
 		vitest: vitestFiles,
-		external: externalPath,
+		external: externalPaths,
 		coverage: path.join(reportRoot, "vitest", "coverage"),
 	},
-	failures: collectFailures(external),
+	failures: collectFailures(externals),
 };
 
 const runDir = path.join(summaryRoot, "runs", dateTag());

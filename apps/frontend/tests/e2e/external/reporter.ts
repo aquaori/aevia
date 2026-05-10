@@ -64,6 +64,10 @@ const caseTitleMap: Record<string, string> = {
 	"protocol-multipage-isolation": "协议多页隔离",
 	"incremental-remote-first-pixel": "远端增量首像素",
 	"local-realtime-first-pixel": "本地实时首像素",
+	"boundary-full-render-until-crash": "全量渲染极限边界",
+	"boundary-same-page-heap-growth": "同页堆内存增长边界",
+	"boundary-incremental-redraw-freeze": "增量重绘软卡死边界",
+	"resilience-network-recovery": "长网络延迟恢复",
 };
 
 const caseDescriptionMap: Record<string, string> = {
@@ -74,6 +78,10 @@ const caseDescriptionMap: Record<string, string> = {
 	"protocol-multipage-isolation": "通过公开协议制造多页历史，验证翻页后的内容隔离与返回效果。",
 	"incremental-remote-first-pixel": "测试侧发出远端笔画后，本端 ROI 首次出现像素变化的时间。",
 	"local-realtime-first-pixel": "本地真实输入后，目标 ROI 首次出现像素变化的时间。",
+	"boundary-full-render-until-crash": "外部协议制造阶梯历史数据，用 Playwright/CDP 硬指标寻找全量初始化边界。",
+	"boundary-same-page-heap-growth": "同一页多轮注入和重载后，通过 CDP JS heap 与 DOM counter 观察内存增长。",
+	"boundary-incremental-redraw-freeze": "多协议客户端并发局部重绘，通过截图变化和 CDP heap 观察软卡死边界。",
+	"resilience-network-recovery": "通过 CDP 网络模拟长延迟和离线恢复，观察页面恢复到可绘制状态的时间。",
 };
 
 const metricLabelMap: Record<string, string> = {
@@ -121,6 +129,21 @@ const metricLabelMap: Record<string, string> = {
 	protocolDispatchOverheadMs: "协议调度开销",
 	inputToFirstPixelFrames: "本地首像素帧数",
 	diffRatio: "差异比例",
+	boundaryKind: "边界类型",
+	lastSurvivedScale: "最后存活规模",
+	firstCrashScale: "首次崩溃规模",
+	lastSurvivedConcurrency: "最后存活并发",
+	firstCrashConcurrency: "首次崩溃并发",
+	crashType: "崩溃类型",
+	peakJsHeapMb: "JS 堆峰值",
+	peakTotalHeapMb: "JS 堆总量峰值",
+	baselinePostGcHeapMb: "首轮 GC 后堆",
+	latestPostGcHeapMb: "末轮 GC 后堆",
+	heapGrowthMb: "GC 后堆增长",
+	seedDurationMs: "预注入耗时",
+	scaleRecords: "边界阶梯记录",
+	latencyRecords: "延迟恢复记录",
+	worstRecoveryMs: "最慢恢复时间",
 };
 
 const formatNumber = (value: number) => {
@@ -131,6 +154,7 @@ const formatNumber = (value: number) => {
 const formatMetricValue = (key: string, value: unknown) => {
 	if (typeof value === "number") {
 		if (key.includes("Ms")) return `${value.toFixed(1)} ms`;
+		if (key.includes("Mb")) return `${value.toFixed(1)} MB`;
 		if (key.includes("Ratio")) return value.toFixed(4);
 		return formatNumber(value);
 	}
@@ -555,7 +579,7 @@ const renderEnvironmentSection = (reportRoot: string, environment: string, resul
 	</section>`;
 };
 
-export const writeHtmlReport = (reportRoot: string, report: ExternalReport) => {
+export const writeHtmlReport = (reportRoot: string, report: ExternalReport, runTag = "external") => {
 	const { config, results } = report;
 	const grouped = new Map<string, CaseResult[]>();
 	for (const result of results) {
@@ -1255,20 +1279,21 @@ export const writeHtmlReport = (reportRoot: string, report: ExternalReport) => {
 </body>
 </html>`;
 
-	const filePath = path.join(reportRoot, "external-report.html");
+	const filePath = path.join(reportRoot, `${runTag}-external-report.html`);
 	fs.writeFileSync(filePath, html, "utf-8");
 	return filePath;
 };
 
-export const writeReports = (reportRoot: string, report: ExternalReport) => {
-	writeJson(path.join(reportRoot, "external-results.json"), report);
+export const writeReports = (reportRoot: string, report: ExternalReport, runTag = "external") => {
+	const jsonPath = path.join(reportRoot, `${runTag}-external-results.json`);
+	writeJson(jsonPath, report);
 	const markdownSummary = createMarkdownSummary(report);
-	writeText(path.join(reportRoot, "external-summary.md"), markdownSummary);
+	writeText(path.join(reportRoot, `${runTag}-external-summary.md`), markdownSummary);
 	if (process.env.GITHUB_STEP_SUMMARY) {
 		fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdownSummary}\n`, "utf-8");
 	}
 	if (report.config.reportFormat === "json") {
-		return path.join(reportRoot, "external-results.json");
+		return jsonPath;
 	}
-	return writeHtmlReport(reportRoot, report);
+	return writeHtmlReport(reportRoot, report, runTag);
 };

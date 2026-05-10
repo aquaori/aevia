@@ -50,6 +50,13 @@ export const resolveResultsFile = (inputPath: string) => {
 		);
 	}
 	if (fs.statSync(resolved).isDirectory()) {
+		const flat = fs
+			.readdirSync(resolved)
+			.map((entry) => path.join(resolved, entry))
+			.filter((filePath) => fs.statSync(filePath).isFile())
+			.filter((filePath) => path.basename(filePath).endsWith("-external-results.json"))
+			.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+		if (flat[0]) return flat[0];
 		const nested = path.join(resolved, "external-results.json");
 		if (!exists(nested)) throw new Error(`external-results.json not found in: ${resolved}`);
 		return nested;
@@ -257,6 +264,8 @@ export const buildExternalReport = (
 	baselineRecommendations: BaselineRecommendation[]
 ): ExternalReport => {
 	const performanceRegressionFailures = regressions.filter((item) => item.status === "failed").length;
+	const hardBoundaryCount = results.filter((result) => result.metrics.boundaryKind === "hard-boundary").length;
+	const softBoundaryCount = results.filter((result) => result.metrics.boundaryKind === "soft-freeze-boundary").length;
 	const summary = {
 		total: results.length,
 		passed: results.filter((result) => result.status === "passed").length,
@@ -275,6 +284,8 @@ export const buildExternalReport = (
 		learningRecurringAnomalies: learning.anomalyRecurring,
 		learningRuleSuspected: learning.ruleSuspected,
 		baselineRecommendations: baselineRecommendations.length,
+		hardBoundaryCount,
+		softBoundaryCount,
 	};
 	return {
 		version: 1,
@@ -284,7 +295,11 @@ export const buildExternalReport = (
 			reportFormat: config.reportFormat,
 			mode: config.mode,
 			suite: config.suite,
+			caseSet: config.caseSet,
 			scales: config.scales,
+			boundaryScales: config.boundaryScales,
+			concurrencyLevels: config.concurrencyLevels,
+			latencies: config.latencies,
 			runs: config.runs,
 			warmup: config.warmup,
 			matrix: config.matrix,
@@ -305,6 +320,11 @@ export const buildExternalReport = (
 			stableImprovementRuns: config.stableImprovementRuns,
 			failOnPerformance: config.failOnPerformance,
 			importCurrentToHistory: config.importCurrentToHistory,
+			caseTimeoutMs: config.caseTimeoutMs,
+			seedTimeoutMs: config.seedTimeoutMs,
+			boundaryPointsPerStroke: config.boundaryPointsPerStroke,
+			freezeMs: config.freezeMs,
+			heapSnapshot: config.heapSnapshot,
 		},
 		summary,
 		results,
@@ -320,6 +340,7 @@ export const createMarkdownSummary = (report: ExternalReport) => {
 		`# 外部观测测试结果`,
 		"",
 		`- 套件：\`${report.config.suite}\``,
+		`- case-set：\`${report.config.caseSet}\``,
 		`- 通过：\`${report.summary.passed}\` / \`${report.summary.total}\``,
 		`- 失败：\`${report.summary.failed}\``,
 		`- 性能回归失败：\`${report.summary.performanceRegressionFailures}\``,
@@ -328,6 +349,8 @@ export const createMarkdownSummary = (report: ExternalReport) => {
 		`- 重复异常：\`${report.summary.learningRecurringAnomalies}\``,
 		`- 规则疑似过严：\`${report.summary.learningRuleSuspected}\``,
 		`- baseline 建议：\`${report.summary.baselineRecommendations}\``,
+		`- hard boundary：\`${report.summary.hardBoundaryCount}\``,
+		`- soft boundary：\`${report.summary.softBoundaryCount}\``,
 		`- 基线对比项：\`${report.summary.baselineComparisons}\``,
 		`- 预算对比项：\`${report.summary.budgetComparisons}\``,
 		"",

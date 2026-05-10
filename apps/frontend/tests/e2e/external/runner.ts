@@ -19,6 +19,7 @@ import {
 	runHarnessHealth,
 	runPerformanceExternal,
 } from "./suites";
+import { logEnvironment, logReport, logRunHeader } from "./cli-progress";
 
 const launchBrowser = async (mode: RunMode, gpu: "on" | "off"): Promise<Browser> => {
 	const launchOptions: LaunchOptions = {
@@ -71,6 +72,16 @@ const runWithBrowser = async (config: ExternalConfig, reportRoot: string, artifa
 	}
 };
 
+const resolveReportRoot = (config: ExternalConfig) => {
+	if (path.basename(config.reportDir) === "latest") {
+		return path.join(config.reportDir, dateTag());
+	}
+	return config.reportDir;
+};
+
+const reportTagOf = (config: ExternalConfig) =>
+	config.suite === "performance-external" ? `${config.suite}-${config.caseSet}` : config.suite;
+
 const setBaselineFromSource = (config: ExternalConfig) => {
 	if (!config.baselineSource) {
 		throw new Error("baseline source is required when --action=set-baseline");
@@ -103,21 +114,22 @@ const main = async () => {
 		importHistory(config);
 		return;
 	}
-	const reportRoot = path.join(config.reportDir, dateTag());
-	const artifactRoot = path.join(reportRoot, "artifacts");
+	const reportRoot = resolveReportRoot(config);
+	const reportTag = reportTagOf(config);
+	const artifactRoot = path.join(reportRoot, `${reportTag}-artifacts`);
 	ensureDir(artifactRoot);
+	logRunHeader(config);
 
 	let results: CaseResult[] = [];
 	if (config.suite === "performance-external" && config.matrix) {
 		const environments: EnvironmentId[] = ["gpu_cpuHigh", "gpu_cpuLow", "noGpu_cpuHigh", "noGpu_cpuLow"];
-		for (const environment of environments) {
+		for (const [index, environment] of environments.entries()) {
 			const envConfig = matrixEnvironment(config, environment);
-			console.log(
-				`[external-e2e] environment=${environment} mode=${envConfig.mode} gpu=${envConfig.gpu} cpuThrottle=${envConfig.cpuThrottle}`
-			);
+			logEnvironment(envConfig, index + 1, environments.length);
 			results.push(...(await runWithBrowser(envConfig, reportRoot, artifactRoot)));
 		}
 	} else {
+		logEnvironment(config);
 		results = await runWithBrowser(config, reportRoot, artifactRoot);
 	}
 
@@ -127,9 +139,10 @@ const main = async () => {
 	const historyEntries = loadHistoryEntries(config.historyFile);
 	const learningArtifacts = buildLearningArtifacts(config, results, historyEntries, baseline);
 	if (config.saveBaseline) {
+		const baselineSourcePath = path.join(reportRoot, `${reportTag}-external-results.json`);
 		writeBaselineFile(
 			config.baselineFile,
-			createBaselineFromResults(results, path.join(reportRoot, "external-results.json"), config.suite)
+			createBaselineFromResults(results, baselineSourcePath, config.suite)
 		);
 		console.log(`[external-e2e] saved baseline: ${config.baselineFile}`);
 	}
@@ -159,15 +172,15 @@ const main = async () => {
 		learningArtifacts.learnedRegressions,
 		learningArtifacts.baselineRecommendations
 	);
-	const reportPath = writeReports(reportRoot, report);
+	const reportPath = writeReports(reportRoot, report, reportTag);
 	if (config.importCurrentToHistory) {
-		const imported = importHistoryFromReport(config, path.join(reportRoot, "external-results.json"));
+		const imported = importHistoryFromReport(config, reportPath);
 		console.log(
 			`[external-e2e] imported current report into history: +${imported.imported} entries (total=${imported.total})`
 		);
 	}
 	const failed = results.filter((result) => result.status === "failed");
-	console.log(`[external-e2e] wrote report: ${reportPath}`);
+	logReport(reportPath);
 	console.log(
 		`[external-e2e] passed=${report.summary.passed} failed=${report.summary.failed} learnedConfirmed=${report.summary.learningConfirmed} learnedSuspected=${report.summary.learningSuspected} recurringAnomalies=${report.summary.learningRecurringAnomalies} ruleSuspected=${report.summary.learningRuleSuspected}`
 	);

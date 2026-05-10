@@ -262,6 +262,12 @@ const newWidth = clamp(lastWidth * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
 
 ## 更新日志
 
+### 2026.05.10
+
+- 新增更多benchmark测试
+- 新增测试 CLI
+- 清除了无效依赖
+
 ### 2026.05.04
 
 - benchmark测试新增回归基准学习机制，可以通过近期的测试记录动态计算波动区间和调整回归判定阈值

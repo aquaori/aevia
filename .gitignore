@@ -22,3 +22,4 @@ Thumbs.db
 tests/reports/
 apps/frontend/tests/e2e/external/baselines/*
 apps/frontend/tests/e2e/external/history/*
+AGENTS.md

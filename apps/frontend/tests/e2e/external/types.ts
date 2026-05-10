@@ -6,15 +6,16 @@ export type ReportFormat = "html" | "json" | "both";
 export type RunnerAction = "run" | "set-baseline" | "import-history";
 export type FailOnPerformance = "none" | "suspected" | "confirmed" | "all";
 export type HistoryChannel = "normal" | "anomaly";
+export type CaseSet = "standard" | "resilience" | "boundary" | "all";
 export type SuiteId =
 	| "harness-health"
 	| "correctness-smoke"
 	| "correctness-full"
 	| "performance-external";
 
-export type FailureType = "none" | "harness" | "correctness" | "performance" | "timeout";
+export type FailureType = "none" | "harness" | "correctness" | "performance" | "boundary" | "timeout";
 export type CaseStatus = "passed" | "failed";
-export type CaseCategory = "harness" | "correctness" | "performance";
+export type CaseCategory = "harness" | "correctness" | "performance" | "boundary";
 
 export interface ExternalConfig {
 	action: RunnerAction;
@@ -25,7 +26,11 @@ export interface ExternalConfig {
 	reportFormat: ReportFormat;
 	mode: RunMode;
 	suite: SuiteId;
+	caseSet: CaseSet;
 	scales: number[];
+	boundaryScales: number[];
+	concurrencyLevels: number[];
+	latencies: number[];
 	runs: number;
 	warmup: number;
 	matrix: boolean;
@@ -48,6 +53,11 @@ export interface ExternalConfig {
 	stableImprovementRuns: number;
 	failOnPerformance: FailOnPerformance;
 	importCurrentToHistory: boolean;
+	caseTimeoutMs: number;
+	seedTimeoutMs: number;
+	boundaryPointsPerStroke: number;
+	freezeMs: number;
+	heapSnapshot: boolean;
 }
 
 export interface MetricMap {
@@ -260,6 +270,8 @@ export interface ExternalRunSummary {
 	learningRecurringAnomalies: number;
 	learningRuleSuspected: number;
 	baselineRecommendations: number;
+	hardBoundaryCount: number;
+	softBoundaryCount: number;
 }
 
 export interface ExternalReport {
@@ -271,7 +283,11 @@ export interface ExternalReport {
 		| "reportFormat"
 		| "mode"
 		| "suite"
+		| "caseSet"
 		| "scales"
+		| "boundaryScales"
+		| "concurrencyLevels"
+		| "latencies"
 		| "runs"
 		| "warmup"
 		| "matrix"
@@ -292,6 +308,11 @@ export interface ExternalReport {
 		| "stableImprovementRuns"
 		| "failOnPerformance"
 		| "importCurrentToHistory"
+		| "caseTimeoutMs"
+		| "seedTimeoutMs"
+		| "boundaryPointsPerStroke"
+		| "freezeMs"
+		| "heapSnapshot"
 	>;
 	summary: ExternalRunSummary;
 	results: CaseResult[];

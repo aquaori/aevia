@@ -98,9 +98,16 @@ const extractGeneratedAt = (payload: unknown, filePath: string) => {
 
 const loadReportPayload = (inputPath: string) => {
 	const normalized = path.resolve(inputPath);
-	const reportPath = fs.statSync(normalized).isDirectory()
-		? path.join(normalized, "external-results.json")
-		: normalized;
+	let reportPath = normalized;
+	if (fs.statSync(normalized).isDirectory()) {
+		const flat = fs
+			.readdirSync(normalized)
+			.map((entry) => path.join(normalized, entry))
+			.filter((filePath) => fs.statSync(filePath).isFile())
+			.filter((filePath) => path.basename(filePath).endsWith("-external-results.json"))
+			.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+		reportPath = flat[0] || path.join(normalized, "external-results.json");
+	}
 	if (!fs.existsSync(reportPath)) {
 		throw new Error(`external-results.json not found: ${reportPath}`);
 	}

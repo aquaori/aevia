@@ -1,5 +1,6 @@
 import path from "path";
 import type {
+	CaseSet,
 	EnvironmentId,
 	ExternalConfig,
 	FailOnPerformance,
@@ -44,8 +45,12 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 	const mode = (args.get("mode") || "headless") as RunMode;
 	const reportFormat = (args.get("reporter") || args.get("report-format") || "both") as ReportFormat;
 	const scales = parseList(args.get("scales")).map(Number).filter(Number.isFinite);
+	const boundaryScales = parseList(args.get("boundary-scales")).map(Number).filter(Number.isFinite);
+	const concurrencyLevels = parseList(args.get("concurrency-levels")).map(Number).filter(Number.isFinite);
+	const latencies = parseList(args.get("latencies")).map(Number).filter(Number.isFinite);
 	const isPerformance = suite === "performance-external";
 	const environment = (args.get("environment") || "gpu_cpuHigh") as EnvironmentId;
+	const caseSet = (args.get("case-set") || "standard") as CaseSet;
 	const gpu = environment.startsWith("noGpu") || args.get("gpu") === "off" ? "off" : "on";
 	const cpuThrottle = environment.endsWith("cpuLow") ? 4 : 1;
 	const externalRoot = path.join(process.cwd(), "tests", "e2e", "external");
@@ -67,7 +72,11 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 		reportFormat,
 		mode,
 		suite,
+		caseSet,
 		scales: scales.length > 0 ? scales : [10000, 50000, 100000],
+		boundaryScales: boundaryScales.length > 0 ? boundaryScales : [100000, 250000, 500000, 1000000, 2000000, 5000000],
+		concurrencyLevels: concurrencyLevels.length > 0 ? concurrencyLevels : [10, 25, 50, 100],
+		latencies: latencies.length > 0 ? latencies : [200, 1000, 3000],
 		runs: Math.max(1, Number(args.get("runs") || (isPerformance ? "3" : "1"))),
 		warmup: Math.max(0, Number(args.get("warmup") || (isPerformance ? "1" : "0"))),
 		matrix: args.get("matrix") ? args.get("matrix") !== "false" : isPerformance,
@@ -94,6 +103,11 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 		stableImprovementRuns: Math.max(2, Number(args.get("stable-improvement-runs") || "5")),
 		failOnPerformance,
 		importCurrentToHistory: args.get("import-current-to-history") === "true",
+		caseTimeoutMs: Math.max(1000, Number(args.get("case-timeout-ms") || "120000")),
+		seedTimeoutMs: Math.max(1000, Number(args.get("seed-timeout-ms") || "600000")),
+		boundaryPointsPerStroke: Math.max(1, Number(args.get("boundary-points-per-stroke") || "2048")),
+		freezeMs: Math.max(1000, Number(args.get("freeze-ms") || "5000")),
+		heapSnapshot: args.get("heap-snapshot") === "true",
 	};
 };
 

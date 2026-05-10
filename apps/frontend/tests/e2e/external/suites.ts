@@ -20,6 +20,13 @@ import {
 import { drawLine, drawLineLowLatency, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo } from "./ui-driver";
 import { readPerformanceObserver } from "./performance-observer";
 import { ensureDir } from "./reporter";
+import {
+	capturePagePng,
+	classifyCrash,
+	createBoundaryProbe,
+	waitForScreenshotChange,
+} from "./cdp-observer";
+import { logCaseEnd, logCaseStart, logStep } from "./cli-progress";
 
 const CASE_META: Record<string, { title: string; description: string; category: CaseCategory }> = {
 	"harness-health": {
@@ -62,6 +69,26 @@ const CASE_META: Record<string, { title: string; description: string; category: 
 		description: "Playwright 真实 pointer 绘制后，目标 ROI 首次出现像素变化的耗时和帧数。",
 		category: "performance",
 	},
+	"boundary-full-render-until-crash": {
+		title: "Boundary full render until crash",
+		description: "外部协议制造阶梯历史数据，用 Playwright/CDP 硬指标寻找全量初始化的 renderer/page/browser 边界。",
+		category: "boundary",
+	},
+	"boundary-same-page-heap-growth": {
+		title: "Boundary same-page heap growth",
+		description: "同一页多轮注入和重载后，通过 CDP JS heap 与 DOM counter 观察内存增长边界。",
+		category: "boundary",
+	},
+	"boundary-incremental-redraw-freeze": {
+		title: "Boundary incremental redraw freeze",
+		description: "多协议客户端并发局部重绘，用外部截图、CDP heap 和输入耗时观察软卡死边界。",
+		category: "boundary",
+	},
+	"resilience-network-recovery": {
+		title: "Network latency recovery",
+		description: "通过 CDP 网络模拟长延迟和离线恢复，观测页面恢复到可绘制状态的时间。",
+		category: "performance",
+	},
 };
 
 const withMeta = (context: SuiteContext, id: string, result: CaseResult): CaseResult => {
@@ -83,9 +110,13 @@ const runCase = async (
 	fn: () => Promise<Omit<CaseResult, "id" | "durationMs">>
 ): Promise<CaseResult> => {
 	const startedAt = performance.now();
+	const meta = CASE_META[id.startsWith("full-render-") ? "full-render" : id];
+	logCaseStart(id, meta?.title || id, meta?.description);
 	try {
 		const result = await fn();
-		return withMeta(context, id, { id, durationMs: performance.now() - startedAt, ...result });
+		const finalResult = withMeta(context, id, { id, durationMs: performance.now() - startedAt, ...result });
+		logCaseEnd(finalResult);
+		return finalResult;
 	} catch (error: any) {
 		const message = error?.message || String(error);
 		const failureType = message.includes("unreachable") ||
@@ -97,7 +128,7 @@ const runCase = async (
 			: message.includes("timeout")
 				? "timeout"
 				: "correctness";
-		return withMeta(context, id, {
+		const finalResult = withMeta(context, id, {
 			id,
 			status: "failed",
 			failureType,
@@ -105,6 +136,8 @@ const runCase = async (
 			metrics: {},
 			error: message,
 		});
+		logCaseEnd(finalResult);
+		return finalResult;
 	}
 };
 
@@ -220,10 +253,22 @@ const runSampledCase = async (
 ): Promise<CaseResult> => {
 	const startedAt = performance.now();
 	const samples: CaseSample[] = [];
+	const meta = CASE_META[id.startsWith("full-render-") ? "full-render" : id];
+	logCaseStart(
+		id,
+		meta?.title || id,
+		meta?.description,
+		[
+			options.scale ? `scale=${options.scale}` : "",
+			`runs=${context.config.runs}`,
+			`warmup=${context.config.warmup}`,
+		].filter(Boolean).join(" ")
+	);
 	for (let index = 0; index < context.config.warmup + context.config.runs; index += 1) {
 		const warmup = index < context.config.warmup;
 		const run = warmup ? index + 1 : index - context.config.warmup + 1;
 		const sampleStartedAt = performance.now();
+		logStep(`${id}: ${warmup ? "warmup" : "run"} ${run}/${warmup ? context.config.warmup : context.config.runs}`);
 		try {
 			const metrics = await fn(run, warmup);
 			samples.push({
@@ -254,7 +299,7 @@ const runSampledCase = async (
 		(sample) => sample.status === "passed" && sample.qualityStatus && sample.qualityStatus !== "valid"
 	);
 	if (!failedSample && validSamples.length === 0) {
-		return withMeta(context, id, {
+		const finalResult = withMeta(context, id, {
 			id,
 			scale: options.scale,
 			status: "failed",
@@ -272,9 +317,11 @@ const runSampledCase = async (
 			aggregate: {},
 			error: invalidSamples.map((sample) => sample.qualityReason || "invalid sample").join("；"),
 		});
+		logCaseEnd(finalResult);
+		return finalResult;
 	}
 	const aggregate = aggregateSamples(validSamples);
-	return withMeta(context, id, {
+	const finalResult = withMeta(context, id, {
 		id,
 		scale: options.scale,
 		status: failedSample ? "failed" : "passed",
@@ -293,6 +340,8 @@ const runSampledCase = async (
 		aggregate,
 		error: failedSample?.error,
 	});
+	logCaseEnd(finalResult);
+	return finalResult;
 };
 
 const artifactDir = (context: SuiteContext, name: string) => {
@@ -300,6 +349,439 @@ const artifactDir = (context: SuiteContext, name: string) => {
 	ensureDir(dir);
 	return dir;
 };
+
+const openBoundaryRoomPage = async (context: SuiteContext, user: { token: string; userName: string }) => {
+	const probe = await createBoundaryProbe(context.browser, { cpuThrottle: context.config.cpuThrottle });
+	const loadStartedAt = performance.now();
+	await probe.page.goto(context.config.frontendUrl);
+	await probe.page.evaluate(({ token, userName }: { token: string; userName: string }) => {
+		sessionStorage.setItem("user", JSON.stringify({ token, userId: "", username: userName }));
+		localStorage.setItem("wb_username", userName);
+	}, { token: user.token, userName: user.userName });
+	await probe.page.goto(`${context.config.frontendUrl}/room`, {
+		waitUntil: "domcontentloaded",
+		timeout: context.config.caseTimeoutMs,
+	});
+	await probe.page.locator("canvas").first().waitFor({ timeout: context.config.caseTimeoutMs });
+	return {
+		probe,
+		roomLoadMs: performance.now() - loadStartedAt,
+	};
+};
+
+const seedRoomPoints = async (
+	context: SuiteContext,
+	pointCount: number,
+	options: {
+		roomId?: string;
+		userName?: string;
+		pointsPerStroke?: number;
+		deadlineAt?: number;
+		progressLabel?: string;
+	} = {}
+) => {
+	const roomId = options.roomId || await createRoomWithUsers(context.config, []).then((room) => room.roomId);
+	const user = await joinRoom(context.config, roomId, options.userName || `BoundaryBot${pointCount}`);
+	const bot = new ProtocolClient(context.config, user);
+	await bot.connect();
+	const pointsPerStroke = options.pointsPerStroke || context.config.boundaryPointsPerStroke;
+	const strokes = Math.max(1, Math.ceil(pointCount / pointsPerStroke));
+	let nextProgressPercent = 10;
+	try {
+		for (let index = 0; index < strokes; index += 1) {
+			if (options.deadlineAt && Date.now() > options.deadlineAt) {
+				throw new Error(`${options.progressLabel || "seed"} exceeded ${context.config.seedTimeoutMs}ms while injecting ${pointCount} points`);
+			}
+			await bot.sendStrokeAwait({
+				points: createDistributedStrokePoints(
+					Math.min(pointsPerStroke, pointCount - index * pointsPerStroke),
+					index,
+					strokes
+				),
+				color: index % 2 === 0 ? "#111827" : "#2563eb",
+				size: 2 + (index % 2),
+			});
+			const progressPercent = Math.floor(((index + 1) / strokes) * 100);
+			if (progressPercent >= nextProgressPercent) {
+				logStep(`${options.progressLabel || "seed"}: injected ${progressPercent}% (${Math.min(pointCount, (index + 1) * pointsPerStroke)}/${pointCount} points)`);
+				nextProgressPercent += 10;
+			}
+		}
+	} finally {
+		bot.close();
+	}
+	return { roomId, user };
+};
+
+const maxNumber = (...values: Array<number | undefined>) =>
+	Math.max(0, ...values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)));
+
+type BoundaryFullRenderSeed = {
+	roomId: string;
+	seedDurationMs: number;
+};
+
+let boundaryFullRenderSeedCache:
+	| {
+			key: string;
+			rooms: Map<number, BoundaryFullRenderSeed>;
+	  }
+	| null = null;
+
+const boundarySeedCacheKey = (context: SuiteContext) =>
+	[
+		context.config.apiUrl,
+		context.config.wsUrl,
+		context.config.boundaryScales.join(","),
+		context.config.boundaryPointsPerStroke,
+	].join("|");
+
+const prepareBoundaryFullRenderRooms = async (context: SuiteContext) => {
+	const key = boundarySeedCacheKey(context);
+	if (boundaryFullRenderSeedCache?.key === key) {
+		logStep(`boundary full render: reusing ${boundaryFullRenderSeedCache.rooms.size} preseeded rooms`);
+		return boundaryFullRenderSeedCache.rooms;
+	}
+
+	const rooms = new Map<number, BoundaryFullRenderSeed>();
+	boundaryFullRenderSeedCache = { key, rooms };
+	logStep(`boundary full render: preseed ${context.config.boundaryScales.length} reusable rooms`);
+	for (const scale of context.config.boundaryScales) {
+		const startedAt = performance.now();
+		const deadlineAt = Date.now() + context.config.seedTimeoutMs;
+		logStep(`boundary full render preseed: scale=${scale}`);
+		const { roomId } = await seedRoomPoints(context, scale, {
+			deadlineAt,
+			progressLabel: `boundary full render preseed scale=${scale}`,
+		});
+		rooms.set(scale, {
+			roomId,
+			seedDurationMs: performance.now() - startedAt,
+		});
+	}
+	return rooms;
+};
+
+const runBoundaryFullRender = async (context: SuiteContext) =>
+	runCase(context, "boundary-full-render-until-crash", async () => {
+		const preseededRooms = await prepareBoundaryFullRenderRooms(context);
+		const records: MetricMap[] = [];
+		let lastSurvivedScale = 0;
+		let firstCrashScale = 0;
+		let crashType = "none";
+		let peakJsHeapMb = 0;
+		let peakTotalHeapMb = 0;
+
+		for (const scale of context.config.boundaryScales) {
+			logStep(`boundary full render: scale=${scale}`);
+			const scaleStartedAt = performance.now();
+			let probe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
+			try {
+				const seed = preseededRooms.get(scale);
+				if (!seed) {
+					throw new Error(`boundary full render scale=${scale} has no preseeded room`);
+				}
+				const { roomId } = seed;
+				const observerUser = await joinRoom(context.config, roomId, `BoundaryObserver${scale}`);
+				const opened = await openBoundaryRoomPage(context, observerUser);
+				probe = opened.probe;
+				await probe.page.waitForTimeout(300);
+				const metrics = await probe.readMetrics();
+				await probe.collectGarbage();
+				const postGc = await probe.readMetrics();
+				const scaleCrashType = classifyCrash(probe.crash);
+				peakJsHeapMb = maxNumber(peakJsHeapMb, metrics.usedHeapMb, metrics.jsHeapUsedMb);
+				peakTotalHeapMb = maxNumber(peakTotalHeapMb, metrics.totalHeapMb, metrics.jsHeapTotalMb);
+				records.push({
+					scale,
+					status: scaleCrashType === "none" ? "survived" : "crashed",
+					crashType: scaleCrashType,
+					roomLoadMs: opened.roomLoadMs,
+					usedHeapMb: metrics.usedHeapMb,
+					jsHeapUsedMb: metrics.jsHeapUsedMb,
+					totalHeapMb: metrics.totalHeapMb,
+					jsHeapTotalMb: metrics.jsHeapTotalMb,
+					postGcHeapMb: postGc.usedHeapMb ?? postGc.jsHeapUsedMb,
+					nodeCount: metrics.nodeCount,
+					documentCount: metrics.documentCount,
+					seedDurationMs: seed.seedDurationMs,
+					durationMs: performance.now() - scaleStartedAt,
+				});
+				if (scaleCrashType !== "none") {
+					firstCrashScale = scale;
+					crashType = scaleCrashType;
+					break;
+				}
+				lastSurvivedScale = scale;
+			} catch (error: any) {
+				firstCrashScale = scale;
+				crashType = error?.message?.includes("exceeded") ? "scale-timeout" : error?.message?.includes("crash") ? "page-crash" : "harness-or-cdp-error";
+				records.push({
+					scale,
+					status: "crashed",
+					crashType,
+					error: error?.message || String(error),
+					durationMs: performance.now() - scaleStartedAt,
+				});
+				break;
+			} finally {
+				await probe?.close();
+			}
+		}
+
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				boundaryKind: "hard-boundary",
+				lastSurvivedScale,
+				firstCrashScale,
+				crashType,
+				peakJsHeapMb,
+				peakTotalHeapMb,
+				scaleRecords: JSON.stringify(records),
+			},
+		};
+	});
+
+const runBoundaryHeapGrowth = async (context: SuiteContext) =>
+	runCase(context, "boundary-same-page-heap-growth", async () => {
+		const scale = context.config.boundaryScales[0] || context.config.scales[0] || 100000;
+		const records: MetricMap[] = [];
+		let roomId: string | null = null;
+		let baselinePostGcHeapMb = 0;
+		let latestPostGcHeapMb = 0;
+		let peakJsHeapMb = 0;
+		let crashType = "none";
+
+		for (let round = 1; round <= 3; round += 1) {
+			logStep(`same-page heap growth: round=${round}/3 inject=${scale} points`);
+			const deadlineAt = Date.now() + context.config.seedTimeoutMs;
+			let probe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
+			try {
+				const seeded = await seedRoomPoints(context, scale, {
+					roomId: roomId || undefined,
+					userName: `HeapBot${round}`,
+					deadlineAt,
+					progressLabel: `same-page heap round=${round}`,
+				});
+				roomId = seeded.roomId;
+				const observerUser = await joinRoom(context.config, roomId, `HeapObserver${round}`);
+				const opened = await openBoundaryRoomPage(context, observerUser);
+				probe = opened.probe;
+				await probe.page.waitForTimeout(300);
+				const metrics = await probe.readMetrics();
+				await probe.collectGarbage();
+				const postGc = await probe.readMetrics();
+				const postGcHeapMb = postGc.usedHeapMb ?? postGc.jsHeapUsedMb ?? 0;
+				if (round === 1) baselinePostGcHeapMb = postGcHeapMb;
+				latestPostGcHeapMb = postGcHeapMb;
+				peakJsHeapMb = maxNumber(peakJsHeapMb, metrics.usedHeapMb, metrics.jsHeapUsedMb);
+				const scaleCrashType = classifyCrash(probe.crash);
+				records.push({
+					round,
+					scale,
+					totalInjectedPoints: scale * round,
+					roomLoadMs: opened.roomLoadMs,
+					usedHeapMb: metrics.usedHeapMb,
+					jsHeapUsedMb: metrics.jsHeapUsedMb,
+					postGcHeapMb,
+					heapGrowthMb: Number((postGcHeapMb - baselinePostGcHeapMb).toFixed(2)),
+					nodeCount: metrics.nodeCount,
+					documentCount: metrics.documentCount,
+					crashType: scaleCrashType,
+				});
+				if (scaleCrashType !== "none") {
+					crashType = scaleCrashType;
+					break;
+				}
+			} catch (error: any) {
+				crashType = "harness-or-cdp-error";
+				records.push({ round, scale, error: error?.message || String(error), crashType });
+				break;
+			} finally {
+				await probe?.close();
+			}
+		}
+
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				boundaryKind: "hard-boundary",
+				scale,
+				crashType,
+				peakJsHeapMb,
+				baselinePostGcHeapMb,
+				latestPostGcHeapMb,
+				heapGrowthMb: Number((latestPostGcHeapMb - baselinePostGcHeapMb).toFixed(2)),
+				scaleRecords: JSON.stringify(records),
+			},
+		};
+	});
+
+const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
+	runCase(context, "boundary-incremental-redraw-freeze", async () => {
+		const records: MetricMap[] = [];
+		let lastSurvivedConcurrency = 0;
+		let firstCrashConcurrency = 0;
+		let crashType = "none";
+		let peakJsHeapMb = 0;
+
+		for (const concurrency of context.config.concurrencyLevels) {
+			logStep(`incremental redraw flood: concurrency=${concurrency}`);
+			let observerProbe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
+			const bots: ProtocolClient[] = [];
+			try {
+				const { roomId } = await createRoomWithUsers(context.config, ["IncBoundarySeed"]);
+				const observerUser = await joinRoom(context.config, roomId, `IncObserver${concurrency}`);
+				const opened = await openBoundaryRoomPage(context, observerUser);
+				observerProbe = opened.probe;
+				const roi = roiAround(480, 330, 260);
+				const baseline = await capturePagePng(observerProbe.page, roi);
+				const users = await Promise.all(
+					Array.from({ length: concurrency }, (_, index) =>
+						joinRoom(context.config, roomId, `IncBot${concurrency}_${index}`)
+					)
+				);
+				for (const user of users) {
+					const bot = new ProtocolClient(context.config, user);
+					await bot.connect();
+					bots.push(bot);
+				}
+				const startedAt = performance.now();
+				await Promise.all(
+					bots.map((bot, index) =>
+						bot.sendStrokeAwait({
+							points: createLinePoints(32, { x: 0.12 + (index % 12) * 0.05, y: 0.25 }, { x: 0.003, y: 0.002 }),
+							color: index % 2 === 0 ? "#dc2626" : "#2563eb",
+							size: 4,
+						})
+					)
+				);
+				const changed = await waitForScreenshotChange(observerProbe.page, baseline, {
+					roi,
+					timeoutMs: context.config.freezeMs,
+					minDiffRatio: 0.003,
+				}).catch((error: any) => ({
+					elapsedMs: context.config.freezeMs,
+					frames: 0,
+					diffRatio: 0,
+					error: error?.message || String(error),
+				}));
+				const metrics = await observerProbe.readMetrics();
+				const scaleCrashType = classifyCrash(observerProbe.crash);
+				peakJsHeapMb = maxNumber(peakJsHeapMb, metrics.usedHeapMb, metrics.jsHeapUsedMb);
+				records.push({
+					concurrency,
+					dispatchMs: performance.now() - startedAt,
+					firstScreenshotChangeMs: changed.elapsedMs,
+					screenshotPolls: changed.frames,
+					roiDiffRatio: changed.diffRatio,
+					softFreeze: changed.elapsedMs >= context.config.freezeMs,
+					crashType: scaleCrashType,
+					usedHeapMb: metrics.usedHeapMb,
+					jsHeapUsedMb: metrics.jsHeapUsedMb,
+				});
+				if (scaleCrashType !== "none") {
+					firstCrashConcurrency = concurrency;
+					crashType = scaleCrashType;
+					break;
+				}
+				lastSurvivedConcurrency = concurrency;
+			} finally {
+				bots.forEach((bot) => bot.close());
+				await observerProbe?.close();
+			}
+		}
+
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				boundaryKind: "soft-freeze-boundary",
+				lastSurvivedConcurrency,
+				firstCrashConcurrency,
+				crashType,
+				peakJsHeapMb,
+				scaleRecords: JSON.stringify(records),
+			},
+		};
+	});
+
+const runNetworkRecovery = async (context: SuiteContext) =>
+	runCase(context, "resilience-network-recovery", async () => {
+		const records: MetricMap[] = [];
+		let worstRecoveryMs = 0;
+		for (const latencyMs of context.config.latencies) {
+			logStep(`network recovery: latency=${latencyMs}ms`);
+			let probe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
+			try {
+				const { users } = await createRoomWithUsers(context.config, ["NetworkObserver", "NetworkBot"]);
+				const opened = await openBoundaryRoomPage(context, users[0]!);
+				probe = opened.probe;
+				await probe.client.send("Network.enable").catch(() => undefined);
+				await probe.client.send("Network.emulateNetworkConditions", {
+					offline: false,
+					latency: latencyMs,
+					downloadThroughput: 64 * 1024,
+					uploadThroughput: 64 * 1024,
+				}).catch(() => undefined);
+				await probe.client.send("Network.emulateNetworkConditions", {
+					offline: true,
+					latency: 0,
+					downloadThroughput: 0,
+					uploadThroughput: 0,
+				}).catch(() => undefined);
+				await probe.page.waitForTimeout(500);
+				const recoveryStartedAt = performance.now();
+				await probe.client.send("Network.emulateNetworkConditions", {
+					offline: false,
+					latency: latencyMs,
+					downloadThroughput: 64 * 1024,
+					uploadThroughput: 64 * 1024,
+				}).catch(() => undefined);
+				const bot = new ProtocolClient(context.config, users[1]!);
+				await bot.connect();
+				const roi = roiAround(520, 330, 260);
+				const baseline = await capturePagePng(probe.page, roi);
+				bot.sendStroke({
+					points: createLinePoints(32, { x: 0.35, y: 0.35 }, { x: 0.004, y: 0.002 }),
+					color: "#111827",
+					size: 5,
+				});
+				const changed = await waitForScreenshotChange(probe.page, baseline, {
+					roi,
+					timeoutMs: context.config.caseTimeoutMs,
+					minDiffRatio: 0.003,
+				});
+				bot.close();
+				const recoveryMs = performance.now() - recoveryStartedAt;
+				worstRecoveryMs = Math.max(worstRecoveryMs, recoveryMs);
+				const metrics = await probe.readMetrics();
+				records.push({
+					latencyMs,
+					recoveryMs,
+					firstScreenshotChangeMs: changed.elapsedMs,
+					roiDiffRatio: changed.diffRatio,
+					crashType: classifyCrash(probe.crash),
+					usedHeapMb: metrics.usedHeapMb,
+					jsHeapUsedMb: metrics.jsHeapUsedMb,
+				});
+			} finally {
+				await probe?.close();
+			}
+		}
+
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				worstRecoveryMs,
+				latencyRecords: JSON.stringify(records),
+			},
+		};
+	});
 
 export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResult[]> => [
 	await runCase(context, "harness-health", async () => {
@@ -526,104 +1008,116 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 
 export const runPerformanceExternal = async (context: SuiteContext): Promise<CaseResult[]> => {
 	const results: CaseResult[] = [];
-	for (const scale of context.config.scales) {
-		results.push(await runSampledCase(context, `full-render-${scale}`, async (run, warmup) => {
-			const dir = artifactDir(
-				context,
-				`full-render-${scale}-${context.config.environment}-${warmup ? "warmup" : "run"}-${run}`
-			);
-			const { roomId, users } = await createRoomWithUsers(context.config, ["PerfBot"]);
-			const bot = new ProtocolClient(context.config, users[0]!);
+	if (context.config.caseSet === "standard" || context.config.caseSet === "all") {
+		for (const scale of context.config.scales) {
+			results.push(await runSampledCase(context, `full-render-${scale}`, async (run, warmup) => {
+				const dir = artifactDir(
+					context,
+					`full-render-${scale}-${context.config.environment}-${warmup ? "warmup" : "run"}-${run}`
+				);
+				const { roomId, users } = await createRoomWithUsers(context.config, ["PerfBot"]);
+				const bot = new ProtocolClient(context.config, users[0]!);
+				await bot.connect();
+				const pointsPerStroke = 64;
+				const strokes = Math.max(1, Math.ceil(scale / pointsPerStroke));
+				for (let index = 0; index < strokes; index += 1) {
+					await bot.sendStrokeAwait({
+						points: createDistributedStrokePoints(
+							Math.min(pointsPerStroke, scale - index * pointsPerStroke),
+							index,
+							strokes
+						),
+						color: index % 3 === 0 ? "#111827" : index % 3 === 1 ? "#2563eb" : "#dc2626",
+						size: 2 + (index % 3),
+					});
+				}
+				await new Promise((resolve) => setTimeout(resolve, Math.min(800, 60 + strokes * 2)));
+				bot.close();
+				const observerUser = await joinRoom(context.config, roomId, "PerfObserver");
+				const observer = await openMeasuredRoomPage(context.browser, context.config, observerUser);
+				const perf = await readPerformanceObserver(observer.page);
+				if (!warmup) {
+					await saveCanvasPng(observer.page, path.join(dir, "final.png"));
+				}
+				await observer.close();
+				return {
+					scale,
+					firstNonBlankMs: observer.initialRender.firstNonBlankMs,
+					visuallyStableMs: observer.initialRender.visuallyStableMs,
+					nonBlankRatio: observer.initialRender.nonBlankRatio,
+					longTaskCount: perf.longTaskCount,
+					longTaskTotalMs: perf.longTaskTotalMs,
+				};
+			}, { scale }));
+		}
+
+		results.push(await runSampledCase(context, "incremental-remote-first-pixel", async () => {
+			const { users } = await createRoomWithUsers(context.config, ["IncObserver", "IncBot"]);
+			const observer = await openRoomPage(context.browser, context.config, users[0]!);
+			const bot = new ProtocolClient(context.config, users[1]!);
 			await bot.connect();
-			const pointsPerStroke = 64;
-			const strokes = Math.max(1, Math.ceil(scale / pointsPerStroke));
-			for (let index = 0; index < strokes; index += 1) {
-				await bot.sendStrokeAwait({
-					points: createDistributedStrokePoints(
-						Math.min(pointsPerStroke, scale - index * pointsPerStroke),
-						index,
-						strokes
-					),
-					color: index % 3 === 0 ? "#111827" : index % 3 === 1 ? "#2563eb" : "#dc2626",
-					size: 2 + (index % 3),
-				});
-			}
-			await new Promise((resolve) => setTimeout(resolve, Math.min(800, 60 + strokes * 2)));
-			bot.close();
-			const observerUser = await joinRoom(context.config, roomId, "PerfObserver");
-			const observer = await openMeasuredRoomPage(context.browser, context.config, observerUser);
+			const roi = roiAround(480, 330, 260);
+			const baseline = await captureCanvasSample(observer.page, roi);
+			const sendStart = performance.now();
+			bot.sendStroke({
+				points: createLinePoints(32, { x: 0.32, y: 0.42 }, { x: 0.006, y: 0.002 }),
+				color: "#dc2626",
+				size: 5,
+			});
+			const changed = await waitForCanvasChange(observer.page, baseline, {
+				roi,
+				timeoutMs: 12000,
+				minDiffRatio: 0.005,
+				sampleSize: 64,
+			});
 			const perf = await readPerformanceObserver(observer.page);
-			if (!warmup) {
-				await saveCanvasPng(observer.page, path.join(dir, "final.png"));
-			}
+			bot.close();
 			await observer.close();
 			return {
-				scale,
-				firstNonBlankMs: observer.initialRender.firstNonBlankMs,
-				visuallyStableMs: observer.initialRender.visuallyStableMs,
-				nonBlankRatio: observer.initialRender.nonBlankRatio,
+				remoteFirstPixelMs: changed.elapsedMs,
+				protocolDispatchOverheadMs: Math.max(0, performance.now() - sendStart - changed.elapsedMs),
+				observerPollElapsedMs: changed.elapsedMs,
+				framesToFirstPixel: changed.frames,
+				roiDiffRatio: changed.diffRatio,
 				longTaskCount: perf.longTaskCount,
-				longTaskTotalMs: perf.longTaskTotalMs,
 			};
-		}, { scale }));
+		}));
+
+		results.push(await runSampledCase(context, "local-realtime-first-pixel", async () => {
+			const { users } = await createRoomWithUsers(context.config, ["RealtimeUser"]);
+			const page = await openRoomPage(context.browser, context.config, users[0]!);
+			const roi = roiAround(360, 330, 280);
+			const baseline = await captureCanvasSample(page.page, roi);
+			const waitForPixel = waitForCanvasChange(page.page, baseline, {
+				roi,
+				timeoutMs: 12000,
+				minDiffRatio: 0.005,
+				sampleSize: 64,
+			});
+			await drawLineLowLatency(page.page, 260, 260, 460, 400, 1);
+			const changed = await waitForPixel;
+			const perf = await readPerformanceObserver(page.page);
+			await page.close();
+			return {
+				inputToFirstPixelMs: changed.elapsedMs,
+				observerPollElapsedMs: changed.elapsedMs,
+				inputToFirstPixelFrames: changed.frames,
+				roiDiffRatio: changed.diffRatio,
+				inputDelayMs: perf.eventDelayMaxMs,
+				longTaskCount: perf.longTaskCount,
+			};
+		}));
 	}
 
-	results.push(await runSampledCase(context, "incremental-remote-first-pixel", async () => {
-		const { users } = await createRoomWithUsers(context.config, ["IncObserver", "IncBot"]);
-		const observer = await openRoomPage(context.browser, context.config, users[0]!);
-		const bot = new ProtocolClient(context.config, users[1]!);
-		await bot.connect();
-		const roi = roiAround(480, 330, 260);
-		const baseline = await captureCanvasSample(observer.page, roi);
-		const sendStart = performance.now();
-		bot.sendStroke({
-			points: createLinePoints(32, { x: 0.32, y: 0.42 }, { x: 0.006, y: 0.002 }),
-			color: "#dc2626",
-			size: 5,
-		});
-		const changed = await waitForCanvasChange(observer.page, baseline, {
-			roi,
-			timeoutMs: 12000,
-			minDiffRatio: 0.005,
-			sampleSize: 64,
-		});
-		const perf = await readPerformanceObserver(observer.page);
-		bot.close();
-		await observer.close();
-		return {
-			remoteFirstPixelMs: changed.elapsedMs,
-			protocolDispatchOverheadMs: Math.max(0, performance.now() - sendStart - changed.elapsedMs),
-			observerPollElapsedMs: changed.elapsedMs,
-			framesToFirstPixel: changed.frames,
-			roiDiffRatio: changed.diffRatio,
-			longTaskCount: perf.longTaskCount,
-		};
-	}));
+	if (context.config.caseSet === "resilience" || context.config.caseSet === "all") {
+		results.push(await runNetworkRecovery(context));
+	}
 
-	results.push(await runSampledCase(context, "local-realtime-first-pixel", async () => {
-		const { users } = await createRoomWithUsers(context.config, ["RealtimeUser"]);
-		const page = await openRoomPage(context.browser, context.config, users[0]!);
-		const roi = roiAround(360, 330, 280);
-		const baseline = await captureCanvasSample(page.page, roi);
-		const waitForPixel = waitForCanvasChange(page.page, baseline, {
-			roi,
-			timeoutMs: 12000,
-			minDiffRatio: 0.005,
-			sampleSize: 64,
-		});
-		await drawLineLowLatency(page.page, 260, 260, 460, 400, 1);
-		const changed = await waitForPixel;
-		const perf = await readPerformanceObserver(page.page);
-		await page.close();
-		return {
-			inputToFirstPixelMs: changed.elapsedMs,
-			observerPollElapsedMs: changed.elapsedMs,
-			inputToFirstPixelFrames: changed.frames,
-			roiDiffRatio: changed.diffRatio,
-			inputDelayMs: perf.eventDelayMaxMs,
-			longTaskCount: perf.longTaskCount,
-		};
-	}));
+	if (context.config.caseSet === "boundary" || context.config.caseSet === "all") {
+		results.push(await runBoundaryFullRender(context));
+		results.push(await runBoundaryHeapGrowth(context));
+		results.push(await runBoundaryIncrementalFreeze(context));
+	}
 
 	return results;
 };
