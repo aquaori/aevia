@@ -15,7 +15,6 @@ import {
 	saveCanvasPng,
 	waitForCanvasChange,
 	waitForNonBlankCanvas,
-	waitForStableCanvas,
 } from "./canvas-observer";
 import { drawLine, drawLineLowLatency, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo } from "./ui-driver";
 import { readPerformanceObserver } from "./performance-observer";

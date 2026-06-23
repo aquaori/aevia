@@ -15,12 +15,6 @@ const FRAME_TYPES = {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const writeUtf8 = (view: Uint8Array, offset: number, value: string) => {
-	const bytes = encoder.encode(value);
-	view.set(bytes, offset);
-	return bytes.length;
-};
-
 const readUtf8 = (view: Uint8Array, offset: number, length: number) =>
 	decoder.decode(view.subarray(offset, offset + length));
 

@@ -337,13 +337,9 @@ const handlers = {
     }
 
     const targetPageId = Number.isInteger(normalizedCommand.pageId) ? normalizedCommand.pageId : ws.pageId;
-    let accepted = false;
-
-    if (normalizedCommand.type === "clear") {
-      accepted = roomService.clearCommands(ws.roomId, normalizedCommand.pageId);
-    } else {
-      accepted = roomService.saveCommand(ws.roomId, normalizedCommand);
-    }
+    const accepted = normalizedCommand.type === "clear"
+      ? roomService.clearCommands(ws.roomId, normalizedCommand.pageId)
+      : roomService.saveCommand(ws.roomId, normalizedCommand);
 
     if (!accepted) {
       rejectOperation(ws, "push-cmd", {

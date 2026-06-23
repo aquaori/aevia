@@ -591,10 +591,6 @@ export const writeHtmlReport = (reportRoot: string, report: ExternalReport, runT
 
 	const totalPassed = results.filter((result) => result.status === "passed").length;
 	const totalFailed = results.length - totalPassed;
-	const regressionChecks = report.regressions.flatMap((item) => item.checks);
-	const regressionImproved = regressionChecks.filter((check) => check.trend === "improved").length;
-	const regressionRegressed = regressionChecks.filter((check) => check.trend === "regressed").length;
-	const regressionUnchanged = regressionChecks.filter((check) => check.trend === "unchanged").length;
 	const environmentSections = Array.from(grouped.entries())
 		.map(([environment, environmentResults]) => renderEnvironmentSection(reportRoot, environment, environmentResults))
 		.join("");

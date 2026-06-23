@@ -649,7 +649,6 @@ export const createInteractionController = () => {
 		initialGroupBox,
 		transformingCmdIds,
 		initialCmdsState,
-		commands,
 	}: PreviewCursorInteractionInput): PreviewCursorInteractionResult => {
 		const normalizedPoint = normalizeCoordinates(canvas, { x, y });
 

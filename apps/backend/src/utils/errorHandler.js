@@ -3,7 +3,7 @@ const Logger = require("./logger");
 /**
  * Express 全局错误处理中间件
  */
-const globalErrorHandler = (err, req, res, next) => {
+const globalErrorHandler = (err, req, res, _next) => {
     const status = err.status || 500;
     const message = err.message || "Internal Server Error";
 
@@ -39,7 +39,7 @@ const setupProcessListeners = () => {
         // process.exit(1);
     });
 
-    process.on("unhandledRejection", (reason, promise) => {
+    process.on("unhandledRejection", (reason, _promise) => {
         Logger.error("CRITICAL: Unhandled Rejection at Promise");
         console.error(reason);
     });

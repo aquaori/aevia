@@ -108,7 +108,6 @@
 	const pruneDeletedCommandsAfterPointer = commandStore.pruneDeletedCommandsAfterPointer;
 	// 统一使用 Store 中的状态，并通过 storeToRefs 保持响应性
 	const commandMapRef = commandStore.commandMap;
-	const commandMap = commandStore.commandMap;
 	const insertCommand = commandStore.insertCommand;
 	const clearClearedCommands = commandStore.clearClearedCommands;
 	const removeCommand = commandStore.removeCommand;
@@ -153,7 +152,7 @@
 			if (requestId !== pageOverviewRequestId) return;
 			pageOverviewTotalPages.value = overview.totalPages;
 			pageOverviewPages.value = overview.pages;
-		} catch (error) {
+		} catch {
 			if (requestId !== pageOverviewRequestId) return;
 			pageOverviewError.value = "页面总览加载失败";
 		} finally {

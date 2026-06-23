@@ -22,7 +22,7 @@ class AuthService {
   verifyToken(token, options = {}) {
     try {
       return jwt.verify(token, config.JWT_SECRET, options);
-    } catch (e) {
+    } catch {
       return null;
     }
   }

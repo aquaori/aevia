@@ -1,5 +1,5 @@
 // File role: shared stroke rasterization helpers used by full, incremental, and live drawing paths.
-import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
+import type { FlatPoint, Point } from "@collaborative-whiteboard/shared";
 
 type StrokeTool = "pen" | "eraser" | "cursor";
 type StrokeSample = Pick<Point, "x" | "y" | "p"> | Pick<FlatPoint, "x" | "y" | "p">;

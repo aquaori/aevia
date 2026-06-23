@@ -652,7 +652,6 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "sync-scene") {
-		const commands = data.commands as Command[];
 		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
 		return;
 	}

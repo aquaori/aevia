@@ -38,7 +38,7 @@ const renderIncrementPoint = (
 	width: number,
 	height: number,
 	skipQueue = false,
-	source: "local" | "remote" = "remote"
+	_source: "local" | "remote" = "remote"
 ) => {
 	if (cmd.type !== "path" || points.length === 0) {
 		return;
@@ -103,7 +103,7 @@ const renderPointSequence = (
 	width: number,
 	height: number,
 	points: FlatPoint[],
-	isDirtyRender = false,
+	_isDirtyRender = false,
 	startTime?: number
 ) => {
 	const renderStart = startTime || performance.now();

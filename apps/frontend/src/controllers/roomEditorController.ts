@@ -1,6 +1,6 @@
 // File role: top-level editor controller for tool switching, color changes, and transform finalization.
 import type { Ref } from "vue";
-import type { HandleType, InteractionMode, TransformAnimState } from "../states/roomInteractionState";
+import type { InteractionMode, TransformAnimState } from "../states/roomInteractionState";
 import { useRoomSessionEmitHook } from "../service/roomSessionContext";
 
 type Tool = "pen" | "eraser" | "cursor";

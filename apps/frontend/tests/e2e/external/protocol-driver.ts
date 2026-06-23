@@ -15,7 +15,9 @@ const requestJson = async (
 			body: JSON.stringify(body),
 		});
 	} catch (error: any) {
-		throw new Error(`${failurePrefix}: ${error?.message || "request failed"}`);
+		throw new Error(`${failurePrefix}: ${error?.message || "request failed"}`, {
+			cause: error,
+		});
 	}
 	if (!response.ok) {
 		throw new Error(`${failurePrefix}: HTTP ${response.status}`);
@@ -30,7 +32,9 @@ export const assertFrontendReachable = async (config: ExternalConfig) => {
 			throw new Error(`HTTP ${response.status}`);
 		}
 	} catch (error: any) {
-		throw new Error(`frontend unreachable: ${error?.message || "request failed"}`);
+		throw new Error(`frontend unreachable: ${error?.message || "request failed"}`, {
+			cause: error,
+		});
 	}
 };
 

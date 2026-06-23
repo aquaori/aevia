@@ -17,7 +17,7 @@ interface FlatPointRequest {
 	requestId: string;
 }
 
-interface MainCanvasRenderRequest extends FlatPointRequest {}
+type MainCanvasRenderRequest = FlatPointRequest;
 
 interface DirtyRectRequest {
 	minX: number;
