@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 try {
-	(process as any).loadEnvFile();
+	(process as NodeJS.Process & { loadEnvFile?: () => void }).loadEnvFile?.();
 } catch {
 	// Optional on older Node versions.
 }

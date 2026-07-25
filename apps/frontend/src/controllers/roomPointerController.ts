@@ -4,8 +4,20 @@ import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
 import { canvasRef, ctx } from "../service/canvas";
 import type { Command, Point, aabbBox } from "@collaborative-whiteboard/shared";
-import { getNextStrokeWidth, paintStrokeSample, resolveStrokeStyle } from "../service/strokeRasterizer";
+import {
+	getInitialStrokeWidth,
+	getNextStrokeWidth,
+	resolveStrokeStyle,
+} from "../service/strokeRasterizer";
 import type { PointerHotState } from "../states/roomInteractionState";
+import { getCollabPressurePolicy, shouldFlushCommandUpdate } from "../service/collabPressurePolicy";
+import {
+	createStrokeInputSampler,
+	resolveStrokeStartPressure,
+	simplifyStrokeSamples,
+	type RawPointerSample,
+	type StrokeInputSample,
+} from "../service/strokeInputSampler";
 
 type Tool = "pen" | "eraser" | "cursor";
 type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing";
@@ -15,6 +27,12 @@ interface TransformAnimState {
 	progress: number;
 	phase: "entering" | "dragging" | "exiting";
 	initialBox: aabbBox | null;
+}
+
+interface PendingStrokeStart {
+	id: string;
+	initialSample: StrokeInputSample;
+	pointerType: string;
 }
 
 interface RoomPointerControllerOptions {
@@ -56,13 +74,16 @@ interface RoomPointerControllerOptions {
 		source?: "local" | "remote"
 	) => void;
 	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
+	finishIncrementalCommand?: (cmd: Command) => void;
 	isOffscreenMainCanvas?: () => boolean;
+	syncCommandState?: (cmd: Command) => void;
 	send: (type: string, data: unknown) => boolean;
 	pushCommand: (
 		cmdPartial: Partial<Command>,
 		type?: "normal" | "start" | "update" | "stop"
-	) => void;
+	) => { ok: boolean; error?: string; command?: Command } | undefined;
 	renderCanvas: () => void;
+	hydrateCommandPoints?: (cmdIds: string[]) => Promise<void>;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
 	getGroupBoundingBox: (
 		cmdIds: Set<string>,
@@ -77,7 +98,49 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 	let hasPendingCursorFrame = false;
 	let hasPendingPointerSync = false;
 	let latestCursorFrame = { x: 0, y: 0 };
-	let pendingStrokeSamples: Array<{ x: number; y: number; pressure: number; pointerType: string }> = [];
+	let pendingStrokeSamples: StrokeInputSample[] = [];
+	let pendingStrokeStart: PendingStrokeStart | null = null;
+	let lastCanonicalSample: StrokeInputSample | null = null;
+	let lastPointerSyncAt = 0;
+	let lastCommandUpdateSentAt = 0;
+	let pendingCommandUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+	const strokeInputSampler = createStrokeInputSampler();
+
+	const toRawPointerSample = (
+		event: PointerEvent,
+		canvasOffset?: { left: number; top: number }
+	): RawPointerSample => {
+		const coordinates = canvasOffset
+			? {
+					x: event.clientX - canvasOffset.left,
+					y: event.clientY - canvasOffset.top,
+					pressure: event.pressure || 0.5,
+				}
+			: options.interactionController.getCoordinates(canvasRef.value, event);
+		return {
+			x: coordinates.x,
+			y: coordinates.y,
+			pressure: coordinates.pressure,
+			pointerType: event.pointerType,
+			timeStamp: event.timeStamp,
+		};
+	};
+
+	const getCoalescedPointerEvents = (event: PointerEvent) => {
+		const coalesced = event.getCoalescedEvents?.() ?? [];
+		if (coalesced.length === 0) return [event];
+		const events = [...coalesced];
+		const last = events[events.length - 1];
+		if (
+			!last ||
+			last.timeStamp !== event.timeStamp ||
+			last.clientX !== event.clientX ||
+			last.clientY !== event.clientY
+		) {
+			events.push(event);
+		}
+		return events;
+	};
 
 	const scheduleFrameFlush = () => {
 		if (frameRequestId !== null) {
@@ -87,10 +150,13 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		frameRequestId = window.requestAnimationFrame(() => {
 			frameRequestId = null;
 			flushFrameWork();
+			const hasFlushableStrokeSamples =
+				pendingStrokeSamples.length > 0 &&
+				(!pendingStrokeStart || pendingStrokeSamples.length >= 2);
 			if (
 				hasPendingCursorFrame ||
 				hasPendingPointerSync ||
-				pendingStrokeSamples.length > 0
+				hasFlushableStrokeSamples
 			) {
 				scheduleFrameFlush();
 			}
@@ -102,6 +168,21 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			window.cancelAnimationFrame(frameRequestId);
 			frameRequestId = null;
 		}
+	};
+
+	const clearPendingCommandUpdateTimer = () => {
+		if (pendingCommandUpdateTimer) {
+			clearTimeout(pendingCommandUpdateTimer);
+			pendingCommandUpdateTimer = null;
+		}
+	};
+
+	const schedulePendingCommandUpdate = (delayMs: number) => {
+		if (pendingCommandUpdateTimer) return;
+		pendingCommandUpdateTimer = setTimeout(() => {
+			pendingCommandUpdateTimer = null;
+			flushStrokeSamples(true);
+		}, Math.max(0, delayMs));
 	};
 
 	const queueCursorFrame = (x: number, y: number) => {
@@ -119,6 +200,11 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 
 	const flushPointerSync = () => {
 		if (!hasPendingPointerSync) return;
+		const policy = getCollabPressurePolicy();
+		const now = performance.now();
+		if (now - lastPointerSyncAt < policy.cursorMinIntervalMs) {
+			return;
+		}
 		options.pointerHotState.lastSentPos = options.interactionController.syncPointerPosition({
 			canvas: canvasRef.value,
 			cursorX: latestCursorFrame.x,
@@ -136,37 +222,131 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			lastSentPos: options.pointerHotState.lastSentPos,
 			send: options.send,
 		});
+		lastPointerSyncAt = now;
 		hasPendingPointerSync = false;
 	};
 
-	const flushStrokeSamples = () => {
+	const commitPendingStrokeStart = (force = false) => {
+		if (!pendingStrokeStart) return true;
+		if (!force && pendingStrokeSamples.length < 2) return false;
+		if (!canvasRef.value) return false;
+
+		const { id, initialSample, pointerType } = pendingStrokeStart;
+		const tool = options.currentTool.value === "eraser" ? "eraser" : "pen";
+		const pressure = resolveStrokeStartPressure(
+			initialSample.pressure,
+			pendingStrokeSamples,
+			pointerType
+		);
+		const correctedInitialSample = { ...initialSample, pressure };
+		lastCanonicalSample = correctedInitialSample;
+		options.lastWidthRef.value = getInitialStrokeWidth(
+			tool,
+			options.currentSize.value,
+			pressure
+		);
+
+		const dpr = window.devicePixelRatio || 1;
+		const width = canvasRef.value.width / dpr;
+		const height = canvasRef.value.height / dpr;
+		const lamport = useLamportStore().getNextLamport();
+		const p0: Point = {
+			x: correctedInitialSample.x / width,
+			y: correctedInitialSample.y / height,
+			p: pressure,
+			lamport,
+		};
+		const commandPoints = [p0];
+		options.pointerHotState.currentPathPoints = commandPoints;
+		options.pointerHotState.pendingPoints = [];
+
+		const command: Command = {
+			id,
+			type: "path",
+			points: commandPoints,
+			tool,
+			color: options.currentColor.value,
+			size: options.currentSize.value,
+			timestamp: Date.now(),
+			userId: options.userId.value,
+			roomId: Array.isArray(options.roomId.value)
+				? options.roomId.value[0] || ""
+				: options.roomId.value,
+			pageId: options.currentPageId.value,
+			isDeleted: false,
+			lamport,
+			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+		};
+		const startResult = options.pushCommand(command, "start");
+		if (!startResult?.ok) {
+			pendingStrokeStart = null;
+			pendingStrokeSamples = [];
+			strokeInputSampler.reset();
+			lastCanonicalSample = null;
+			options.pointerHotState.currentPathPoints = [];
+			options.pointerHotState.pendingPoints = [];
+			options.currentDrawingId.value = null;
+			options.isDrawing.value = false;
+			options.activePointerId.value = null;
+			return false;
+		}
+
+		if (!options.isOffscreenMainCanvas?.()) {
+			useLamportStore().pushToQueue({
+				x: correctedInitialSample.x,
+				y: correctedInitialSample.y,
+				p: pressure,
+				cmdId: id,
+				userId: options.userId.value,
+				tool,
+				color: options.currentColor.value,
+				size: options.currentSize.value,
+				isDeleted: false,
+				lastX: correctedInitialSample.x,
+				lastY: correctedInitialSample.y,
+				lastWidth: options.lastWidthRef.value,
+				lamport,
+			});
+		}
+
+		options.renderIncrementalCommand?.(command, [p0], "local");
+		pendingStrokeStart = null;
+		return true;
+	};
+
+	const flushStrokeSamples = (forceUpdate = false) => {
 		if (
-			pendingStrokeSamples.length === 0 ||
 			!options.currentDrawingId.value ||
 			options.currentTool.value === "cursor" ||
 			!canvasRef.value
 		) {
 			return;
 		}
+		if (!commitPendingStrokeStart(forceUpdate)) return;
 
-		const samples = pendingStrokeSamples;
+		const policy = getCollabPressurePolicy();
+		const samples = simplifyStrokeSamples(
+			pendingStrokeSamples,
+			lastCanonicalSample,
+			policy.simplificationTolerancePx
+		);
 		pendingStrokeSamples = [];
 
 		const dpr = window.devicePixelRatio || 1;
 		const width = canvasRef.value.width / dpr;
 		const height = canvasRef.value.height / dpr;
 		const localCmdId = options.currentDrawingId.value;
+		const localCommand = options.commandMap.get(localCmdId);
+		if (localCommand && localCommand.points !== options.pointerHotState.currentPathPoints) {
+			localCommand.points = options.pointerHotState.currentPathPoints;
+		}
 		let nextX = options.lastXRef.value;
 		let nextY = options.lastYRef.value;
 		let nextWidth = options.lastWidthRef.value;
 		const normalizedPoints: Point[] = [];
 
 		for (const sample of samples) {
-			const dist = Math.hypot(sample.x - nextX, sample.y - nextY);
-			const clamp = (num: number, min: number, max: number) => Math.min(Math.max(num, min), max);
-			const simulatedPressure =
-				sample.pointerType === "pen" ? sample.pressure : clamp(1 - dist / 100, 0.3, 1);
-			const usedPressure = sample.pointerType === "pen" ? sample.pressure : simulatedPressure;
+			const usedPressure = sample.pressure;
 			const lamport = useLamportStore().getNextLamport();
 
 			if (!options.isOffscreenMainCanvas?.()) {
@@ -197,48 +377,33 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			options.pointerHotState.currentPathPoints.push(normalizedPoint);
 			options.pointerHotState.pendingPoints.push(normalizedPoint);
 
-			if (options.isOffscreenMainCanvas?.()) {
-				nextWidth =
-					options.currentTool.value === "eraser"
-						? options.currentSize.value
-						: getNextStrokeWidth({
-								tool: options.currentTool.value,
-								baseSize: options.currentSize.value,
-								pressure: usedPressure,
-								previousState: {
-									x: nextX,
-									y: nextY,
-									width: nextWidth,
-								},
-								x: sample.x,
-								y: sample.y,
-								logicalWidth: width,
-						  });
-			} else if (ctx.value) {
-				const paintResult = paintStrokeSample({
-					ctx: ctx.value,
-					sample: normalizedPoint,
-					previousState: {
-						x: nextX,
-						y: nextY,
-						width: nextWidth,
-					},
-					tool: options.currentTool.value,
-					color: options.currentColor.value,
-					baseSize: options.currentSize.value,
-					logicalWidth: width,
-					logicalHeight: height,
-				});
-				nextWidth = paintResult.width;
-			}
+			nextWidth =
+				options.currentTool.value === "eraser"
+					? options.currentSize.value
+					: getNextStrokeWidth({
+							tool: options.currentTool.value,
+							baseSize: options.currentSize.value,
+							pressure: usedPressure,
+							previousState: {
+								x: nextX,
+								y: nextY,
+								width: nextWidth,
+							},
+							x: sample.x,
+							y: sample.y,
+							logicalWidth: width,
+					  });
 
 			nextX = sample.x;
 			nextY = sample.y;
 		}
+		if (samples.length > 0) {
+			lastCanonicalSample = samples[samples.length - 1]!;
+		}
 
-		if (normalizedPoints.length === 0) return;
+		if (normalizedPoints.length === 0 && !forceUpdate) return;
 
-		if (options.isOffscreenMainCanvas?.()) {
+		if (normalizedPoints.length > 0) {
 			options.renderIncrementalCommand?.(
 				{
 					id: localCmdId,
@@ -264,7 +429,17 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.lastYRef.value = nextY;
 		options.lastWidthRef.value = nextWidth;
 
-		if (options.pointerHotState.pendingPoints.length > 0) {
+		const now = performance.now();
+		const elapsedMs = now - lastCommandUpdateSentAt;
+		if (
+			shouldFlushCommandUpdate(
+				policy,
+				options.pointerHotState.pendingPoints.length,
+				elapsedMs,
+				forceUpdate
+			)
+		) {
+			clearPendingCommandUpdateTimer();
 			options.pushCommand(
 				{
 					id: localCmdId,
@@ -273,13 +448,16 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				"update"
 			);
 			options.pointerHotState.pendingPoints = [];
+			lastCommandUpdateSentAt = now;
+		} else if (options.pointerHotState.pendingPoints.length > 0) {
+			schedulePendingCommandUpdate(policy.updateMinIntervalMs - elapsedMs);
 		}
 	};
 
-	const flushFrameWork = () => {
+	const flushFrameWork = (forceUpdate = false) => {
 		flushCursorFrame();
 		flushPointerSync();
-		flushStrokeSamples();
+		flushStrokeSamples(forceUpdate);
 	};
 
 	const finalizeDrop = () => {
@@ -320,7 +498,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.activeMenu.value = null;
 	};
 
-	const startDrawing = (e: PointerEvent) => {
+	const startDrawing = async (e: PointerEvent) => {
 		if (!canvasRef.value) return;
 		if (options.isDrawing.value) return;
 
@@ -344,12 +522,20 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			options.activePointerId.value = e.pointerId;
 
 			if (cursorAction.mode === "dragging" || cursorAction.mode === "resizing") {
+				await options.hydrateCommandPoints?.(cursorAction.selectedIds);
+				const hydratedInitialCmdsState = new Map<string, Point[]>();
+				cursorAction.selectedIds.forEach((id) => {
+					const cmd = options.commandMap.get(id);
+					if (cmd?.points) {
+						hydratedInitialCmdsState.set(id, cmd.points.map((point) => ({ ...point })));
+					}
+				});
 				options.lastXRef.value = cursorAction.x;
 				options.lastYRef.value = cursorAction.y;
 				options.dragStartPos.value = cursorAction.normalizedPoint;
 				options.pointerHotState.lastSentPos = cursorAction.normalizedPoint;
 				options.selectedCommandIds.value = new Set(cursorAction.selectedIds);
-				options.initialCmdsState.value = cursorAction.initialCmdsState;
+				options.initialCmdsState.value = hydratedInitialCmdsState;
 				options.initialGroupBox.value = cursorAction.groupBox;
 			} else {
 				options.selectedCommandIds.value.clear();
@@ -368,90 +554,26 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.activePointerId.value = e.pointerId;
 		options.activeMenu.value = null;
 
-		const { x, y, pressure } = options.interactionController.getCoordinates(canvasRef.value, e);
+		const initialSample = strokeInputSampler.start(toRawPointerSample(e));
+		lastCanonicalSample = initialSample;
+		const { x, y } = initialSample;
 		queueCursorFrame(x, y);
 		options.lastXRef.value = x;
 		options.lastYRef.value = y;
-
-		const initialPressure = e.pointerType === "pen" ? pressure : 0.2;
-		options.lastWidthRef.value =
-			options.currentTool.value === "eraser"
-				? options.currentSize.value
-				: options.currentSize.value * (initialPressure * 2);
-
-		const width = canvasRef.value.width / (window.devicePixelRatio || 1);
-		const height = canvasRef.value.height / (window.devicePixelRatio || 1);
-		const lamport = useLamportStore().getNextLamport();
-
-		const p0 = { x: x / width, y: y / height, p: initialPressure, lamport };
-		options.pointerHotState.currentPathPoints = [p0];
+		options.pointerHotState.currentPathPoints = [];
 		options.pointerHotState.pendingPoints = [];
 
 		const id = uuidv4();
 		options.currentDrawingId.value = id;
-
-		if (!options.isOffscreenMainCanvas?.()) {
-			useLamportStore().pushToQueue({
-				x,
-				y,
-				p: initialPressure,
-				cmdId: id,
-				userId: options.userId.value,
-				tool: options.currentTool.value,
-				color: options.currentColor.value,
-				size: options.currentSize.value,
-				isDeleted: false,
-				lastX: x,
-				lastY: y,
-				lastWidth: options.lastWidthRef.value,
-				lamport,
-			});
-		}
-
-		options.pushCommand(
-			{
-				id,
-				type: "path",
-				points: options.pointerHotState.currentPathPoints,
-				tool: options.currentTool.value,
-				color: options.currentColor.value,
-				size: options.currentSize.value,
-				timestamp: Date.now(),
-				userId: options.userId.value,
-				roomId: Array.isArray(options.roomId.value) ? options.roomId.value[0] : options.roomId.value,
-				pageId: options.currentPageId.value,
-				isDeleted: false,
-				lamport,
-				box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-			},
-			"start"
-		);
-
-		if (options.isOffscreenMainCanvas?.()) {
-			options.renderIncrementalCommand?.(
-				{
-					id,
-					type: "path",
-					points: [p0],
-					tool: options.currentTool.value,
-					color: options.currentColor.value,
-					size: options.currentSize.value,
-					timestamp: Date.now(),
-					userId: options.userId.value,
-					roomId: Array.isArray(options.roomId.value) ? options.roomId.value[0] : options.roomId.value,
-					pageId: options.currentPageId.value,
-					isDeleted: false,
-					lamport,
-					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-				},
-				[p0],
-				"local"
-			);
-		}
+		pendingStrokeStart = {
+			id,
+			initialSample,
+			pointerType: e.pointerType,
+		};
 	};
 
 	const draw = (e: PointerEvent) => {
-		const { x, y, pressure } = options.interactionController.getCoordinates(canvasRef.value, e);
+		const { x, y } = options.interactionController.getCoordinates(canvasRef.value, e);
 		queueCursorFrame(x, y);
 		hasPendingPointerSync = true;
 		scheduleFrameFlush();
@@ -490,7 +612,10 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 
 			preview.transformedCommands.forEach(({ cmdId, points }) => {
 				const cmd = options.commandMap.get(cmdId);
-				if (cmd) cmd.points = points;
+				if (cmd) {
+					cmd.points = points;
+					options.syncCommandState?.(cmd);
+				}
 			});
 			if (options.isOffscreenMainCanvas?.()) {
 				options.renderCanvas();
@@ -498,50 +623,25 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			return;
 		}
 
-		const lastQueuedSample = pendingStrokeSamples[pendingStrokeSamples.length - 1];
-		const prevX = lastQueuedSample?.x ?? options.lastXRef.value;
-		const prevY = lastQueuedSample?.y ?? options.lastYRef.value;
-		const dist = Math.hypot(x - prevX, y - prevY);
-		if (dist < 2) return;
-
-		pendingStrokeSamples.push({
-			x,
-			y,
-			pressure,
-			pointerType: e.pointerType,
-		});
+		const canvasOffset = { left: e.clientX - x, top: e.clientY - y };
+		for (const pointerEvent of getCoalescedPointerEvents(e)) {
+			pendingStrokeSamples.push(
+				...strokeInputSampler.add(toRawPointerSample(pointerEvent, canvasOffset))
+			);
+		}
 		scheduleFrameFlush();
 	};
 
 	const stopDrawing = (e: PointerEvent) => {
 		if (!options.isDrawing.value) return;
 		if (e.pointerId !== options.activePointerId.value) return;
-
-		flushFrameWork();
-		cancelFrameFlush();
-
-		const cmdId = options.currentDrawingId.value;
-		const cmd = cmdId ? options.commandMap.get(cmdId) : undefined;
-		if (cmd?.points?.length) {
-			cmd.box = options.getCommandBoundingBox(cmd) ?? {
-				minX: 0,
-				minY: 0,
-				maxX: 0,
-				maxY: 0,
-				width: 0,
-				height: 0,
-			};
+		if (options.currentTool.value !== "cursor") {
+			pendingStrokeSamples.push(...strokeInputSampler.add(toRawPointerSample(e), true));
 		}
 
-		options.pushCommand(
-			{
-				id: options.currentDrawingId.value || undefined,
-				points: options.pointerHotState.pendingPoints || [],
-				box: cmd?.box,
-			},
-			"stop"
-		);
-		options.pointerHotState.pendingPoints = [];
+		flushFrameWork(true);
+		cancelFrameFlush();
+		clearPendingCommandUpdateTimer();
 
 		if (options.currentTool.value === "cursor") {
 			const cursorStopResult = options.interactionController.finishCursorInteraction({
@@ -570,6 +670,12 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 						updates,
 						boxes,
 					});
+					updates.forEach((update) => {
+						const cmd = options.commandMap.get(update.cmdId);
+						if (cmd && options.isOffscreenMainCanvas?.()) {
+							cmd.points = undefined;
+						}
+					});
 				}
 
 				if (options.transformAnim.value) {
@@ -590,46 +696,42 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			options.initialGroupBox.value = cursorStopState.initialGroupBox;
 			return;
 		}
-
-		if (
-			options.pointerHotState.currentPathPoints.length === 1 &&
-			canvasRef.value &&
-			!options.isOffscreenMainCanvas?.()
-		) {
-			const dpr = window.devicePixelRatio || 1;
-			const p0 = options.pointerHotState.currentPathPoints[0] || { x: 0, y: 0, p: 0.5, lamport: 0 };
-			const width = canvasRef.value.width / dpr;
-			const height = canvasRef.value.height / dpr;
-			if (options.isOffscreenMainCanvas?.()) {
-				options.renderSinglePointCommand?.({
-					id: cmdId || "",
-					type: "path",
-					points: [p0],
-					tool: options.currentTool.value,
-					color: options.currentColor.value,
-					size: options.currentSize.value,
-					timestamp: Date.now(),
-					userId: options.userId.value,
-					roomId: Array.isArray(options.roomId.value)
-						? options.roomId.value[0] || ""
-						: options.roomId.value,
-					pageId: options.currentPageId.value,
-					isDeleted: false,
-					lamport: p0.lamport,
-					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-				});
-			} else if (ctx.value) {
-				paintStrokeSample({
-					ctx: ctx.value,
-					sample: p0,
-					tool: options.currentTool.value,
-					color: options.currentColor.value,
-					baseSize: options.currentSize.value,
-					logicalWidth: width,
-					logicalHeight: height,
-				});
+		if (!options.isDrawing.value || !options.currentDrawingId.value) {
+			if (e.target && (e.target as HTMLElement).hasPointerCapture(e.pointerId)) {
+				(e.target as HTMLElement).releasePointerCapture(e.pointerId);
 			}
+			return;
 		}
+
+		const cmdId = options.currentDrawingId.value;
+		const cmd = cmdId ? options.commandMap.get(cmdId) : undefined;
+		if (cmd?.points?.length) {
+			cmd.box = options.getCommandBoundingBox(cmd) ?? {
+				minX: 0,
+				minY: 0,
+				maxX: 0,
+				maxY: 0,
+				width: 0,
+				height: 0,
+			};
+		}
+
+		const stopResult = options.pushCommand(
+			{
+				id: options.currentDrawingId.value || undefined,
+				points: options.pointerHotState.pendingPoints || [],
+				box: cmd?.box,
+			},
+			"stop"
+		);
+		if (stopResult?.ok && cmd && options.isOffscreenMainCanvas?.()) {
+			cmd.points = undefined;
+			options.syncCommandState?.(cmd);
+		}
+		if (stopResult?.ok && cmd) {
+			options.finishIncrementalCommand?.(cmd);
+		}
+		options.pointerHotState.pendingPoints = [];
 
 		if (options.pointerHotState.pendingPoints.length > 0) {
 			options.pushCommand(
@@ -643,6 +745,9 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		}
 
 		options.pointerHotState.currentPathPoints = [];
+		pendingStrokeStart = null;
+		strokeInputSampler.reset();
+		lastCanonicalSample = null;
 		options.currentDrawingId.value = null;
 		options.isDrawing.value = false;
 		options.activePointerId.value = null;
@@ -661,9 +766,13 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				return;
 			}
 			pendingStrokeSamples = [];
+			pendingStrokeStart = null;
+			strokeInputSampler.reset();
+			lastCanonicalSample = null;
 			hasPendingPointerSync = false;
 			hasPendingCursorFrame = false;
 			cancelFrameFlush();
+			clearPendingCommandUpdateTimer();
 			options.pointerHotState.currentPathPoints = [];
 			options.pointerHotState.pendingPoints = [];
 			options.currentDrawingId.value = null;

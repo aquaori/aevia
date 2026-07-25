@@ -9,6 +9,9 @@
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "dev:go": "node scripts/dev-go.mjs",
+    "dev:go-backend": "node scripts/dev-go-backend.mjs",
+    "dev:frontend:go": "node scripts/dev-frontend-go.mjs",
     "dev:frontend": "npm run dev --workspace @collaborative-whiteboard/frontend",
     "dev:backend": "npm run dev --workspace @collaborative-whiteboard/backend",
     "build": "npm run build:backend && npm run build:frontend",
@@ -26,6 +29,7 @@
     "test:e2e": "npm run test:e2e --workspace @collaborative-whiteboard/frontend",
     "test:e2e:smoke": "npm run test:e2e:smoke:ci --workspace @collaborative-whiteboard/frontend",
     "test:benchmark": "npm run benchmark:external:ci --workspace @collaborative-whiteboard/frontend",
+    "benchmark:go": "node scripts/benchmark-go.mjs",
     "test:report": "tsx tests/report/aggregate.ts",
     "test:all:local": "tsx tests/run-system.ts --profile=standard --yes",
     "test:ci": "npm run build && npm run test:unit && npm run test:integration && npm run test:browser && npm run test:e2e:smoke && npm run test:report",
@@ -37,9 +41,9 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@vitejs/plugin-vue": "^6.0.1",
-    "@vitest/browser": "4.1.5",
-    "@vitest/browser-playwright": "4.1.5",
-    "@vitest/coverage-v8": "4.1.5",
+    "@vitest/browser": "^4.1.10",
+    "@vitest/browser-playwright": "^4.1.10",
+    "@vitest/coverage-v8": "^4.1.10",
     "@vue/test-utils": "^2.4.6",
     "eslint": "^10.5.0",
     "eslint-plugin-vue": "^10.9.2",
@@ -47,10 +51,13 @@
     "happy-dom": "^20.0.11",
     "playwright": "^1.58.2",
     "supertest": "^7.1.4",
-    "tsx": "^4.21.0",
+    "tsx": "^4.23.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.62.0",
     "vite": "^7.2.4",
-    "vitest": "4.1.5"
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
   }
 }

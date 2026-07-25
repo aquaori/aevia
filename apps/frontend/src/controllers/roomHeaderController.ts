@@ -3,6 +3,14 @@ import { toast } from "vue-sonner";
 import type { Ref } from "vue";
 import { generateShareInvite } from "../service/sessionApi";
 
+type ResponseError = {
+	response?: {
+		data?: {
+			msg?: string;
+		};
+	};
+};
+
 interface RoomHeaderControllerOptions {
 	roomId: Ref<string>;
 	roomName: Ref<string>;
@@ -33,11 +41,12 @@ export const createRoomHeaderController = (options: RoomHeaderControllerOptions)
 			window.setTimeout(() => {
 				options.hasCopied.value = false;
 			}, 2000);
-		} catch (error: any) {
+		} catch (error: unknown) {
+			const responseError = error as ResponseError;
 			console.error("Copy failed", error);
 			toast.error(
-				error?.response?.data?.msg
-					? `生成分享链接失败: ${error.response.data.msg}`
+				responseError.response?.data?.msg
+					? `生成分享链接失败: ${responseError.response.data.msg}`
 					: "复制失败"
 			);
 		}

@@ -95,7 +95,7 @@ const decodeMouseMoveServerBinary = (payload: ArrayBuffer): CollabIncomingMessag
 			x,
 			y,
 			pageId,
-		},
+		} as CollabIncomingMessage["data"],
 	};
 };
 
@@ -129,7 +129,7 @@ const decodeCmdUpdateBinary = (payload: ArrayBuffer): CollabIncomingMessage => {
 		data: {
 			cmdId,
 			points,
-		},
+		} as CollabIncomingMessage["data"],
 	};
 };
 

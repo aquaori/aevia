@@ -27,6 +27,14 @@
 		userStore.setSessionExpiresAt(payload.expiresAt ?? null);
 	};
 
+	type ResponseError = {
+		response?: {
+			data?: {
+				msg?: string;
+			};
+		};
+	};
+
 	// --- 状态 ---
 	type Mode = "join" | "create";
 	const mode = ref<Mode>("join");
@@ -127,9 +135,10 @@
 				} else {
 					roomCheckStatus.value = "valid";
 				}
-			} catch (err: any) {
+			} catch (err: unknown) {
+				const responseError = err as ResponseError;
 				roomCheckStatus.value = "idle";
-				toast.error(err.response?.data?.msg || "无法连接到服务器，请检查网络设置。");
+				toast.error(responseError.response?.data?.msg || "无法连接到服务器，请检查网络设置。");
 			}
 			isCheckingId.value = false;
 		} else {
@@ -145,7 +154,6 @@
 			try {
 				if (mode.value === "create") {
 					await checkRoomUnique();
-					console.log("roomCheckStatus:", roomCheckStatus.value);
 					if (roomCheckStatus.value === "valid") {
 						step.value = 2;
 					} else if (roomCheckStatus.value === "invalid") {
@@ -280,7 +288,6 @@
 	const submit = () => {
 		localStorage.setItem("wb_username", username.value);
 		if (mode.value === "create") {
-			console.log(roomId.value, roomName.value, password.value);
 			axios
 				.post((import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") + "/create-room", {
 					roomId: roomId.value,
@@ -289,7 +296,6 @@
 				})
 				.then((res) => {
 					if (res.data.code == 200) {
-						console.log(username.value);
 						axios
 							.post(
 								(import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") +

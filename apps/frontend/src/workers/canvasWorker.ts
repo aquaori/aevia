@@ -1,5 +1,5 @@
 import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
-import { paintStrokeSample, type StrokeState } from "../service/strokeRasterizer";
+import { finishStroke, paintStrokeSample, type StrokeState } from "../service/strokeRasterizer";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 
 interface Rect {
@@ -65,6 +65,7 @@ let viewport: WorkerViewport = { width: 0, height: 0, dpr: 1 };
 let currentPageId = 0;
 let currentTransformingIds = new Set<string>();
 const incrementalStates = new Map<string, StrokeState>();
+const activeStrokeIds = new Set<string>();
 const sceneCommands = new Map<string, Command>();
 const INIT_RENDER_CHUNK_MAGIC = 0x49524348;
 const INIT_RENDER_CHUNK_VERSION = 1;
@@ -134,11 +135,17 @@ const renderPointsToCanvas = (points: FlatPoint[]) => {
 	mainCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
 	mainCtx.restore();
 
+	const remainingPoints = new Map<string, number>();
+	points.forEach((point) => {
+		if (point.pageId !== currentPageId || point.isDeleted) return;
+		remainingPoints.set(point.cmdId, (remainingPoints.get(point.cmdId) ?? 0) + 1);
+	});
+
 	let renderedPointCount = 0;
 	points.forEach((point) => {
 		if (point.pageId !== currentPageId) return;
 		if (point.isDeleted) return;
-		const nextState = paintStrokeSample({
+		let nextState = paintStrokeSample({
 			ctx: mainCtx as unknown as CanvasRenderingContext2D,
 			sample: point,
 			previousState: incrementalStates.get(point.cmdId) ?? null,
@@ -148,7 +155,25 @@ const renderPointsToCanvas = (points: FlatPoint[]) => {
 			logicalWidth: viewport.width,
 			logicalHeight: viewport.height,
 		});
-		incrementalStates.set(point.cmdId, nextState);
+		const remaining = (remainingPoints.get(point.cmdId) ?? 1) - 1;
+		remainingPoints.set(point.cmdId, remaining);
+		if (remaining === 0 && !activeStrokeIds.has(point.cmdId)) {
+			nextState =
+				finishStroke({
+					ctx: mainCtx as unknown as CanvasRenderingContext2D,
+					state: nextState,
+					tool: point.tool,
+					color: point.color,
+					baseSize: point.size,
+					logicalWidth: viewport.width,
+					logicalHeight: viewport.height,
+				}) ?? nextState;
+		}
+		if (nextState.finished) {
+			incrementalStates.delete(point.cmdId);
+		} else {
+			incrementalStates.set(point.cmdId, nextState);
+		}
 		renderedPointCount += 1;
 	});
 
@@ -158,6 +183,7 @@ const renderPointsToCanvas = (points: FlatPoint[]) => {
 const clearCanvas = () => {
 	if (!offscreenCanvas || !mainCtx) return;
 	incrementalStates.clear();
+	activeStrokeIds.clear();
 	mainCtx.save();
 	mainCtx.setTransform(1, 0, 0, 1, 0, 0);
 	mainCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
@@ -165,10 +191,12 @@ const clearCanvas = () => {
 };
 
 const appendFlatPointsToCanvas = (points: FlatPoint[]) => {
-	if (!mainCtx || points.length === 0) return 0;
+	if (points.length === 0) return 0;
 	points.forEach((point) => {
 		if (point.pageId !== currentPageId) return;
 		if (point.isDeleted) return;
+		appendSceneFlatPoint(point);
+		if (!mainCtx) return;
 		const nextState = paintStrokeSample({
 			ctx: mainCtx as unknown as CanvasRenderingContext2D,
 			sample: point,
@@ -186,70 +214,10 @@ const appendFlatPointsToCanvas = (points: FlatPoint[]) => {
 
 const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint[] => {
 	const view = new DataView(data.buffer);
-	if (view.byteLength < INIT_RENDER_CHUNK_HEADER_SIZE) {
-		console.error("[canvasWorker] init render binary chunk header is truncated.");
-		return [];
-	}
+	const header = validateInitRenderBinaryChunk(data, view);
+	if (!header) return [];
 
-	const magic = view.getUint32(0, false);
-	const version = view.getUint16(4, false);
-	const recordSize = view.getUint16(6, false);
-	const snapshotVersion = view.getUint32(8, false);
-	const chunkIndex = view.getUint32(12, false);
-	const pointCount = view.getUint32(16, false);
-
-	if (magic !== INIT_RENDER_CHUNK_MAGIC) {
-		console.error("[canvasWorker] init render binary chunk magic mismatch.", {
-			expected: INIT_RENDER_CHUNK_MAGIC,
-			received: magic,
-		});
-		return [];
-	}
-
-	if (version !== INIT_RENDER_CHUNK_VERSION) {
-		console.error("[canvasWorker] init render binary chunk version mismatch.", {
-			expected: INIT_RENDER_CHUNK_VERSION,
-			received: version,
-		});
-		return [];
-	}
-
-	if (recordSize !== INIT_RENDER_CHUNK_RECORD_SIZE) {
-		console.error("[canvasWorker] init render binary chunk record size mismatch.", {
-			expected: INIT_RENDER_CHUNK_RECORD_SIZE,
-			received: recordSize,
-		});
-		return [];
-	}
-
-	if (snapshotVersion !== data.snapshotVersion || chunkIndex !== data.chunkIndex) {
-		console.error("[canvasWorker] init render binary chunk identity mismatch.", {
-			expectedSnapshotVersion: data.snapshotVersion,
-			receivedSnapshotVersion: snapshotVersion,
-			expectedChunkIndex: data.chunkIndex,
-			receivedChunkIndex: chunkIndex,
-		});
-		return [];
-	}
-
-	if (pointCount !== data.pointCount) {
-		console.error("[canvasWorker] init render binary chunk point count mismatch.", {
-			expected: data.pointCount,
-			received: pointCount,
-		});
-		return [];
-	}
-
-	const expectedByteLength =
-		INIT_RENDER_CHUNK_HEADER_SIZE + pointCount * INIT_RENDER_CHUNK_RECORD_SIZE;
-	if (view.byteLength !== expectedByteLength) {
-		console.error("[canvasWorker] init render binary chunk byte length mismatch.", {
-			expected: expectedByteLength,
-			received: view.byteLength,
-		});
-		return [];
-	}
-
+	const { pointCount } = header;
 	const commandDictionary = new Map<number, InitRenderChunkCommandDictionaryEntry>();
 	for (const command of data.commands) {
 		commandDictionary.set(command.cmdIndex, command);
@@ -292,6 +260,121 @@ const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint
 	return points;
 };
 
+const validateInitRenderBinaryChunk = (data: InitRenderBinaryChunkData, view: DataView) => {
+	if (view.byteLength < INIT_RENDER_CHUNK_HEADER_SIZE) {
+		console.error("[canvasWorker] init render binary chunk header is truncated.");
+		return null;
+	}
+
+	const magic = view.getUint32(0, false);
+	const version = view.getUint16(4, false);
+	const recordSize = view.getUint16(6, false);
+	const snapshotVersion = view.getUint32(8, false);
+	const chunkIndex = view.getUint32(12, false);
+	const pointCount = view.getUint32(16, false);
+
+	if (magic !== INIT_RENDER_CHUNK_MAGIC) {
+		console.error("[canvasWorker] init render binary chunk magic mismatch.", {
+			expected: INIT_RENDER_CHUNK_MAGIC,
+			received: magic,
+		});
+		return null;
+	}
+
+	if (version !== INIT_RENDER_CHUNK_VERSION) {
+		console.error("[canvasWorker] init render binary chunk version mismatch.", {
+			expected: INIT_RENDER_CHUNK_VERSION,
+			received: version,
+		});
+		return null;
+	}
+
+	if (recordSize !== INIT_RENDER_CHUNK_RECORD_SIZE) {
+		console.error("[canvasWorker] init render binary chunk record size mismatch.", {
+			expected: INIT_RENDER_CHUNK_RECORD_SIZE,
+			received: recordSize,
+		});
+		return null;
+	}
+
+	if (snapshotVersion !== data.snapshotVersion || chunkIndex !== data.chunkIndex) {
+		console.error("[canvasWorker] init render binary chunk identity mismatch.", {
+			expectedSnapshotVersion: data.snapshotVersion,
+			receivedSnapshotVersion: snapshotVersion,
+			expectedChunkIndex: data.chunkIndex,
+			receivedChunkIndex: chunkIndex,
+		});
+		return null;
+	}
+
+	if (pointCount !== data.pointCount) {
+		console.error("[canvasWorker] init render binary chunk point count mismatch.", {
+			expected: data.pointCount,
+			received: pointCount,
+		});
+		return null;
+	}
+
+	const expectedByteLength =
+		INIT_RENDER_CHUNK_HEADER_SIZE + pointCount * INIT_RENDER_CHUNK_RECORD_SIZE;
+	if (view.byteLength !== expectedByteLength) {
+		console.error("[canvasWorker] init render binary chunk byte length mismatch.", {
+			expected: expectedByteLength,
+			received: view.byteLength,
+		});
+		return null;
+	}
+
+	return { pointCount };
+};
+
+const appendInitRenderBinaryChunkToCanvas = (data: InitRenderBinaryChunkData) => {
+	if (!mainCtx) return 0;
+	const view = new DataView(data.buffer);
+	const header = validateInitRenderBinaryChunk(data, view);
+	if (!header) return 0;
+
+	const commandDictionary: InitRenderChunkCommandDictionaryEntry[] = [];
+	for (const command of data.commands) {
+		commandDictionary[command.cmdIndex] = command;
+	}
+
+	let renderedPointCount = 0;
+	let offset = INIT_RENDER_CHUNK_HEADER_SIZE;
+	const sample: Point = { x: 0, y: 0, p: 0, lamport: 0 };
+	for (let index = 0; index < header.pointCount; index += 1) {
+		sample.x = view.getFloat32(offset, false);
+		offset += 4;
+		sample.y = view.getFloat32(offset, false);
+		offset += 4;
+		sample.p = view.getFloat32(offset, false);
+		offset += 4;
+		sample.lamport = view.getFloat64(offset, false);
+		offset += 8;
+		const cmdIndex = view.getUint16(offset, false);
+		offset += 2;
+
+		const commandMeta = commandDictionary[cmdIndex];
+		if (!commandMeta || commandMeta.isDeleted) continue;
+		appendInitScenePoint(commandMeta, sample);
+
+		const nextState = paintStrokeSample({
+			ctx: mainCtx as unknown as CanvasRenderingContext2D,
+			sample,
+			previousState: incrementalStates.get(commandMeta.cmdId) ?? null,
+			tool: commandMeta.tool,
+			color: commandMeta.color,
+			baseSize: commandMeta.size,
+			logicalWidth: viewport.width,
+			logicalHeight: viewport.height,
+		});
+		incrementalStates.set(commandMeta.cmdId, nextState);
+		renderedPointCount += 1;
+	}
+
+	return renderedPointCount;
+};
+
 const renderFullScene = () => {
 	const points = flattenCommands(
 		Array.from(sceneCommands.values()),
@@ -304,11 +387,66 @@ const renderFullScene = () => {
 
 const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[]) => {
 	sceneCommands.clear();
+	incrementalStates.clear();
+	activeStrokeIds.clear();
 	commands.forEach((cmd) => {
 		sceneCommands.set(cmd.id, cloneCommand(cmd));
 	});
 	currentPageId = pageId;
 	currentTransformingIds = new Set(transformingCmdIds);
+};
+
+const appendInitScenePoint = (
+	commandMeta: InitRenderChunkCommandDictionaryEntry,
+	point: Point
+) => {
+	let command = sceneCommands.get(commandMeta.cmdId);
+	if (!command) {
+		command = {
+			id: commandMeta.cmdId,
+			type: "path",
+			tool: commandMeta.tool,
+			color: commandMeta.color,
+			size: commandMeta.size,
+			points: [],
+			timestamp: 0,
+			userId: commandMeta.userId,
+			roomId: "",
+			pageId: currentPageId,
+			isDeleted: commandMeta.isDeleted,
+			lamport: point.lamport,
+			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+		};
+		sceneCommands.set(commandMeta.cmdId, command);
+	}
+	command.points ??= [];
+	command.points.push(clonePoint(point));
+	command.lamport = Math.max(command.lamport ?? 0, point.lamport);
+};
+
+const appendSceneFlatPoint = (point: FlatPoint) => {
+	let command = sceneCommands.get(point.cmdId);
+	if (!command) {
+		command = {
+			id: point.cmdId,
+			type: "path",
+			tool: point.tool,
+			color: point.color,
+			size: point.size,
+			points: [],
+			timestamp: 0,
+			userId: point.userId,
+			roomId: "",
+			pageId: point.pageId,
+			isDeleted: point.isDeleted,
+			lamport: point.lamport,
+			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+		};
+		sceneCommands.set(point.cmdId, command);
+	}
+	command.points ??= [];
+	command.points.push(clonePoint(point));
+	command.lamport = Math.max(command.lamport ?? 0, point.lamport);
 };
 
 const upsertSceneCommand = (cmd: Command, points: Point[]) => {
@@ -343,6 +481,7 @@ const upsertSceneCommand = (cmd: Command, points: Point[]) => {
 const renderIncrementalPoints = (cmd: Command, points: Point[]) => {
 	if (!mainCtx || cmd.pageId !== currentPageId || currentTransformingIds.has(cmd.id)) return 0;
 	const sceneCommand = upsertSceneCommand(cmd, points);
+	activeStrokeIds.add(sceneCommand.id);
 	points.forEach((point) => {
 		const nextState = paintStrokeSample({
 			ctx: mainCtx as unknown as CanvasRenderingContext2D,
@@ -357,6 +496,24 @@ const renderIncrementalPoints = (cmd: Command, points: Point[]) => {
 		incrementalStates.set(sceneCommand.id, nextState);
 	});
 	return points.length;
+};
+
+const finishIncrementalCommand = (cmdId: string) => {
+	const state = incrementalStates.get(cmdId);
+	const command = sceneCommands.get(cmdId);
+	if (state && command && mainCtx) {
+		finishStroke({
+			ctx: mainCtx as unknown as CanvasRenderingContext2D,
+			state,
+			tool: command.tool,
+			color: command.color,
+			baseSize: command.size ?? 3,
+			logicalWidth: viewport.width,
+			logicalHeight: viewport.height,
+		});
+	}
+	incrementalStates.delete(cmdId);
+	activeStrokeIds.delete(cmdId);
 };
 
 const pointIntersectsDirtyRect = (point: Pick<Point, "x" | "y">, dirtyRect: Rect, padding = 20) => {
@@ -465,18 +622,36 @@ const renderCommandRange = (command: Command, range: DirtySegmentRange) => {
 			logicalHeight: viewport.height,
 		});
 	}
+	if (previousState && range.end === command.points.length - 1) {
+		finishStroke({
+			ctx: mainCtx as unknown as CanvasRenderingContext2D,
+			state: previousState,
+			tool: command.tool,
+			color: command.color,
+			baseSize,
+			logicalWidth: viewport.width,
+			logicalHeight: viewport.height,
+		});
+	}
 };
 
 const getDirtyCandidateCommands = (dirtyRect: Rect) => {
 	const intersectingCommands = Array.from(sceneCommands.values()).filter((command) => {
 		if (command.pageId !== currentPageId || command.isDeleted || command.type !== "path") return false;
 		const box = command.box;
-		return !(
-			box.maxX * viewport.width < dirtyRect.minX ||
-			box.minX * viewport.width > dirtyRect.minX + dirtyRect.width ||
-			box.maxY * viewport.height < dirtyRect.minY ||
-			box.minY * viewport.height > dirtyRect.minY + dirtyRect.height
-		);
+		const padding = 20;
+		const boxIntersects =
+			box &&
+			!(
+				box.maxX * viewport.width < dirtyRect.minX - padding ||
+				box.minX * viewport.width > dirtyRect.minX + dirtyRect.width + padding ||
+				box.maxY * viewport.height < dirtyRect.minY - padding ||
+				box.minY * viewport.height > dirtyRect.minY + dirtyRect.height + padding
+			);
+		if (boxIntersects) return true;
+		return command.points
+			? collectDirtySegments(command.points, dirtyRect, padding).length > 0
+			: false;
 	});
 
 	if (!dirtyRect.candidateCommandIds || dirtyRect.candidateCommandIds.length === 0) {
@@ -602,6 +777,16 @@ self.onmessage = (event: MessageEvent) => {
 		return;
 	}
 
+	if (type === "flat-points-from-scene") {
+		const points = flattenCommands(
+			Array.from(sceneCommands.values()),
+			data.pageId,
+			data.transformingCmdIds
+		);
+		self.postMessage({ type: "flat-points-result", points, requestId: data.requestId });
+		return;
+	}
+
 	if (type === "render-full") {
 		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
 		renderFullScene();
@@ -625,12 +810,13 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "append-init-binary-chunk") {
-		const points = decodeInitRenderBinaryChunk(data as InitRenderBinaryChunkData);
-		if (points.length === 0) return;
 		if (mainCtx && offscreenCanvas) {
-			appendFlatPointsToCanvas(points);
+			appendInitRenderBinaryChunkToCanvas(data as InitRenderBinaryChunkData);
 			return;
 		}
+		const points = decodeInitRenderBinaryChunk(data as InitRenderBinaryChunkData);
+		if (points.length === 0) return;
+		points.forEach((point) => appendSceneFlatPoint(point));
 		self.postMessage({
 			type: "init-render-points-decoded",
 			points,
@@ -641,6 +827,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "finish-init-stream") {
+		Array.from(incrementalStates.keys()).forEach(finishIncrementalCommand);
 		return;
 	}
 
@@ -651,6 +838,12 @@ self.onmessage = (event: MessageEvent) => {
 		return;
 	}
 
+	if (type === "finish-command-stroke") {
+		const cmdId = typeof data?.cmdId === "string" ? data.cmdId : "";
+		if (cmdId) finishIncrementalCommand(cmdId);
+		return;
+	}
+
 	if (type === "sync-scene") {
 		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
 		return;
@@ -658,7 +851,10 @@ self.onmessage = (event: MessageEvent) => {
 
 	if (type === "render-flat-points-scene") {
 		currentPageId = data.pageId as number;
-		renderPointsToCanvas((data.points as FlatPoint[]) ?? []);
+		const points = (data.points as FlatPoint[]) ?? [];
+		sceneCommands.clear();
+		points.forEach((point) => appendSceneFlatPoint(point));
+		renderPointsToCanvas(points);
 		return;
 	}
 
@@ -690,6 +886,44 @@ self.onmessage = (event: MessageEvent) => {
 		return;
 	}
 
+	if (type === "remove-command-state") {
+		const cmdId = typeof data.cmdId === "string" ? data.cmdId : "";
+		if (cmdId) {
+			sceneCommands.delete(cmdId);
+			incrementalStates.delete(cmdId);
+			activeStrokeIds.delete(cmdId);
+		}
+		return;
+	}
+
+	if (type === "translate-command-points") {
+		const cmdIds = Array.isArray(data.cmdIds) ? (data.cmdIds as string[]) : [];
+		const dx = Number(data.dx ?? 0);
+		const dy = Number(data.dy ?? 0);
+		cmdIds.forEach((cmdId) => {
+			const command = sceneCommands.get(cmdId);
+			command?.points?.forEach((point) => {
+				point.x += dx;
+				point.y += dy;
+			});
+		});
+		return;
+	}
+
+	if (type === "get-command-points") {
+		const requestId = typeof data.requestId === "string" ? data.requestId : "";
+		const cmdIds = Array.isArray(data.cmdIds) ? (data.cmdIds as string[]) : [];
+		const commands = cmdIds.map((cmdId) => {
+			const command = sceneCommands.get(cmdId);
+			return {
+				cmdId,
+				points: command?.points ? command.points.map(clonePoint) : [],
+			};
+		});
+		self.postMessage({ type: "command-points-result", requestId, commands });
+		return;
+	}
+
 	if (type === "rerender-scene") {
 		currentPageId = data.pageId as number;
 		currentTransformingIds = new Set((data.transformingCmdIds as string[]) ?? []);
@@ -705,6 +939,7 @@ self.onmessage = (event: MessageEvent) => {
 
 	if (type === "dispose") {
 		incrementalStates.clear();
+		activeStrokeIds.clear();
 		sceneCommands.clear();
 		currentTransformingIds.clear();
 		offscreenCanvas = null;

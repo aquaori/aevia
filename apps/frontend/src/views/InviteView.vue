@@ -12,6 +12,17 @@
 	const router = useRouter();
 
 	const token = route.params.token as string;
+	const scrubInviteTokenFromUrl = () => {
+		if (typeof window === "undefined") return;
+		window.history.replaceState(window.history.state, "", "/invite/redacted");
+	};
+	type ResponseError = {
+		response?: {
+			data?: {
+				msg?: string;
+			};
+		};
+	};
 	const roomId = ref("");
 	const roomName = ref("");
 	const username = ref(localStorage.getItem("wb_username") || "");
@@ -23,6 +34,7 @@
 
 	onMounted(() => {
 		userStore.clearAll();
+		scrubInviteTokenFromUrl();
 		getInviteMeta(token)
 			.then((meta) => {
 				roomId.value = meta.roomId;
@@ -56,13 +68,14 @@
 						console.error("Error joining room: ", res.data.msg || "未知错误");
 					}
 				});
-		} catch (err: any) {
-			if (err.response?.data?.msg === "Password incorrect") {
+		} catch (err: unknown) {
+			const responseError = err as ResponseError;
+			if (responseError.response?.data?.msg === "Password incorrect") {
 				toast.error("密码错误");
-			} else if (err.response?.data?.msg === "Room does not exist") {
+			} else if (responseError.response?.data?.msg === "Room does not exist") {
 				toast.error("房间不存在");
 			}
-			console.error("Error joining room: ", err.response?.data?.msg || "未知错误");
+			console.error("Error joining room: ", responseError.response?.data?.msg || "未知错误");
 			return;
 		} finally {
 			isLoading.value = false;

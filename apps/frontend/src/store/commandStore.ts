@@ -107,6 +107,13 @@ export const useCommandStore = defineStore("command", () => {
 		commandMap.set(cmd.id, cmd);
 	};
 
+	const stripCommandPoints = (command: Command) => {
+		if (command.points) {
+			command.points = undefined;
+		}
+		return command;
+	};
+
 	const resolveConflict = (cmd1: Command, cmd2: Command) => {
 		if (cmd1.lamport < cmd2.lamport) {
 			return cmd1;
@@ -133,9 +140,7 @@ export const useCommandStore = defineStore("command", () => {
 		});
 
 		nextCommands.forEach((command) => {
-			if (command.points) {
-				command.points = markRaw(command.points);
-			}
+			stripCommandPoints(command);
 			if (!nextBuckets.has(command.pageId)) {
 				nextBuckets.set(command.pageId, []);
 			}
@@ -170,9 +175,7 @@ export const useCommandStore = defineStore("command", () => {
 		});
 
 		input.commands.forEach((command) => {
-			if (command.points) {
-				command.points = markRaw(command.points);
-			}
+			stripCommandPoints(command);
 			const bucket = nextBuckets.get(command.pageId) ?? [];
 			bucket.push(command);
 			nextBuckets.set(command.pageId, bucket);

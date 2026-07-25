@@ -16,13 +16,17 @@ const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
 		const timeoutAt = performance.now() + measurementConfig.timeoutMs;
 		const waitFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 		while (performance.now() < timeoutAt) {
-			if (window.__externalCanvasObserver && document.querySelector("canvas")) {
+			if (
+				window.__externalCanvasObserver &&
+				document.querySelector("canvas") &&
+				typeof window.__aeviaInitStreamStartedAt === "number"
+			) {
 				break;
 			}
 			await waitFrame();
 		}
-		if (!window.__externalCanvasObserver || !document.querySelector("canvas")) {
-			throw new Error("room render measurement timeout: canvas unavailable");
+		if (!window.__externalCanvasObserver || !document.querySelector("canvas") || typeof window.__aeviaInitStreamStartedAt !== "number") {
+			throw new Error("room render measurement timeout: canvas or init stream unavailable");
 		}
 		const observer = window.__externalCanvasObserver;
 		const startedAt = performance.now();
@@ -93,10 +97,10 @@ export const openRoomPage = async (
 	const { page } = roomPage;
 
 	await page.goto(config.frontendUrl);
-	await page.evaluate(({ token, userName }: { token: string; userName: string }) => {
-		sessionStorage.setItem("user", JSON.stringify({ token, userId: "", username: userName }));
+	await page.evaluate(({ token, userName, userId, expiresAt }: { token: string; userName: string; userId: string; expiresAt?: number | null }) => {
+		sessionStorage.setItem("user", JSON.stringify({ token, sessionExpiresAt: expiresAt ?? null, userId, username: userName }));
 		localStorage.setItem("wb_username", userName);
-	}, { token: user.token, userName: user.userName });
+	}, { token: user.token, userName: user.userName, userId: user.userId, expiresAt: user.expiresAt ?? null });
 	await page.goto(`${config.frontendUrl}/room`);
 	await page.locator("canvas").first().waitFor({ timeout: 30000 });
 	await installCanvasObserver(page);
@@ -118,10 +122,10 @@ export const openMeasuredRoomPage = async (
 	const { page } = roomPage;
 
 	await page.goto(config.frontendUrl);
-	await page.evaluate(({ token, userName }: { token: string; userName: string }) => {
-		sessionStorage.setItem("user", JSON.stringify({ token, userId: "", username: userName }));
+	await page.evaluate(({ token, userName, userId, expiresAt }: { token: string; userName: string; userId: string; expiresAt?: number | null }) => {
+		sessionStorage.setItem("user", JSON.stringify({ token, sessionExpiresAt: expiresAt ?? null, userId, username: userName }));
 		localStorage.setItem("wb_username", userName);
-	}, { token: user.token, userName: user.userName });
+	}, { token: user.token, userName: user.userName, userId: user.userId, expiresAt: user.expiresAt ?? null });
 	await page.addInitScript({ content: CANVAS_OBSERVER_INIT_SCRIPT });
 	await page.addInitScript({ content: ROOM_RENDER_MEASUREMENT_SCRIPT({
 		timeoutMs: 60000,
@@ -131,7 +135,9 @@ export const openMeasuredRoomPage = async (
 		maxDiffRatio: 0.0001,
 	}) });
 	await page.goto(`${config.frontendUrl}/room`);
-	const initialRender = await page.evaluate(() => (window as any).__externalRoomRenderMeasurement);
+	const initialRender = await page.evaluate(
+		() => (window as Window & { __externalRoomRenderMeasurement?: unknown }).__externalRoomRenderMeasurement
+	);
 	await page.locator("canvas").first().waitFor({ timeout: 30000 });
 	await installCanvasObserver(page);
 

@@ -10,8 +10,8 @@ interface LocalCommandServiceLike {
 		type?: "normal" | "start" | "update" | "stop"
 	) => { ok: boolean; error?: string; command?: Command };
 	undo: () => { ok: boolean; error?: string; command?: Command };
-	redo: () => { ok: boolean; command?: Command };
-	clearCanvas: () => { notice?: string; command?: Command };
+	redo: () => { ok: boolean; error?: string; command?: Command };
+	clearCanvas: () => { ok: boolean; error?: string; notice?: string; command?: Command };
 }
 
 interface RoomCommandControllerOptions {
@@ -34,7 +34,7 @@ export const createRoomCommandController = (options: RoomCommandControllerOption
 		const result = options.localCommandService.pushCommand(cmdPartial, type);
 		if (!result.ok && result.error) {
 			toast.error(result.error);
-			return;
+			return result;
 		}
 		if (result.command && type !== "update") {
 			emitHook("command:applied", {
@@ -42,6 +42,7 @@ export const createRoomCommandController = (options: RoomCommandControllerOption
 				source: "local",
 			});
 		}
+		return result;
 	};
 
 	const undo = () => {
@@ -52,7 +53,10 @@ export const createRoomCommandController = (options: RoomCommandControllerOption
 	};
 
 	const redo = () => {
-		options.localCommandService.redo();
+		const result = options.localCommandService.redo();
+		if (!result.ok && result.error) {
+			toast.error(result.error);
+		}
 	};
 
 	const clearCanvas = () => {
@@ -63,6 +67,10 @@ export const createRoomCommandController = (options: RoomCommandControllerOption
 			source: "local",
 		});
 		const result = options.localCommandService.clearCanvas();
+		if (!result.ok && result.error) {
+			toast.error(result.error);
+			return;
+		}
 		if (result.notice) {
 			toast.info(result.notice);
 		}

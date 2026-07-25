@@ -27,6 +27,8 @@ import {
 } from "./cdp-observer";
 import { logCaseEnd, logCaseStart, logStep } from "./cli-progress";
 
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 const CASE_META: Record<string, { title: string; description: string; category: CaseCategory }> = {
 	"harness-health": {
 		title: "Harness health",
@@ -116,8 +118,8 @@ const runCase = async (
 		const finalResult = withMeta(context, id, { id, durationMs: performance.now() - startedAt, ...result });
 		logCaseEnd(finalResult);
 		return finalResult;
-	} catch (error: any) {
-		const message = error?.message || String(error);
+	} catch (error: unknown) {
+		const message = errorMessage(error);
 		const failureType = message.includes("unreachable") ||
 			message.includes("create-room") ||
 			message.includes("join-room") ||
@@ -277,14 +279,14 @@ const runSampledCase = async (
 				durationMs: performance.now() - sampleStartedAt,
 				metrics,
 			});
-		} catch (error: any) {
+		} catch (error: unknown) {
 			samples.push({
 				run,
 				warmup,
 				status: "failed",
 				durationMs: performance.now() - sampleStartedAt,
 				metrics: {},
-				error: error?.message || String(error),
+				error: errorMessage(error),
 			});
 		}
 	}
@@ -391,7 +393,7 @@ const seedRoomPoints = async (
 			if (options.deadlineAt && Date.now() > options.deadlineAt) {
 				throw new Error(`${options.progressLabel || "seed"} exceeded ${context.config.seedTimeoutMs}ms while injecting ${pointCount} points`);
 			}
-			await bot.sendStrokeAwait({
+			await bot.sendCommittedStroke({
 				points: createDistributedStrokePoints(
 					Math.min(pointsPerStroke, pointCount - index * pointsPerStroke),
 					index,
@@ -512,14 +514,15 @@ const runBoundaryFullRender = async (context: SuiteContext) =>
 					break;
 				}
 				lastSurvivedScale = scale;
-			} catch (error: any) {
+			} catch (error: unknown) {
 				firstCrashScale = scale;
-				crashType = error?.message?.includes("exceeded") ? "scale-timeout" : error?.message?.includes("crash") ? "page-crash" : "harness-or-cdp-error";
+				const message = errorMessage(error);
+				crashType = message.includes("exceeded") ? "scale-timeout" : message.includes("crash") ? "page-crash" : "harness-or-cdp-error";
 				records.push({
 					scale,
 					status: "crashed",
 					crashType,
-					error: error?.message || String(error),
+					error: message,
 					durationMs: performance.now() - scaleStartedAt,
 				});
 				break;
@@ -594,9 +597,9 @@ const runBoundaryHeapGrowth = async (context: SuiteContext) =>
 					crashType = scaleCrashType;
 					break;
 				}
-			} catch (error: any) {
+			} catch (error: unknown) {
 				crashType = "harness-or-cdp-error";
-				records.push({ round, scale, error: error?.message || String(error), crashType });
+				records.push({ round, scale, error: errorMessage(error), crashType });
 				break;
 			} finally {
 				await probe?.close();
@@ -651,7 +654,7 @@ const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
 				const startedAt = performance.now();
 				await Promise.all(
 					bots.map((bot, index) =>
-						bot.sendStrokeAwait({
+						bot.sendCommittedStroke({
 							points: createLinePoints(32, { x: 0.12 + (index % 12) * 0.05, y: 0.25 }, { x: 0.003, y: 0.002 }),
 							color: index % 2 === 0 ? "#dc2626" : "#2563eb",
 							size: 4,
@@ -662,11 +665,11 @@ const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
 					roi,
 					timeoutMs: context.config.freezeMs,
 					minDiffRatio: 0.003,
-				}).catch((error: any) => ({
+				}).catch((error: unknown) => ({
 					elapsedMs: context.config.freezeMs,
 					frames: 0,
 					diffRatio: 0,
-					error: error?.message || String(error),
+					error: errorMessage(error),
 				}));
 				const metrics = await observerProbe.readMetrics();
 				const scaleCrashType = classifyCrash(observerProbe.crash);
@@ -1020,7 +1023,7 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 				const pointsPerStroke = 64;
 				const strokes = Math.max(1, Math.ceil(scale / pointsPerStroke));
 				for (let index = 0; index < strokes; index += 1) {
-					await bot.sendStrokeAwait({
+					await bot.sendCommittedStroke({
 						points: createDistributedStrokePoints(
 							Math.min(pointsPerStroke, scale - index * pointsPerStroke),
 							index,

@@ -8,6 +8,10 @@ export interface StrokeState {
 	x: number;
 	y: number;
 	width: number;
+	midpointX: number;
+	midpointY: number;
+	pointCount: number;
+	finished: boolean;
 }
 
 interface StrokeStyle {
@@ -40,7 +44,17 @@ interface PaintStrokeSampleOptions extends StrokeOptions {
 	}) => void;
 }
 
+interface FinishStrokeOptions extends StrokeOptions {
+	ctx: CanvasRenderingContext2D;
+	state?: StrokeState | null;
+}
+
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const getStrokeWidthBounds = (baseSize: number) => ({
+	min: Math.max(baseSize * 0.2, 0.5),
+	max: baseSize * 2,
+});
 
 export const resolveStrokeStyle = (
 	tool: StrokeTool | undefined,
@@ -65,7 +79,8 @@ export const getInitialStrokeWidth = (
 	pressure: number
 ) => {
 	if (tool === "eraser") return baseSize;
-	return baseSize * (pressure * 2);
+	const bounds = getStrokeWidthBounds(baseSize);
+	return clamp(baseSize * (pressure * 2), bounds.min, bounds.max);
 };
 
 export const getNextStrokeWidth = ({
@@ -73,14 +88,11 @@ export const getNextStrokeWidth = ({
 	baseSize,
 	pressure,
 	previousState,
-	x,
-	y,
-	logicalWidth,
 }: {
 	tool: StrokeTool | undefined;
 	baseSize: number;
 	pressure: number;
-	previousState: StrokeState;
+	previousState: Pick<StrokeState, "x" | "y" | "width">;
 	x: number;
 	y: number;
 	logicalWidth: number;
@@ -89,15 +101,21 @@ export const getNextStrokeWidth = ({
 		return baseSize;
 	}
 
-	const dist = Math.hypot(x - previousState.x, y - previousState.y);
-	const velocityFactor = Math.max(0.4, 1 - dist / 120);
-	let targetWidth = baseSize * (pressure * 2) * velocityFactor;
+	const targetWidth = baseSize * (pressure * 2);
 
-	if (logicalWidth < 500) {
-		targetWidth *= Math.max(0.2, logicalWidth / 1000);
-	}
-
-	return clamp(previousState.width * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
+	const smoothedWidth = previousState.width * 0.65 + targetWidth * 0.35;
+	const widthDelta = smoothedWidth - previousState.width;
+	const maxDelta = Math.max(
+		baseSize * (widthDelta > 0 ? 0.08 : 0.12),
+		widthDelta > 0 ? 0.1 : 0.15
+	);
+	const limitedWidth = previousState.width + clamp(
+		widthDelta,
+		-maxDelta,
+		maxDelta
+	);
+	const bounds = getStrokeWidthBounds(baseSize);
+	return clamp(limitedWidth, bounds.min, bounds.max);
 };
 
 export const createStrokeStateFromSample = ({
@@ -108,10 +126,16 @@ export const createStrokeStateFromSample = ({
 	logicalHeight,
 	widthOverride,
 }: CreateStrokeStateOptions): StrokeState => {
+	const x = sample.x * logicalWidth;
+	const y = sample.y * logicalHeight;
 	return {
-		x: sample.x * logicalWidth,
-		y: sample.y * logicalHeight,
+		x,
+		y,
 		width: widthOverride ?? getInitialStrokeWidth(tool, baseSize, sample.p),
+		midpointX: x,
+		midpointY: y,
+		pointCount: 1,
+		finished: false,
 	};
 };
 
@@ -145,7 +169,15 @@ export const paintStrokeSample = ({
 		ctx.beginPath();
 		ctx.arc(x, y, initialWidth / 2, 0, Math.PI * 2);
 		ctx.fill();
-		return { x, y, width: initialWidth };
+		return {
+			x,
+			y,
+			width: initialWidth,
+			midpointX: x,
+			midpointY: y,
+			pointCount: 1,
+			finished: false,
+		};
 	}
 
 	const nextWidth = getNextStrokeWidth({
@@ -166,19 +198,88 @@ export const paintStrokeSample = ({
 	});
 
 	ctx.beginPath();
-	ctx.moveTo(previousState.x, previousState.y);
-
-	if (tool === "eraser") {
-		ctx.lineTo(x, y);
-		ctx.lineWidth = baseSize;
-	} else {
-		const midX = (previousState.x + x) / 2;
-		const midY = (previousState.y + y) / 2;
-		ctx.quadraticCurveTo(midX, midY, x, y);
-		ctx.lineWidth = nextWidth;
-	}
+	const midpointX = (previousState.x + x) / 2;
+	const midpointY = (previousState.y + y) / 2;
+	ctx.moveTo(previousState.midpointX, previousState.midpointY);
+	ctx.quadraticCurveTo(previousState.x, previousState.y, midpointX, midpointY);
+	ctx.lineWidth = tool === "eraser" ? baseSize : (previousState.width + nextWidth) / 2;
 
 	ctx.stroke();
 
-	return { x, y, width: nextWidth };
+	return {
+		x,
+		y,
+		width: nextWidth,
+		midpointX,
+		midpointY,
+		pointCount: previousState.pointCount + 1,
+		finished: false,
+	};
+};
+
+export const advanceStrokeState = ({
+	sample,
+	previousState,
+	tool = "pen",
+	baseSize = 3,
+	logicalWidth,
+	logicalHeight,
+}: Omit<PaintStrokeSampleOptions, "ctx" | "color" | "onBeforeDrawSegment">): StrokeState => {
+	if (!previousState) {
+		return createStrokeStateFromSample({
+			sample,
+			tool,
+			baseSize,
+			logicalWidth,
+			logicalHeight,
+		});
+	}
+
+	const { x, y } = toPixelPoint(sample, logicalWidth, logicalHeight);
+	const nextWidth = getNextStrokeWidth({
+		tool,
+		baseSize,
+		pressure: sample.p,
+		previousState,
+		x,
+		y,
+		logicalWidth,
+	});
+
+	return {
+		x,
+		y,
+		width: nextWidth,
+		midpointX: (previousState.x + x) / 2,
+		midpointY: (previousState.y + y) / 2,
+		pointCount: previousState.pointCount + 1,
+		finished: false,
+	};
+};
+
+export const finishStroke = ({
+	ctx,
+	state,
+	tool = "pen",
+	color,
+	baseSize = 3,
+}: FinishStrokeOptions): StrokeState | null => {
+	if (!state || state.finished) return state ?? null;
+	if (state.pointCount === 1) {
+		return { ...state, finished: true };
+	}
+
+	const style = resolveStrokeStyle(tool, color);
+	ctx.globalCompositeOperation = style.compositeOperation;
+	ctx.strokeStyle = style.color;
+	ctx.fillStyle = style.color;
+	ctx.lineCap = "round";
+	ctx.lineJoin = "round";
+	ctx.beginPath();
+	ctx.moveTo(state.midpointX, state.midpointY);
+	ctx.quadraticCurveTo(state.x, state.y, state.x, state.y);
+	ctx.lineWidth = tool === "eraser" ? baseSize : state.width;
+	ctx.stroke();
+
+	return { ...state, finished: true };
 };

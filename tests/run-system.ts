@@ -351,9 +351,9 @@ const main = async () => {
 		print("");
 		print(`✓ workflow completed in ${elapsed()}`);
 		print(`Report: ${path.join(rootDir, "tests", "reports", "summary", "latest", "test-report.html")}`);
-	} catch (error: any) {
+	} catch (error: unknown) {
 		print("");
-		print(`✕ workflow failed: ${error?.message || String(error)}`);
+		print(`✕ workflow failed: ${error instanceof Error ? error.message : String(error)}`);
 		process.exit(1);
 	}
 };

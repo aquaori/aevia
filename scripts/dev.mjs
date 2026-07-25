@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
+
+const workspaceRoot = realpathSync(process.cwd());
 
 const processes = [
 	{
@@ -15,6 +18,7 @@ const children = processes.map(({ name, command }) => {
 	const child = spawn(command, [], {
 		stdio: "inherit",
 		env: process.env,
+		cwd: workspaceRoot,
 		shell: true,
 	});
 

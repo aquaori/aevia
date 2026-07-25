@@ -1,11 +1,12 @@
 // File role: shared canvas refs plus low-level drawing helpers used by render paths.
 import { ref } from "vue";
-import type { Command, FlatPoint, LastWidthInfo, Point } from "@collaborative-whiteboard/shared";
+import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
 import { useLamportStore } from "../store/lamportStore";
 import { useCommandStore } from "../store/commandStore";
 import {
+	advanceStrokeState,
 	createStrokeStateFromSample,
-	getNextStrokeWidth,
+	finishStroke,
 	paintStrokeSample,
 	type StrokeState,
 } from "./strokeRasterizer";
@@ -16,7 +17,8 @@ const uiCanvasRef = ref<HTMLCanvasElement | null>(null);
 const ctx = ref<CanvasRenderingContext2D | null>(null);
 const uiCtx = ref<CanvasRenderingContext2D | null>(null);
 
-const lastWidths: Record<string, LastWidthInfo> = {};
+const incrementalStrokeStates = new Map<string, StrokeState>();
+const activeStrokeIds = new Set<string>();
 
 interface DirtyRect {
 	minX: number;
@@ -38,28 +40,15 @@ const renderIncrementPoint = (
 	width: number,
 	height: number,
 	skipQueue = false,
-	_source: "local" | "remote" = "remote"
+	source: "local" | "remote" = "remote"
 ) => {
 	if (cmd.type !== "path" || points.length === 0) {
 		return;
 	}
 
 	const baseSize = cmd.size || 3;
-	const startIndex = (cmd.points?.length || 0) - points.length;
-
-	let previousState: StrokeState | null = null;
-	if (startIndex > 0 && cmd.points) {
-		const prevPoint = cmd.points[startIndex - 1];
-		if (!prevPoint) return;
-		previousState = createStrokeStateFromSample({
-			sample: prevPoint,
-			tool: cmd.tool,
-			baseSize,
-			logicalWidth: width,
-			logicalHeight: height,
-			widthOverride: cmd.id ? lastWidths[cmd.id]?.lastWidth : undefined,
-		});
-	}
+	let previousState = incrementalStrokeStates.get(cmd.id) ?? null;
+	activeStrokeIds.add(cmd.id);
 
 	points.forEach((point) => {
 		previousState = paintStrokeSample({
@@ -72,7 +61,7 @@ const renderIncrementPoint = (
 			logicalWidth: width,
 			logicalHeight: height,
 			onBeforeDrawSegment: ({ x, y, previousState, nextWidth }) => {
-				if (skipQueue) return;
+				if (skipQueue || source === "local") return;
 				useLamportStore().pushToQueue({
 					x,
 					y,
@@ -90,12 +79,37 @@ const renderIncrementPoint = (
 				});
 			},
 		});
-
-		if (cmd.id) {
-			lastWidths[cmd.id] = { lastWidth: previousState.width };
-		}
 	});
 
+	if (previousState) {
+		incrementalStrokeStates.set(cmd.id, previousState);
+	}
+};
+
+const finishIncrementalStroke = (
+	cmd: Command,
+	ctx: CanvasRenderingContext2D,
+	width: number,
+	height: number
+) => {
+	const state = incrementalStrokeStates.get(cmd.id);
+	if (!state) return;
+	finishStroke({
+		ctx,
+		state,
+		tool: cmd.tool,
+		color: cmd.color,
+		baseSize: cmd.size || 3,
+		logicalWidth: width,
+		logicalHeight: height,
+	});
+	incrementalStrokeStates.delete(cmd.id);
+	activeStrokeIds.delete(cmd.id);
+};
+
+const resetIncrementalStroke = (cmdId: string) => {
+	incrementalStrokeStates.delete(cmdId);
+	activeStrokeIds.delete(cmdId);
 };
 
 const renderPointSequence = (
@@ -104,28 +118,50 @@ const renderPointSequence = (
 	height: number,
 	points: FlatPoint[],
 	_isDirtyRender = false,
-	startTime?: number
+	startTime?: number,
+	unfinishedCommandIds: ReadonlySet<string> = new Set()
 ) => {
 	const renderStart = startTime || performance.now();
-	if (!points) return;
+	if (!points) return new Map<string, StrokeState>();
 
-	const lastPointsMap: Record<string, StrokeState> = {};
+	const states = new Map<string, StrokeState>();
+	const remainingPoints = new Map<string, number>();
+	points.forEach((point) => {
+		if (point.isDeleted) return;
+		remainingPoints.set(point.cmdId, (remainingPoints.get(point.cmdId) ?? 0) + 1);
+	});
 
 	points.forEach((point) => {
 		if (point.isDeleted) return;
-		lastPointsMap[point.cmdId] = paintStrokeSample({
+		let state = paintStrokeSample({
 			ctx,
 			sample: point,
-			previousState: lastPointsMap[point.cmdId] ?? null,
+			previousState: states.get(point.cmdId) ?? null,
 			tool: point.tool,
 			color: point.color,
 			baseSize: point.size,
 			logicalWidth: width,
 			logicalHeight: height,
 		});
+		const remaining = (remainingPoints.get(point.cmdId) ?? 1) - 1;
+		remainingPoints.set(point.cmdId, remaining);
+		if (remaining === 0 && !unfinishedCommandIds.has(point.cmdId)) {
+			state =
+				finishStroke({
+					ctx,
+					state,
+					tool: point.tool,
+					color: point.color,
+					baseSize: point.size,
+					logicalWidth: width,
+					logicalHeight: height,
+				}) ?? state;
+		}
+		states.set(point.cmdId, state);
 	});
 
 	void renderStart;
+	return states;
 };
 
 const pointIntersectsDirtyRect = (
@@ -273,21 +309,14 @@ const renderCommandPointRange = (
 			for (let index = 1; index < range.start; index += 1) {
 				const point = command.points[index];
 				if (!point || !previousState) continue;
-				const x = point.x * width;
-				const y = point.y * height;
-				previousState = {
-					x,
-					y,
-					width: getNextStrokeWidth({
-						tool: command.tool,
-						baseSize,
-						pressure: point.p,
-						previousState,
-						x,
-						y,
-						logicalWidth: width,
-					}),
-				};
+				previousState = advanceStrokeState({
+					sample: point,
+					previousState,
+					tool: command.tool,
+					baseSize,
+					logicalWidth: width,
+					logicalHeight: height,
+				});
 			}
 		}
 	}
@@ -308,6 +337,17 @@ const renderCommandPointRange = (
 		});
 		renderedPoints += 1;
 	}
+	if (previousState && range.end === command.points.length - 1) {
+		finishStroke({
+			ctx,
+			state: previousState,
+			tool: command.tool,
+			color: command.color,
+			baseSize,
+			logicalWidth: width,
+			logicalHeight: height,
+		});
+	}
 
 	return renderedPoints;
 };
@@ -320,18 +360,18 @@ const getDirtyRectCommandIds = (
 	padding = 20
 ) => {
 	const intersectingCmdIds = new Set<string>();
+	const previousPoints = new Map<string, FlatPoint>();
 
 	points.forEach((point) => {
-		const x = point.x * width;
-		const y = point.y * height;
+		const previous = previousPoints.get(point.cmdId);
 		if (
-			x >= dirtyRect.minX - padding &&
-			x <= dirtyRect.minX + dirtyRect.width + padding &&
-			y >= dirtyRect.minY - padding &&
-			y <= dirtyRect.minY + dirtyRect.height + padding
+			pointIntersectsDirtyRect(point, dirtyRect, width, height, padding) ||
+			(previous &&
+				segmentIntersectsDirtyRect(previous, point, dirtyRect, width, height, padding))
 		) {
 			intersectingCmdIds.add(point.cmdId);
 		}
+		previousPoints.set(point.cmdId, point);
 	});
 
 	return intersectingCmdIds;
@@ -435,14 +475,22 @@ const renderWithPoints = (sortedPoints: FlatPoint[]) => {
 	ctx.value.clearRect(0, 0, physicalWidth, physicalHeight);
 	ctx.value.restore();
 
-	renderPointSequence(
+	const states = renderPointSequence(
 		ctx.value,
 		logicalWidth,
 		logicalHeight,
 		sortedPoints,
 		false,
-		renderStart
+		renderStart,
+		activeStrokeIds
 	);
+	incrementalStrokeStates.clear();
+	activeStrokeIds.forEach((cmdId) => {
+		const state = states.get(cmdId);
+		if (state && !state.finished) {
+			incrementalStrokeStates.set(cmdId, state);
+		}
+	});
 };
 
 export {
@@ -450,8 +498,9 @@ export {
 	uiCanvasRef,
 	ctx,
 	uiCtx,
-	lastWidths,
 	filterDirtyRenderPoints,
+	finishIncrementalStroke,
+	resetIncrementalStroke,
 	renderClippedPointSequence,
 	renderPointSequence as renderPageContentFromPoints,
 	renderPointSequence,

@@ -1,7 +1,7 @@
 // File role: remote collaboration handlers for command-related websocket messages.
 import { markRaw } from "vue";
 import { toast } from "vue-sonner";
-import { canvasRef, ctx, lastWidths, renderIncrementPoint } from "./canvas";
+import { canvasRef, ctx, renderIncrementPoint } from "./canvas";
 import { getCommandDirtyRect } from "./commandDirtyRect";
 import { useLamportStore } from "../store/lamportStore";
 import { useCommandStore } from "../store/commandStore";
@@ -12,7 +12,6 @@ import type {
 	InitRenderChunkMetaPayload,
 	PageChangeRenderChunkMetaPayload,
 } from "./collabDispatcherTypes";
-import { paintStrokeSample } from "./strokeRasterizer";
 import {
 	normalizeCommandFromProtocol,
 	normalizeCommandsFromProtocol,
@@ -202,6 +201,12 @@ interface OperationRejectedPayload {
 	shouldResync?: boolean;
 }
 
+interface BatchCommandUpdate {
+	cmdId: string;
+	points: Point[];
+	boxes?: Command["box"];
+}
+
 interface PageChangeStreamState {
 	requestId: number;
 	snapshotVersion: number;
@@ -238,17 +243,93 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	let initStreamState: InitStreamState | null = null;
 	let pageChangeStreamState: PageChangeStreamState | null = null;
 	let remoteUpdateFlushFrameId: number | null = null;
+	let renderCommitFrameId: number | null = null;
+	let pendingFullRender = false;
+	let pendingSceneRefresh = false;
+	let pendingDirtyRect:
+		| {
+				minX: number;
+				minY: number;
+				maxX: number;
+				maxY: number;
+				width: number;
+				height: number;
+				candidateCommandIds?: string[];
+		  }
+		| null = null;
 	const pendingRemoteCommandUpdates = new Map<string, Point[]>();
 
-	const getLoadedCommandsSnapshot = () =>
-		Array.from(commandStore.pageCommands.values()).flat() as Command[];
+	const mergeDirtyRect = (rect: NonNullable<typeof pendingDirtyRect>) => {
+		if (!pendingDirtyRect) {
+			pendingDirtyRect = { ...rect };
+			return;
+		}
+		const minX = Math.min(pendingDirtyRect.minX, rect.minX);
+		const minY = Math.min(pendingDirtyRect.minY, rect.minY);
+		const maxX = Math.max(pendingDirtyRect.maxX, rect.maxX);
+		const maxY = Math.max(pendingDirtyRect.maxY, rect.maxY);
+		pendingDirtyRect = {
+			minX,
+			minY,
+			maxX,
+			maxY,
+			width: maxX - minX,
+			height: maxY - minY,
+			candidateCommandIds: Array.from(
+				new Set([
+					...(pendingDirtyRect.candidateCommandIds ?? []),
+					...(rect.candidateCommandIds ?? []),
+				])
+			),
+		};
+	};
 
-	const syncWorkerSnapshot = () => {
-		options.syncWorkerScene?.(
-			getLoadedCommandsSnapshot(),
-			options.currentPageId.value,
-			[]
-		);
+	const flushRenderCommit = () => {
+		renderCommitFrameId = null;
+		if (pendingSceneRefresh && options.requestSceneRefresh) {
+			pendingSceneRefresh = false;
+			pendingFullRender = false;
+			pendingDirtyRect = null;
+			options.requestSceneRefresh();
+			return;
+		}
+		pendingSceneRefresh = false;
+		if (pendingDirtyRect && options.requestDirtyRender) {
+			const rect = pendingDirtyRect;
+			pendingDirtyRect = null;
+			pendingFullRender = false;
+			options.requestDirtyRender(rect);
+			return;
+		}
+		pendingDirtyRect = null;
+		if (pendingFullRender) {
+			pendingFullRender = false;
+			options.renderCanvas();
+		}
+	};
+
+	const scheduleRenderCommit = () => {
+		if (renderCommitFrameId !== null) return;
+		if (typeof document !== "undefined" && document.hidden) {
+			renderCommitFrameId = window.setTimeout(flushRenderCommit, 0);
+			return;
+		}
+		renderCommitFrameId = window.requestAnimationFrame(flushRenderCommit);
+	};
+
+	const queueFullRender = () => {
+		pendingFullRender = true;
+		scheduleRenderCommit();
+	};
+
+	const queueSceneRefresh = () => {
+		pendingSceneRefresh = true;
+		scheduleRenderCommit();
+	};
+
+	const queueDirtyRender = (rect: NonNullable<typeof pendingDirtyRect>) => {
+		mergeDirtyRect(rect);
+		scheduleRenderCommit();
 	};
 
 	const renderIncrement = (cmd: Command, points: Point[]) => {
@@ -261,31 +342,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const logicalWidth = canvasRef.value.width / dpr;
 		const logicalHeight = canvasRef.value.height / dpr;
 		renderIncrementPoint(cmd, points, ctx.value, logicalWidth, logicalHeight);
-	};
-
-	const renderSinglePoint = (cmd: Command) => {
-		if (options.renderSinglePointCommand) {
-			options.renderSinglePointCommand(cmd);
-			return;
-		}
-		if (!canvasRef.value || !ctx.value || cmd.pageId !== options.currentPageId.value) return;
-		const p0 = cmd.points?.[0];
-		if (!p0) return;
-
-		const dpr = window.devicePixelRatio || 1;
-		const width = canvasRef.value.width / dpr;
-		const height = canvasRef.value.height / dpr;
-		ctx.value.save();
-		paintStrokeSample({
-			ctx: ctx.value,
-			sample: p0,
-			tool: cmd.tool,
-			color: cmd.color,
-			baseSize: cmd.size || 3,
-			logicalWidth: width,
-			logicalHeight: height,
-		});
-		ctx.value.restore();
 	};
 
 	const flushPendingRemoteCommandUpdates = (targetCmdId?: string) => {
@@ -324,6 +380,11 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 	const scheduleRemoteUpdateFlush = () => {
 		if (remoteUpdateFlushFrameId !== null) {
+			return;
+		}
+
+		if (typeof document !== "undefined" && document.hidden) {
+			flushPendingRemoteCommandUpdates();
 			return;
 		}
 
@@ -471,11 +532,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			initStreamState.commandsBuffer
 		);
 		options.loadedPageIds.value = initStreamState.loadedPageIds;
-		options.syncWorkerScene?.(
-			getLoadedCommandsSnapshot(),
-			initStreamState.currentPageId,
-			[]
-		);
 		useLamportStore().syncLamport(initStreamState.lastLamport);
 		initStreamState.commandsReady = true;
 		tryCompleteInitStream();
@@ -739,7 +795,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			commands: pageChangeStreamState.commands,
 		});
 		commandStore.updateLastSortedPoints(pageChangeStreamState.flatPoints);
-		options.syncWorkerScene?.(getLoadedCommandsSnapshot(), pageChangeStreamState.pageId, []);
 		options.renderSceneFromFlatPoints?.(
 			pageChangeStreamState.flatPoints,
 			pageChangeStreamState.pageId
@@ -852,7 +907,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			commands: pageChangeStreamState.commands,
 		});
 		options.loadedPageIds.value = pageChangeStreamState.loadedPageIds;
-		options.syncWorkerScene?.(getLoadedCommandsSnapshot(), pageChangeStreamState.pageId, []);
 		useLamportStore().syncLamport(pageChangeStreamState.lastLamport);
 		pageChangeStreamState.commandsReady = true;
 		tryCompletePageChangeStream();
@@ -1209,9 +1263,16 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 							`${msg.data.username ? msg.data.username : "有用户"}  在页面${cmd.pageId + 1} 执行了清屏操作`
 						);
 					}
+					if (cmd.pageId === options.currentPageId.value) {
+						options.syncWorkerScene?.(options.commands.value, cmd.pageId, []);
+					}
 					options.currentCommandIndex.value = 0;
 				}
-				options.renderCanvas();
+				options.syncCommandState?.(cmd);
+				if (options.isOffscreenMainCanvas?.()) {
+					cmd.points = undefined;
+				}
+				queueFullRender();
 				options.emitHook?.("command:applied", {
 					command: cmd,
 					source: "remote",
@@ -1270,9 +1331,9 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 			const cmdId = msg.data.cmdId;
 			flushPendingRemoteCommandUpdates(cmdId);
-			delete lastWidths[cmdId];
 			const stopPoints = (msg.data.points ?? msg.data.cmd?.points ?? []) as Point[];
 			const localCmd = options.commandMap.get(cmdId);
+			let stoppedCommand = localCmd;
 
 			if (localCmd) {
 				if (stopPoints.length > 0) {
@@ -1285,6 +1346,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 				}
 			} else if (msg.data.cmd) {
 				const fallbackCmd = normalizeCommandFromProtocol(msg.data.cmd as Command);
+				stoppedCommand = fallbackCmd;
 				options.emitHook?.("command:before-apply", {
 					command: fallbackCmd,
 					source: "remote",
@@ -1293,15 +1355,22 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 					fallbackCmd.points = stopPoints;
 				}
 				options.insertCommand(fallbackCmd);
-				options.renderCanvas();
+				options.syncCommandState?.(fallbackCmd);
+				if (options.isOffscreenMainCanvas?.()) {
+					fallbackCmd.points = undefined;
+				}
+				queueFullRender();
 				options.emitHook?.("command:applied", {
 					command: fallbackCmd,
 					source: "remote",
 				});
 			}
 
-			if (localCmd?.type === "path" && localCmd.points?.length === 1) {
-				renderSinglePoint(localCmd);
+			if (stoppedCommand?.type === "path") {
+				options.finishIncrementalCommand?.(stoppedCommand);
+			}
+			if (localCmd && options.isOffscreenMainCanvas?.()) {
+				localCmd.points = undefined;
 			}
 
 			useLamportStore().lamport = Math.max(useLamportStore().lamport, msg.data.lamport);
@@ -1315,14 +1384,20 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		let hasUpdates = false;
 		cmdIds.forEach((id: string) => {
 			const cmd = options.commandMap.get(id);
-			if (!cmd?.points) return;
-			cmd.points.forEach((point) => {
-				point.x += dx;
-				point.y += dy;
-			});
+			if (!cmd) return;
+			if (cmd.box) {
+				cmd.box = {
+					...cmd.box,
+					minX: cmd.box.minX + dx,
+					maxX: cmd.box.maxX + dx,
+					minY: cmd.box.minY + dy,
+					maxY: cmd.box.maxY + dy,
+				};
+			}
 			hasUpdates = true;
 		});
-		if (hasUpdates) options.renderCanvas();
+		if (hasUpdates) options.translateCommandPoints?.(cmdIds, dx, dy);
+		if (hasUpdates) queueFullRender();
 	};
 
 	const handleBatchUpdate = (msg: CollabIncomingMessage) => {
@@ -1330,16 +1405,20 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		if (msgUserId === options.userId.value) return;
 
 		let hasUpdates = false;
-		updates.forEach((update: any) => {
+		(updates as BatchCommandUpdate[]).forEach((update) => {
 			const cmd = options.commandMap.get(update.cmdId);
 			if (!cmd) return;
 			cmd.points = update.points;
-			if (msg.type === "cmd-batch-stop") {
+			if (msg.type === "cmd-batch-stop" && update.boxes) {
 				cmd.box = update.boxes;
+			}
+			options.syncCommandState?.(cmd);
+			if (options.isOffscreenMainCanvas?.()) {
+				cmd.points = undefined;
 			}
 			hasUpdates = true;
 		});
-		if (hasUpdates) options.renderCanvas();
+		if (hasUpdates) queueFullRender();
 	};
 
 	const handlePageAdd = (msg: CollabIncomingMessage) => {
@@ -1360,22 +1439,41 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	const handleUndoRedo = (msg: CollabIncomingMessage) => {
-		const cmd = options.commandMap.get(msg.data.cmdId);
-		if (!cmd) {
+		const incomingCmd = msg.data.cmd ? normalizeCommandFromProtocol(msg.data.cmd as Command) : null;
+		const cmdId = typeof msg.data.cmdId === "string" ? msg.data.cmdId : incomingCmd?.id;
+		if (!cmdId) {
 			return;
 		}
+		let cmd = options.commandMap.get(cmdId);
+		if (!cmd) {
+			if (!incomingCmd) return;
+			cmd = incomingCmd;
+			options.insertCommand(cmd);
+		} else if (incomingCmd) {
+			cmd.tool = incomingCmd.tool;
+			cmd.color = incomingCmd.color;
+			cmd.size = incomingCmd.size;
+			cmd.pageId = incomingCmd.pageId;
+			cmd.lamport = incomingCmd.lamport;
+			cmd.box = incomingCmd.box;
+			if (incomingCmd.points?.length) {
+				cmd.points = incomingCmd.points;
+			}
+		}
+		flushPendingRemoteCommandUpdates(cmdId);
 		cmd.isDeleted = msg.type === "undo-cmd";
 		options.syncCommandState?.(cmd);
-		if (options.requestSceneRefresh) {
-			options.requestSceneRefresh();
+		if (options.isOffscreenMainCanvas?.()) {
+			cmd.points = undefined;
+		}
+		const dirtyRect =
+			cmd.pageId === options.currentPageId.value ? getCommandDirtyRect(cmd) : null;
+		if (dirtyRect && options.requestDirtyRender) {
+			queueDirtyRender(dirtyRect);
+		} else if (options.requestSceneRefresh) {
+			queueSceneRefresh();
 		} else {
-			const dirtyRect =
-				cmd.pageId === options.currentPageId.value ? getCommandDirtyRect(cmd) : null;
-			if (dirtyRect) {
-				options.requestDirtyRender?.(dirtyRect);
-			} else {
-				options.renderCanvas();
-			}
+			queueFullRender();
 		}
 		options.setTool(options.currentTool.value);
 	};
@@ -1386,21 +1484,21 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 		const removed = options.removeCommand(cmdId);
 		if (!removed) return;
-		syncWorkerSnapshot();
+		options.removeCommandState?.(cmdId);
 
 		if (options.requestSceneRefresh) {
-			options.requestSceneRefresh();
+			queueSceneRefresh();
 			return;
 		}
 
 		const dirtyRect =
 			removed.pageId === options.currentPageId.value ? getCommandDirtyRect(removed) : null;
 		if (dirtyRect) {
-			options.requestDirtyRender?.(dirtyRect);
+			queueDirtyRender(dirtyRect);
 			return;
 		}
 
-		options.renderCanvas();
+		queueFullRender();
 	};
 
 	const handleOperationRejected = (msg: CollabIncomingMessage) => {
@@ -1422,39 +1520,40 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			options.pendingUpdates.value.delete(cmdId);
 			options.cancelRejectedLocalCommand?.(cmdId);
 		}
+		if (payload.shouldRefresh !== false || shouldResync) {
+			options.cancelRejectedOperation?.();
+		}
 
 		if (opType === "cmd-start" && cmdId) {
 			const removed = options.removeCommand(cmdId);
-			syncWorkerSnapshot();
+			options.removeCommandState?.(cmdId);
 			const dirtyRect =
 				removed && removed.pageId === options.currentPageId.value
 					? getCommandDirtyRect(removed)
 					: null;
 
 			if (options.requestSceneRefresh) {
-				options.requestSceneRefresh();
+				queueSceneRefresh();
 			} else if (dirtyRect && payload.shouldRefresh !== false) {
-				options.requestDirtyRender?.(dirtyRect);
+				queueDirtyRender(dirtyRect);
 			} else {
-				options.renderCanvas();
+				queueFullRender();
 			}
 		} else if ((opType === "undo-cmd" || opType === "redo-cmd") && cmd) {
 			cmd.isDeleted = opType === "redo-cmd";
 			options.syncCommandState?.(cmd);
-			if (options.requestSceneRefresh) {
-				options.requestSceneRefresh();
+			const dirtyRect =
+				cmd.pageId === options.currentPageId.value ? getCommandDirtyRect(cmd) : null;
+			if (dirtyRect && payload.shouldRefresh !== false && options.requestDirtyRender) {
+				queueDirtyRender(dirtyRect);
+			} else if (options.requestSceneRefresh) {
+				queueSceneRefresh();
 			} else {
-				const dirtyRect =
-					cmd.pageId === options.currentPageId.value ? getCommandDirtyRect(cmd) : null;
-				if (dirtyRect && payload.shouldRefresh !== false) {
-					options.requestDirtyRender?.(dirtyRect);
-				} else {
-					options.renderCanvas();
-				}
+				queueFullRender();
 			}
 			options.setTool(options.currentTool.value);
 		} else if (payload.shouldRefresh !== false) {
-			options.requestSceneRefresh?.();
+			queueSceneRefresh();
 		}
 
 		if (shouldResync) {

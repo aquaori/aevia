@@ -17,6 +17,7 @@ const server = http.createServer(app);
 
 const wss = new WebSocket.Server({
     noServer: true,
+    maxPayload: config.WS_MAX_PAYLOAD_BYTES,
     permessageDeflate: {
         zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 3 },
         zlibInflateOptions: { chunkSize: 10 * 1024 },

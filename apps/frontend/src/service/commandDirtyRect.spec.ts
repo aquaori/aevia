@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Command } from "@collaborative-whiteboard/shared";
-import { canvasRef } from "./canvas";
+import { canvasRef, filterDirtyRenderPoints } from "./canvas";
 import { getCommandDirtyRect } from "./commandDirtyRect";
 
 const command = (overrides: Partial<Command>): Command => ({
@@ -44,5 +44,23 @@ describe("command dirty rect", () => {
 
 		expect(getCommandDirtyRect(command({ type: "clear" }))).toBeNull();
 		expect(getCommandDirtyRect(command({ box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 } }))).toBeNull();
+	});
+
+	it("includes a command whose segment crosses the dirty rect without a sample inside it", () => {
+		const points = [
+			{ x: 0.1, y: 0.5, p: 0.5, lamport: 1, cmdId: "crossing", pageId: 0, userId: "user-1", tool: "pen" as const, color: "#000", size: 3, isDeleted: false },
+			{ x: 0.9, y: 0.5, p: 0.5, lamport: 2, cmdId: "crossing", pageId: 0, userId: "user-1", tool: "pen" as const, color: "#000", size: 3, isDeleted: false },
+		];
+
+		expect(
+			filterDirtyRenderPoints(
+				points,
+				{ minX: 490, minY: 240, width: 20, height: 20 },
+				1000,
+				500,
+				undefined,
+				0
+			)
+		).toHaveLength(2);
 	});
 });

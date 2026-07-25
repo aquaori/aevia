@@ -62,6 +62,8 @@ export interface CollabMessageDispatcherOptions {
 		candidateCommandIds?: string[];
 	}) => void;
 	syncCommandState?: (command: Command) => void;
+	removeCommandState?: (cmdId: string) => void;
+	translateCommandPoints?: (cmdIds: string[], dx: number, dy: number) => void;
 	requestSceneRefresh?: () => void;
 	renderIncrementalCommand?: (
 		cmd: Command,
@@ -69,6 +71,8 @@ export interface CollabMessageDispatcherOptions {
 		source?: "local" | "remote"
 	) => void;
 	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
+	finishIncrementalCommand?: (cmd: Command) => void;
+	isOffscreenMainCanvas?: () => boolean;
 	beginInitRenderStream?: (pageId?: number) => void;
 	appendInitRenderChunk?: (points: FlatPoint[]) => void;
 	appendInitRenderBinaryChunk?: (
@@ -100,13 +104,40 @@ export interface CollabMessageDispatcherOptions {
 	clearClearedCommands: (cmd: Command) => boolean;
 	requestCurrentPageResync?: () => boolean;
 	cancelRejectedLocalCommand?: (cmdId: string) => void;
+	cancelRejectedOperation?: () => void;
 	onInitConnectionState: () => void;
 	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 
+export interface CollabIncomingData extends Record<string, unknown> {
+	cmd: Command;
+	cmdId: string;
+	cmdIds: string[];
+	commands?: Command[];
+	dx: number;
+	dy: number;
+	lamport: number;
+	memberList?: [string, string][];
+	onlineCount: number;
+	pageId: number;
+	points: Point[];
+	rect?: { x: number; y: number; w: number; h: number } | null;
+	totalPages: number;
+	updates: Array<{
+		cmdId: string;
+		points: Point[];
+		boxes: NonNullable<Command["box"]>;
+	}>;
+	userId: string;
+	userName: string;
+	username: string;
+	x: number;
+	y: number;
+}
+
 export interface CollabIncomingMessage {
 	type: string;
-	data: any;
+	data: CollabIncomingData;
 	pushType?: string;
 }
 

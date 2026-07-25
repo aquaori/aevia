@@ -2,11 +2,25 @@ import { WebSocket } from "ws";
 import { v4 as uuidv4 } from "uuid";
 import type { ExternalConfig, RoomUser } from "./types";
 
+interface ApiResponse {
+	code?: number;
+	message?: string;
+	data?: {
+		sessionToken?: string;
+		token?: string;
+		userId?: string;
+		expiresAt?: number | null;
+		user?: {
+			id?: string;
+		};
+	};
+}
+
 const requestJson = async (
 	url: string,
 	body: unknown,
 	failurePrefix: string
-): Promise<any> => {
+): Promise<ApiResponse> => {
 	let response: Response;
 	try {
 		response = await fetch(url, {
@@ -14,8 +28,8 @@ const requestJson = async (
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
-	} catch (error: any) {
-		throw new Error(`${failurePrefix}: ${error?.message || "request failed"}`, {
+	} catch (error: unknown) {
+		throw new Error(`${failurePrefix}: ${error instanceof Error ? error.message : "request failed"}`, {
 			cause: error,
 		});
 	}
@@ -31,8 +45,8 @@ export const assertFrontendReachable = async (config: ExternalConfig) => {
 		if (!response.ok) {
 			throw new Error(`HTTP ${response.status}`);
 		}
-	} catch (error: any) {
-		throw new Error(`frontend unreachable: ${error?.message || "request failed"}`, {
+	} catch (error: unknown) {
+		throw new Error(`frontend unreachable: ${error instanceof Error ? error.message : "request failed"}`, {
 			cause: error,
 		});
 	}
@@ -70,6 +84,7 @@ export const joinRoom = async (
 		userName,
 		token,
 		userId,
+		expiresAt: data.data.expiresAt ?? null,
 	};
 };
 
@@ -192,6 +207,52 @@ export class ProtocolClient {
 				box: command.box,
 			},
 		}));
+
+		return commandId;
+	}
+
+	async sendCommittedStroke(options: {
+		points: Array<{ x: number; y: number; p?: number }>;
+		color?: string;
+		size?: number;
+		pageId?: number;
+		commandId?: string;
+	}) {
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			throw new Error("protocol websocket is not connected");
+		}
+
+		const points = options.points.map((point) => ({
+			x: point.x,
+			y: point.y,
+			p: point.p ?? 0.5,
+			lamport: this.lamport++,
+		}));
+		if (points.length === 0) {
+			throw new Error("stroke requires at least one point");
+		}
+
+		const commandId = options.commandId || uuidv4();
+		const command = {
+			id: commandId,
+			type: "path",
+			points,
+			tool: "pen",
+			color: options.color || "#111827",
+			size: options.size || 4,
+			timestamp: Date.now(),
+			userId: this.user.userId,
+			roomId: this.user.roomId,
+			pageId: options.pageId ?? 0,
+			isDeleted: false,
+			lamport: points[points.length - 1]!.lamport,
+			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+		};
+
+		await this.sendJsonAwait({
+			type: "push-cmd",
+			data: { id: commandId, cmdId: commandId, cmd: command, lamport: command.lamport },
+		});
 
 		return commandId;
 	}

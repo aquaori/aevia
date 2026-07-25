@@ -16,10 +16,13 @@ packages/*/dist/
 
 .DS_Store
 Thumbs.db
+.cache/
 
 .codex/
 .vscode/
 tests/reports/
 apps/frontend/tests/e2e/external/baselines/*
 apps/frontend/tests/e2e/external/history/*
+data/*.sqlite
+data/*.sqlite-*
 AGENTS.md

@@ -41,11 +41,14 @@ interface LocalCommandServiceOptions {
 	}) => void;
 	syncCommandState?: (command: Command) => void;
 	requestSceneRefresh?: () => void;
+	syncWorkerScene?: (commands: Command[], pageId: number, transformingCmdIds?: string[]) => void;
 	setTool: (tool: "pen" | "eraser" | "cursor") => void;
 	send: (type: string, data: unknown) => boolean;
 }
 
 export const createLocalCommandService = (options: LocalCommandServiceOptions) => {
+	const sendFailedMessage = "连接已断开，操作未发送。";
+
 	const pruneDeletedCommandsAfterPointer = () => {
 		const removedCommandIds = options.pruneDeletedCommandsAfterPointer(
 			options.userId.value,
@@ -64,36 +67,39 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		pruneDeletedCommandsAfterPointer();
 
 		if (type === "start") {
-			if (!options.commands.value.find((command) => command.id === cmdPartial.id)) {
-				options.insertCommand(cmdPartial as Command);
-				options.currentCommandIndex.value = options.commands.value.length - 1;
-			}
-
-			options.send("cmd-start", {
+			const sent = options.send("cmd-start", {
 				id: cmdPartial.id,
 				cmd: cmdPartial,
 				lamport: useLamportStore().lamport,
 			});
+			if (!sent) return { ok: false, error: sendFailedMessage };
+
+			if (!options.commands.value.find((command) => command.id === cmdPartial.id)) {
+				options.insertCommand(cmdPartial as Command);
+				options.currentCommandIndex.value = options.commands.value.length - 1;
+			}
 			return { ok: true, command: cmdPartial as Command };
 		}
 
 		if (type === "update" && cmdPartial.id && cmdPartial.points) {
-			options.send("cmd-update", {
+			const sent = options.send("cmd-update", {
 				cmdId: cmdPartial.id,
 				points: cmdPartial.points,
 				lamport: useLamportStore().getNextLamport(),
 			});
+			if (!sent) return { ok: false, error: sendFailedMessage };
 			return { ok: true };
 		}
 
 		if (type === "stop") {
-			options.send("cmd-stop", {
+			const sent = options.send("cmd-stop", {
 				cmdId: cmdPartial.id,
 				cmd: cmdPartial,
 				lamport: useLamportStore().lamport,
 				points: cmdPartial.points || [],
 				box: cmdPartial.box || null,
 			});
+			if (!sent) return { ok: false, error: sendFailedMessage };
 			return { ok: true, command: cmdPartial as Command };
 		}
 
@@ -114,15 +120,19 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 					...cmdPartial,
 				} as Command;
 
-				options.send("push-cmd", command);
+				const sent = options.send("push-cmd", command);
+				if (!sent) return { ok: false, error: sendFailedMessage };
 				if (!options.commands.value.find((item) => item.id === command.id)) {
 					options.insertCommand(command);
 				}
 				options.currentCommandIndex.value = options.commands.value.length - 1;
 				options.renderCanvas();
 				return { ok: true, command };
-			} catch (error: any) {
-				return { ok: false, error: error?.message || "Failed to create command" };
+			} catch (error: unknown) {
+				return {
+					ok: false,
+					error: error instanceof Error ? error.message : "Failed to create command",
+				};
 			}
 		}
 
@@ -140,20 +150,18 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				command.type !== "clear"
 			) {
 
-				options.currentCommandIndex.value = index;
-				options.send("undo-cmd", { cmdId: command.id });
+				const sent = options.send("undo-cmd", { cmdId: command.id });
+				if (!sent) return { ok: false, error: sendFailedMessage };
 				command.isDeleted = true;
+				options.currentCommandIndex.value = index - 1;
 				options.syncCommandState?.(command);
-				if (options.requestSceneRefresh) {
+				const dirtyRect = getCommandDirtyRect(command);
+				if (dirtyRect && options.requestDirtyRender) {
+					options.requestDirtyRender(dirtyRect);
+				} else if (options.requestSceneRefresh) {
 					options.requestSceneRefresh();
 				} else {
-					const dirtyRect =
-						command.pageId === options.currentPageId.value ? getCommandDirtyRect(command) : null;
-					if (dirtyRect) {
-					options.requestDirtyRender?.(dirtyRect);
-					} else {
-						options.renderCanvas();
-					}
+					options.renderCanvas();
 				}
 				options.setTool(options.currentTool.value);
 				return { ok: true, command };
@@ -164,43 +172,28 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 	};
 
 	const redo = (): CommandActionResult => {
-		let lastVisibleIndex = -1;
-
-		for (let index = options.commands.value.length - 1; index >= 0; index -= 1) {
+		const startIndex = Math.max(0, options.currentCommandIndex.value + 1);
+		for (let index = startIndex; index < options.commands.value.length; index += 1) {
 			const command = options.commands.value[index];
 			if (!command) continue;
 			if (
 				command.userId === options.userId.value &&
 				command.pageId === options.currentPageId.value &&
-				!command.isDeleted
+				command.isDeleted &&
+				command.type !== "clear"
 			) {
-				lastVisibleIndex = index;
-				break;
-			}
-		}
-
-		for (let index = lastVisibleIndex + 1; index < options.commands.value.length; index += 1) {
-			const command = options.commands.value[index];
-			if (!command) continue;
-			if (
-				command.userId === options.userId.value &&
-				command.pageId === options.currentPageId.value &&
-				command.isDeleted
-			) {
-				options.currentCommandIndex.value = index;
-				options.send("redo-cmd", { cmdId: command.id });
+				const sent = options.send("redo-cmd", { cmdId: command.id });
+				if (!sent) return { ok: false, error: sendFailedMessage };
 				command.isDeleted = false;
+				options.currentCommandIndex.value = index;
 				options.syncCommandState?.(command);
-				if (options.requestSceneRefresh) {
+				const dirtyRect = getCommandDirtyRect(command);
+				if (dirtyRect && options.requestDirtyRender) {
+					options.requestDirtyRender(dirtyRect);
+				} else if (options.requestSceneRefresh) {
 					options.requestSceneRefresh();
 				} else {
-					const dirtyRect =
-						command.pageId === options.currentPageId.value ? getCommandDirtyRect(command) : null;
-					if (dirtyRect) {
-					options.requestDirtyRender?.(dirtyRect);
-					} else {
-						options.renderCanvas();
-					}
+					options.renderCanvas();
 				}
 				options.setTool(options.currentTool.value);
 				return { ok: true, command };
@@ -225,19 +218,22 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
 		};
 
-		options.insertCommand(clearCommand);
-		options.currentCommandIndex.value = options.commands.value.length - 1;
 		const userName = Array.isArray(options.username.value)
 			? options.username.value[0]
 			: options.username.value;
 
-		options.send("push-cmd", {
+		const sent = options.send("push-cmd", {
 			id: clearCommand.id,
 			cmd: clearCommand,
 			username: userName,
 		});
+		if (!sent) return { ok: false, error: sendFailedMessage };
+
+		options.insertCommand(clearCommand);
+		options.currentCommandIndex.value = options.commands.value.length - 1;
 
 		const cleared = options.clearClearedCommands(clearCommand);
+		options.syncWorkerScene?.(options.commands.value, options.currentPageId.value, []);
 		options.renderCanvas();
 		options.currentCommandIndex.value =
 			options.commands.value.length === 0 ? 0 : options.commands.value.length - 1;

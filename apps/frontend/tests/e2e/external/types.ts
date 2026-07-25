@@ -274,6 +274,27 @@ export interface ExternalRunSummary {
 	softBoundaryCount: number;
 }
 
+export interface ExternalObservabilityArtifact {
+	kind: string;
+	label: string;
+	path: string;
+	bytes?: number;
+	endpoint?: string;
+	collectedAt: string;
+}
+
+export interface ExternalObservability {
+	source: "go-pprof";
+	enabled: boolean;
+	pprofUrl?: string;
+	cpuProfileSeconds?: number;
+	outputDir?: string;
+	startedAt: string;
+	finishedAt?: string;
+	artifacts: ExternalObservabilityArtifact[];
+	errors: string[];
+}
+
 export interface ExternalReport {
 	version: 1;
 	generatedAt: string;
@@ -320,6 +341,7 @@ export interface ExternalReport {
 	learning: LearningSummary;
 	learnedRegressions: CaseLearning[];
 	baselineRecommendations: BaselineRecommendation[];
+	observability?: ExternalObservability;
 }
 
 export interface SuiteContext {
@@ -339,6 +361,7 @@ export interface RoomUser {
 	userName: string;
 	token: string;
 	userId: string;
+	expiresAt?: number | null;
 }
 
 export interface CanvasSample {

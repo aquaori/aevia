@@ -1,5 +1,5 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
-import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
+import type { Command, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
 import type {
 	InitRenderChunkCommandDictionaryEntry,
 	InitRenderChunkMetaPayload,
@@ -7,7 +7,7 @@ import type {
 
 interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
-	onDirtyRects?: (rects: any[]) => void;
+	onDirtyRects?: (rects: aabbBox[]) => void;
 }
 
 interface FlatPointRequest {
@@ -57,6 +57,11 @@ interface PendingIncrement {
 	source: "local" | "remote";
 }
 
+interface CommandPointsResult {
+	cmdId: string;
+	points: Point[];
+}
+
 const clonePoint = (point: Point): Point => ({
 	x: point.x,
 	y: point.y,
@@ -69,6 +74,19 @@ const cloneCommand = (cmd: Command): Command => ({
 	points: cmd.points ? cmd.points.map(clonePoint) : [],
 	box: { ...cmd.box },
 });
+
+export const cloneCommandForStateSync = (cmd: Command): Command => {
+	const cloned: Command = {
+		...cmd,
+		box: { ...cmd.box },
+	};
+	if (cmd.points) {
+		cloned.points = cmd.points.map(clonePoint);
+	} else {
+		delete cloned.points;
+	}
+	return cloned;
+};
 
 const cloneRect = (rect: DirtyRectRequest): DirtyRectRequest => ({
 	minX: rect.minX,
@@ -89,6 +107,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	let pendingIncrementFlushRafId: number | null = null;
 	let streamedInitPoints: FlatPoint[] = [];
 	const pendingRequests = new Map<string, (points: FlatPoint[]) => void>();
+	const pendingCommandPointRequests = new Map<string, (result: CommandPointsResult[]) => void>();
 	const pendingIncrements = new Map<string, PendingIncrement>();
 
 	const cancelPendingMainCanvasRequest = () => {
@@ -129,8 +148,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		}
 
 		worker.postMessage({
-			type: "flat-points",
-			data,
+			type: "flat-points-from-scene",
+			data: {
+				pageId: payload.pageId,
+				transformingCmdIds: [...payload.transformingCmdIds],
+				requestId: payload.requestId,
+			},
 		});
 	};
 
@@ -200,7 +223,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		});
 
 		worker.onmessage = (event) => {
-			const { type, points, rects, requestId } = event.data;
+			const { type, points, rects, requestId, commands } = event.data;
 
 			if (type === "flat-points-result") {
 				if (requestId && pendingRequests.has(requestId)) {
@@ -216,6 +239,15 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 			if (type === "merge-dirty-rects-result") {
 				options.onDirtyRects?.(rects ?? []);
+				return;
+			}
+
+			if (type === "command-points-result") {
+				if (requestId && pendingCommandPointRequests.has(requestId)) {
+					const callback = pendingCommandPointRequests.get(requestId);
+					pendingCommandPointRequests.delete(requestId);
+					callback?.((commands as CommandPointsResult[]) ?? []);
+				}
 				return;
 			}
 
@@ -266,9 +298,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			pendingRequests.set(payload.requestId, onResult);
 		}
 		worker.postMessage({
-			type: "flat-points",
+			type: "flat-points-from-scene",
 			data: {
-				commands: payload.commands.map(cloneCommand),
 				pageId: payload.pageId,
 				transformingCmdIds: [...payload.transformingCmdIds],
 				requestId: payload.requestId,
@@ -403,6 +434,17 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		queueIncrementalCommand(cmd, [point], pageId, source);
 	};
 
+	const finishCommandStroke = (cmdId: string) => {
+		if (!worker || !offscreenEnabled || !cmdId) return;
+		if (pendingIncrements.has(cmdId)) {
+			flushIncrementalCommands();
+		}
+		worker.postMessage({
+			type: "finish-command-stroke",
+			data: { cmdId },
+		});
+	};
+
 	const renderDirtyRect = (
 		rect: DirtyRectRequest,
 		pageId: number,
@@ -424,7 +466,44 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		worker.postMessage({
 			type: "update-command-state",
 			data: {
-				cmd: cloneCommand(cmd),
+				cmd: cloneCommandForStateSync(cmd),
+			},
+		});
+	};
+
+	const requestCommandPoints = (cmdIds: string[]) =>
+		new Promise<CommandPointsResult[]>((resolve) => {
+			if (!worker || cmdIds.length === 0) {
+				resolve([]);
+				return;
+			}
+			const requestId = `command-points:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+			pendingCommandPointRequests.set(requestId, resolve);
+			worker.postMessage({
+				type: "get-command-points",
+				data: {
+					requestId,
+					cmdIds: [...cmdIds],
+				},
+			});
+		});
+
+	const removeCommandState = (cmdId: string) => {
+		if (!worker || !offscreenEnabled) return;
+		worker.postMessage({
+			type: "remove-command-state",
+			data: { cmdId },
+		});
+	};
+
+	const translateCommandPoints = (cmdIds: string[], dx: number, dy: number) => {
+		if (!worker || !offscreenEnabled || cmdIds.length === 0) return;
+		worker.postMessage({
+			type: "translate-command-points",
+			data: {
+				cmdIds: [...cmdIds],
+				dx,
+				dy,
 			},
 		});
 	};
@@ -452,6 +531,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const dispose = () => {
 		pendingRequests.clear();
+		pendingCommandPointRequests.clear();
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();
 		worker?.postMessage({ type: "dispose" });
@@ -468,6 +548,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		syncViewport,
 		isOffscreenEnabled: () => offscreenEnabled,
 		requestFlatPoints,
+		requestCommandPoints,
 		requestMergeDirtyRects,
 		renderMainCanvas,
 		beginInitRenderStream,
@@ -478,8 +559,11 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		renderSceneFromFlatPoints,
 		renderIncrementalCommand,
 		renderSinglePointCommand,
+		finishCommandStroke,
 		renderDirtyRect,
 		syncCommandState,
+		removeCommandState,
+		translateCommandPoints,
 		rerenderScene,
 	};
 };

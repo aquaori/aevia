@@ -65,7 +65,7 @@ export const createBoundaryProbe = async (
 		crash.pageClosed = true;
 	});
 	browser.on("disconnected", markBrowserDisconnected);
-	(client as any).on("Detached", () => {
+	(client as CDPSession & { on(event: "Detached", handler: () => void): void }).on("Detached", () => {
 		crash.cdpDetached = true;
 	});
 
@@ -80,8 +80,8 @@ export const createBoundaryProbe = async (
 			const heap = await client.send("Runtime.getHeapUsage");
 			metrics.usedHeapMb = bytesToMb(heap.usedSize);
 			metrics.totalHeapMb = bytesToMb(heap.totalSize);
-		} catch (error: any) {
-			crash.error = crash.error || error?.message || String(error);
+		} catch (error: unknown) {
+			crash.error = crash.error || (error instanceof Error ? error.message : String(error));
 		}
 
 		try {
@@ -92,8 +92,8 @@ export const createBoundaryProbe = async (
 			metrics.documentCount = metricValue(perf.metrics, "Documents");
 			metrics.layoutCount = metricValue(perf.metrics, "LayoutCount");
 			metrics.recalcStyleCount = metricValue(perf.metrics, "RecalcStyleCount");
-		} catch (error: any) {
-			crash.error = crash.error || error?.message || String(error);
+		} catch (error: unknown) {
+			crash.error = crash.error || (error instanceof Error ? error.message : String(error));
 		}
 
 		try {

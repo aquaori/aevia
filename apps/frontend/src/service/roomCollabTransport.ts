@@ -15,7 +15,20 @@ import {
 	encodeMouseMoveBinary,
 	hasRealtimeBinaryMagic,
 } from "./realtimeBinary";
+import { applyServerPressurePolicy, resetCollabPressurePolicy } from "./collabPressurePolicy";
 import { renewRoomSession as renewRoomSessionRequest } from "./sessionApi";
+
+type OutgoingPayload = Record<string, unknown> & {
+	cmd?: Command;
+	cmdId?: string;
+	clientLoadedPageIds?: number[];
+	nextPageId?: number;
+	pageId?: number;
+	points?: Point[];
+	prevPageId?: number;
+	x?: number;
+	y?: number;
+};
 
 interface RoomCollabTransportOptions {
 	token: Ref<string>;
@@ -49,6 +62,8 @@ interface RoomCollabTransportOptions {
 		candidateCommandIds?: string[];
 	}) => void;
 	syncCommandState?: (command: Command) => void;
+	removeCommandState?: (cmdId: string) => void;
+	translateCommandPoints?: (cmdIds: string[], dx: number, dy: number) => void;
 	requestSceneRefresh?: () => void;
 	renderIncrementalCommand?: (
 		cmd: Command,
@@ -56,6 +71,8 @@ interface RoomCollabTransportOptions {
 		source?: "local" | "remote"
 	) => void;
 	renderSinglePointCommand?: (cmd: Command, source?: "local" | "remote") => void;
+	finishIncrementalCommand?: (cmd: Command) => void;
+	isOffscreenMainCanvas?: () => boolean;
 	beginInitRenderStream?: (pageId?: number) => void;
 	appendInitRenderChunk?: (points: FlatPoint[]) => void;
 	appendInitRenderBinaryChunk?: (
@@ -87,6 +104,7 @@ interface RoomCollabTransportOptions {
 	clearClearedCommands: (cmd: Command) => boolean;
 	requestCurrentPageResync?: () => boolean;
 	cancelRejectedLocalCommand?: (cmdId: string) => void;
+	cancelRejectedOperation?: () => void;
 	persistSessionAuth?: (payload: { sessionToken: string; expiresAt: number | null }) => void;
 	onSessionExpired?: () => void;
 }
@@ -106,12 +124,15 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	const SESSION_RENEWAL_LEEWAY_MS = 2 * 60 * 1000;
 	const SESSION_RENEW_RETRY_DELAY_MS = 30 * 1000;
 	const DEFAULT_RECONNECT_FAILURE_MESSAGE = "服务器连接超时，请返回首页或重新尝试连接。";
-	const SESSION_EXPIRED_FAILURE_MESSAGE = "会话已过期，请返回首页重新加入房间。";
+	const SESSION_EXPIRED_FAILURE_MESSAGE = "签名已过期，请返回首页重新加入房间。";
+	const SERVER_DRAINING_FAILURE_MESSAGE = "服务器正在维护并保存数据，请稍后刷新或重新进入房间。";
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let sessionRenewTimer: ReturnType<typeof setTimeout> | null = null;
 	let sessionRenewInFlight: Promise<boolean> | null = null;
 	let isBrowserOffline = typeof navigator !== "undefined" ? !navigator.onLine : false;
 	let browserConnectivityListenersBound = false;
+	const enableDeltaReplay = import.meta.env.VITE_ENABLE_DELTA_REPLAY === "1";
+	let lastRoomSeq = 0;
 	let pendingRenderBinaryChunk:
 		| {
 				kind: "init";
@@ -247,7 +268,26 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		}
 		persistSessionAuth("", null);
 		options.onSessionExpired?.();
-		toast.error("会话已过期，请重新加入房间。");
+		toast.error("签名已过期，请重新加入房间。");
+	};
+
+	const handleServerDraining = () => {
+		isIntentionalClose.value = true;
+		clearReconnectTimer();
+		clearSessionRenewTimer();
+		isReconnecting.value = false;
+		reconnectCount.value = 0;
+		options.reconnectFailed.value = true;
+		updateReconnectFailureMessage(SERVER_DRAINING_FAILURE_MESSAGE);
+		pendingRenderBinaryChunk = null;
+		if (socket.value) {
+			socket.value.onclose = null;
+			socket.value.onerror = null;
+			socket.value.onmessage = null;
+			socket.value.close();
+			socket.value = null;
+		}
+		toast.info("服务器正在维护，已暂停重连。");
 	};
 
 	const renewSessionToken = async (reason: "background" | "connect" = "background") => {
@@ -270,8 +310,8 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				persistSessionAuth(nextToken, payload.expiresAt ?? null);
 				scheduleSessionRenewal();
 				return true;
-			} catch (error: any) {
-				const status = error?.response?.status;
+			} catch (error: unknown) {
+				const status = (error as { response?: { status?: number } }).response?.status;
 				if (status === 401 || status === 403) {
 					handleSessionExpired();
 					return false;
@@ -309,15 +349,19 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		}
 
 		const expiresAt = options.sessionExpiresAt.value;
-		if (!expiresAt) return true;
+		if (!expiresAt) {
+			return renewSessionToken("connect");
+		}
 		const remainingMs = expiresAt - Date.now();
 		if (remainingMs <= 0) {
 			handleSessionExpired();
 			return false;
 		}
+
 		if (remainingMs <= SESSION_RENEWAL_LEEWAY_MS) {
 			return renewSessionToken("connect");
 		}
+
 		return true;
 	};
 
@@ -366,9 +410,13 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		renderCanvas: options.renderCanvas,
 		requestDirtyRender: options.requestDirtyRender,
 		syncCommandState: options.syncCommandState,
+		removeCommandState: options.removeCommandState,
+		translateCommandPoints: options.translateCommandPoints,
 		requestSceneRefresh: options.requestSceneRefresh,
 		renderIncrementalCommand: options.renderIncrementalCommand,
 		renderSinglePointCommand: options.renderSinglePointCommand,
+		finishIncrementalCommand: options.finishIncrementalCommand,
+		isOffscreenMainCanvas: options.isOffscreenMainCanvas,
 		beginInitRenderStream: options.beginInitRenderStream,
 		appendInitRenderChunk: options.appendInitRenderChunk,
 		appendInitRenderBinaryChunk: options.appendInitRenderBinaryChunk,
@@ -388,6 +436,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		clearClearedCommands: options.clearClearedCommands,
 		requestCurrentPageResync: options.requestCurrentPageResync,
 		cancelRejectedLocalCommand: options.cancelRejectedLocalCommand,
+		cancelRejectedOperation: options.cancelRejectedOperation,
 		emitHook,
 		onInitConnectionState: () => {
 			if (isReconnecting.value) {
@@ -400,6 +449,13 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			scheduleSessionRenewal();
 		},
 	});
+
+	const updateLastRoomSeq = (payload: unknown) => {
+		const roomSeq = Number((payload as { roomSeq?: unknown } | undefined)?.roomSeq ?? NaN);
+		if (Number.isFinite(roomSeq) && roomSeq > lastRoomSeq) {
+			lastRoomSeq = roomSeq;
+		}
+	};
 
 	const doReconnect = () => {
 		if (isIntentionalClose.value || options.reconnectFailed.value || hasActiveSocketConnection()) {
@@ -444,7 +500,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			return false;
 		}
 
-		let outgoing = data as any;
+		let outgoing = data as OutgoingPayload;
 		if (outgoing && typeof outgoing === "object") {
 			outgoing = { ...outgoing };
 		}
@@ -538,7 +594,9 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			const tokenStr = Array.isArray(options.token.value)
 				? (options.token.value[0] ?? "")
 				: options.token.value || "";
-			const wsUrl = `${wsBaseUrl.replace(/\/ws$/, "")}/ws?pageId=${statePageToProtocol(options.currentPageId.value)}`;
+			const wsUrl = `${wsBaseUrl.replace(/\/ws$/, "")}/ws?pageId=${statePageToProtocol(options.currentPageId.value)}${
+				enableDeltaReplay && lastRoomSeq > 0 ? `&lastRoomSeq=${lastRoomSeq}` : ""
+			}`;
 			socket.value = new WebSocket(wsUrl, [tokenStr]);
 			socket.value.binaryType = "arraybuffer";
 
@@ -551,6 +609,11 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				try {
 					if (typeof event.data === "string") {
 						const msg = JSON.parse(event.data);
+
+						if (msg.type === "init-meta" && typeof window !== "undefined") {
+							(window as Window & { __aeviaInitStreamStartedAt?: number }).__aeviaInitStreamStartedAt =
+								performance.now();
+						}
 
 						if (msg.type === "init-render-chunk-meta") {
 							pendingRenderBinaryChunk = {
@@ -565,6 +628,15 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 						}
 
 						emitHook("collab:message", { type: msg.type, payload: msg.data });
+						if (msg.type === "server-pressure") {
+							applyServerPressurePolicy(msg.data);
+							return;
+						}
+						if (msg.type === "server.draining") {
+							handleServerDraining();
+							return;
+						}
+						if (enableDeltaReplay) updateLastRoomSeq(msg.data);
 						dispatcher.handleMessage(msg);
 						return;
 					}
@@ -573,6 +645,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 						if (hasRealtimeBinaryMagic(event.data)) {
 							const msg = decodeRealtimeBinaryMessage(event.data);
 							emitHook("collab:message", { type: msg.type, payload: msg.data });
+							if (enableDeltaReplay) updateLastRoomSeq(msg.data);
 							dispatcher.handleMessage(msg);
 							return;
 						}
@@ -610,6 +683,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 			socket.value.onclose = () => {
 				pendingRenderBinaryChunk = null;
+				resetCollabPressurePolicy();
 				clearSessionRenewTimer();
 				socket.value = null;
 				if (isIntentionalClose.value) return;

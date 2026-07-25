@@ -1,5 +1,15 @@
 import type { Page } from "playwright";
 
+type ExternalPerfState = {
+	longTasks: Array<{ startTime: number; duration: number }>;
+	events: Array<{ name: string; startTime: number; duration: number; processingStart?: number }>;
+	paints: Array<{ name: string; startTime: number }>;
+};
+
+type ExternalPerfWindow = Window & {
+	__externalPerf?: ExternalPerfState;
+};
+
 export const installPerformanceObserver = async (page: Page) => {
 	await page.addInitScript(() => {
 		const state = {
@@ -7,7 +17,7 @@ export const installPerformanceObserver = async (page: Page) => {
 			events: [] as Array<{ name: string; startTime: number; duration: number; processingStart?: number }>,
 			paints: [] as Array<{ name: string; startTime: number }>,
 		};
-		(window as any).__externalPerf = state;
+		(window as ExternalPerfWindow).__externalPerf = state;
 
 		if ("PerformanceObserver" in window) {
 			try {
@@ -53,7 +63,7 @@ export const installPerformanceObserver = async (page: Page) => {
 
 export const readPerformanceObserver = async (page: Page) =>
 	page.evaluate(() => {
-		const state = (window as any).__externalPerf || { longTasks: [], events: [], paints: [] };
+		const state = (window as ExternalPerfWindow).__externalPerf || { longTasks: [], events: [], paints: [] };
 		return {
 			longTaskCount: state.longTasks.length,
 			longTaskTotalMs: state.longTasks.reduce((sum: number, item: { duration: number }) => sum + item.duration, 0),

@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const roomController = require("./controllers/roomController");
 const { requireSessionAuth } = require("./middleware/sessionAuth");
 
@@ -7,6 +8,7 @@ const { globalErrorHandler, notFoundHandler } = require("./utils/errorHandler");
 
 const app = express();
 
+app.use(helmet());
 app.use(cors());
 app.use(express.json());
 

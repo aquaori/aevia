@@ -20,8 +20,10 @@
 		canvasRef,
 		uiCanvasRef,
 		ctx,
+		finishIncrementalStroke,
 		renderWithPoints,
 		renderIncrementPoint,
+		resetIncrementalStroke,
 	} from "../service/canvas";
 	import { createWhiteboardSession } from "../service/whiteboardSession";
 	import { createRoomCollabTransport } from "../service/roomCollabTransport";
@@ -45,6 +47,8 @@
 	import { provideRoomSession } from "../service/roomSessionContext";
 	import {
 		createRoomInteractionState,
+		type GroupBoxState,
+		type TransformAnimState,
 	} from "../states/roomInteractionState";
 	import RoomToolbar from "../components/RoomToolbar.vue";
 	import RoomPagination from "../components/RoomPagination.vue";
@@ -164,6 +168,13 @@
 
 	const renderCanvas = () => {
 		if (!canvasRef.value) return;
+		if (workerBridge.isOffscreenEnabled()) {
+			workerBridge.rerenderScene(
+				currentPageId.value,
+				Array.from(transformingCmdIds.value)
+			);
+			return;
+		}
 
 		// 向 Worker 发送请求，计算排好序的点集
 		const rawCommands = toRaw(commands.value).map((c: Command) => ({
@@ -206,6 +217,21 @@
 		renderIncrementalCommand(cmd, cmd.points ?? []);
 	};
 
+	const finishIncrementalCommand = (cmd: Command) => {
+		if (workerBridge.isOffscreenEnabled()) {
+			workerBridge.finishCommandStroke(cmd.id);
+			return;
+		}
+		if (!canvasRef.value || !ctx.value || cmd.pageId !== currentPageId.value) return;
+		const dpr = window.devicePixelRatio || 1;
+		finishIncrementalStroke(
+			cmd,
+			ctx.value,
+			canvasRef.value.width / dpr,
+			canvasRef.value.height / dpr
+		);
+	};
+
 	const refreshWorkerScene = () => {
 		if (workerBridge.isOffscreenEnabled()) {
 			workerBridge.rerenderScene(
@@ -227,6 +253,7 @@
 			),
 		syncToolState: () => roomEditorController.setTool(currentTool.value),
 		isOffscreenEnabled: () => workerBridge.isOffscreenEnabled(),
+		hasRenderableScene: () => commands.value.length > 0,
 		syncMainCanvasViewport: (payload) => {
 			if (canvasRef.value) {
 				workerBridge.bindMainCanvas(canvasRef.value, payload);
@@ -242,7 +269,7 @@
 			commandStore.updateLastSortedPoints(currentPagePoints);
 			renderWithPoints(currentPagePoints);
 		},
-		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects as any),
+		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects),
 	});
 
 	const roomPointerControllerRef = ref<ReturnType<typeof createRoomPointerController> | null>(null);
@@ -265,7 +292,18 @@
 	const goToPage = (index: number) => roomPageService.goToPage(index);
 	const requestCurrentPageResync = () => roomPageService.requestCurrentPageResync();
 	const cancelRejectedLocalCommand = (cmdId: string) => {
+		resetIncrementalStroke(cmdId);
 		roomPointerControllerRef.value?.cancelLocalDrawing(cmdId);
+	};
+	const cancelRejectedOperation = () => {
+		selectedCommandIds.value.clear();
+		selectionRect.value = null;
+		transformingCmdIds.value.clear();
+		transformAnim.value = null;
+		initialCmdsState.value.clear();
+		dragStartPos.value = null;
+		activeTransformHandle.value = null;
+		interactionMode.value = "none";
 	};
 
 
@@ -293,9 +331,14 @@
 		renderCanvas,
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
 		syncCommandState: (command) => workerBridge.syncCommandState(command),
+		removeCommandState: (cmdId) => workerBridge.removeCommandState(cmdId),
+		translateCommandPoints: (cmdIds, dx, dy) =>
+			workerBridge.translateCommandPoints(cmdIds, dx, dy),
 		requestSceneRefresh: refreshWorkerScene,
 		renderIncrementalCommand,
 		renderSinglePointCommand,
+		finishIncrementalCommand,
+		isOffscreenMainCanvas: () => workerBridge.isOffscreenEnabled(),
 		beginInitRenderStream: (pageId?: number) => workerBridge.beginInitRenderStream(pageId),
 		appendInitRenderChunk: (points: FlatPoint[]) => workerBridge.appendInitRenderChunk(points),
 		appendInitRenderBinaryChunk: (meta, buffer) =>
@@ -324,6 +367,7 @@
 		clearClearedCommands,
 		requestCurrentPageResync,
 		cancelRejectedLocalCommand,
+		cancelRejectedOperation,
 		persistSessionAuth: ({ sessionToken, expiresAt }) => {
 			userStore.setToken(sessionToken);
 			userStore.setSessionExpiresAt(expiresAt);
@@ -349,6 +393,8 @@
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
 		syncCommandState: (command) => workerBridge.syncCommandState(command),
 		requestSceneRefresh: refreshWorkerScene,
+		syncWorkerScene: (nextCommands, pageId, transformingIds = []) =>
+			workerBridge.syncWorkerScene(nextCommands, pageId, transformingIds),
 		setTool: roomEditorController.setTool,
 		send: roomCollabTransport.send,
 	});
@@ -426,8 +472,8 @@
 		selectedCommandIds,
 		transformingCmdIds,
 		initialCmdsState,
-		initialGroupBox: initialGroupBox as Ref<any>,
-		transformAnim: transformAnim as Ref<any>,
+		initialGroupBox: initialGroupBox as Ref<GroupBoxState | null>,
+		transformAnim: transformAnim as Ref<TransformAnimState | null>,
 		activeMenu,
 		commands,
 		commandMap: commandMapRef,
@@ -439,7 +485,23 @@
 		canvasRuntime,
 		renderIncrementalCommand: (cmd, points, source) => renderIncrementalCommand(cmd, points, source),
 		renderSinglePointCommand: (cmd, source) => renderSinglePointCommand(cmd, source),
+		finishIncrementalCommand,
 		isOffscreenMainCanvas: () => workerBridge.isOffscreenEnabled(),
+		syncCommandState: (cmd) => workerBridge.syncCommandState(cmd),
+		hydrateCommandPoints: async (cmdIds) => {
+			const missingIds = cmdIds.filter((cmdId) => {
+				const cmd = commandMapRef.get(cmdId);
+				return cmd && (!cmd.points || cmd.points.length === 0);
+			});
+			if (missingIds.length === 0) return;
+			const result = await workerBridge.requestCommandPoints(missingIds);
+			result.forEach(({ cmdId, points }) => {
+				const cmd = commandMapRef.get(cmdId);
+				if (cmd && points.length > 0) {
+					cmd.points = points;
+				}
+			});
+		},
 		send: roomCollabTransport.send,
 		pushCommand: roomCommandController.pushCommand,
 		renderCanvas,
@@ -451,7 +513,7 @@
 		interactionMode,
 		selectionRect,
 		remoteSelectionRects,
-		transformAnim: transformAnim as any,
+		transformAnim,
 		transformingCmdIds,
 		selectedCommandIds,
 		commands,
@@ -507,8 +569,20 @@
 		selectedCommandIds,
 	});
 
-	onMounted(roomLifecycleController.mount);
-	onUnmounted(roomLifecycleController.unmount);
+	const handleVisibilityChange = () => {
+		if (document.visibilityState !== "visible") return;
+		refreshWorkerScene();
+		roomCanvasOverlay.render();
+	};
+
+	onMounted(() => {
+		roomLifecycleController.mount();
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+	});
+	onUnmounted(() => {
+		document.removeEventListener("visibilitychange", handleVisibilityChange);
+		roomLifecycleController.unmount();
+	});
 
 	watch(showPageOverview, (visible) => {
 		if (visible) {
@@ -583,7 +657,7 @@
 			:visible="showMemberList"
 			:online-count="onlineCount"
 			:member-list="memberList"
-			:current-username="Array.isArray(username) ? username[0] : username"
+			:current-user-id="userId"
 			:on-close="roomPanelController.closeMemberList"
 		/>
 

@@ -71,7 +71,16 @@ const sendBinary = (ws, payload) => {
 
 const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
-const isNonEmptyString = (value) => typeof value === "string" && value.trim().length > 0;
+const isBoundedString = (value, maxLength = 256) =>
+  typeof value === "string" && value.trim().length > 0 && value.length <= maxLength;
+
+const isNonEmptyString = (value) => isBoundedString(value);
+
+const isValidLamport = (value) =>
+  Number.isSafeInteger(value) && value >= 0;
+
+const isValidPageId = (value) =>
+  Number.isSafeInteger(value) && value >= 0;
 
 const isValidPoint = (point) =>
   point &&
@@ -79,9 +88,14 @@ const isValidPoint = (point) =>
   isFiniteNumber(point.x) &&
   isFiniteNumber(point.y) &&
   isFiniteNumber(point.p) &&
-  isFiniteNumber(point.lamport);
+  point.p >= 0 &&
+  point.p <= 1 &&
+  isValidLamport(point.lamport);
 
-const isValidPoints = (points) => Array.isArray(points) && points.every(isValidPoint);
+const isValidPoints = (points, maxPoints = config.WS_MAX_POINTS_PER_COMMAND) =>
+  Array.isArray(points) &&
+  points.length <= maxPoints &&
+  points.every(isValidPoint);
 
 const isValidBox = (box) =>
   box &&
@@ -91,7 +105,11 @@ const isValidBox = (box) =>
   isFiniteNumber(box.maxX) &&
   isFiniteNumber(box.maxY) &&
   isFiniteNumber(box.width) &&
-  isFiniteNumber(box.height);
+  isFiniteNumber(box.height) &&
+  box.maxX >= box.minX &&
+  box.maxY >= box.minY &&
+  box.width >= 0 &&
+  box.height >= 0;
 
 const isValidCommand = (cmd) =>
   cmd &&
@@ -101,10 +119,9 @@ const isValidCommand = (cmd) =>
   isFiniteNumber(cmd.timestamp) &&
   isNonEmptyString(cmd.userId) &&
   isNonEmptyString(cmd.roomId) &&
-  Number.isInteger(cmd.pageId) &&
-  cmd.pageId >= 0 &&
+  isValidPageId(cmd.pageId) &&
   typeof cmd.isDeleted === "boolean" &&
-  isFiniteNumber(cmd.lamport) &&
+  isValidLamport(cmd.lamport) &&
   (cmd.points === undefined || isValidPoints(cmd.points)) &&
   (cmd.box === undefined || cmd.box === null || isValidBox(cmd.box));
 
@@ -187,6 +204,14 @@ const broadcastBinaryToOthers = (roomId, excludeWs, payload, targetPageIds = nul
 };
 
 const waitForNextTick = () => new Promise((resolve) => setImmediate(resolve));
+
+const getPayloadByteLength = (payload) => {
+  if (typeof payload === "string") return Buffer.byteLength(payload, "utf8");
+  if (Buffer.isBuffer(payload)) return payload.length;
+  if (payload instanceof ArrayBuffer) return payload.byteLength;
+  if (ArrayBuffer.isView(payload)) return payload.byteLength;
+  return 0;
+};
 
 const sendPageChangeStream = async (ws, stream, requestId, generation) => {
   if (!stream || ws.readyState !== WebSocket.OPEN) return;
@@ -410,7 +435,10 @@ const handlers = {
 
   "cmd-update": (ws, data) => {
     Logger.cmd("cmd-update", data?.cmdId);
-    if (!isNonEmptyString(data?.cmdId) || !isValidPoints(data?.points)) {
+    if (
+      !isNonEmptyString(data?.cmdId) ||
+      !isValidPoints(data?.points, config.WS_MAX_POINTS_PER_UPDATE)
+    ) {
       rejectOperation(ws, "cmd-update", {
         code: "INVALID_UPDATE_FORMAT",
         reason: "Update payload is malformed.",
@@ -462,7 +490,7 @@ const handlers = {
   "cmd-stop": (ws, data) => {
     if (
       !isNonEmptyString(data?.cmdId) ||
-      !isValidPoints(data?.points) ||
+      !isValidPoints(data?.points, config.WS_MAX_POINTS_PER_UPDATE) ||
       (data?.cmd?.box !== undefined && data?.cmd?.box !== null && !isValidBox(data.cmd.box))
     ) {
       rejectOperation(ws, "cmd-stop", {
@@ -627,6 +655,8 @@ const handlers = {
   "cmd-batch-move": (ws, data) => {
     if (
       !Array.isArray(data?.cmdIds) ||
+      data.cmdIds.length === 0 ||
+      data.cmdIds.length > config.WS_MAX_BATCH_COMMANDS ||
       data.cmdIds.some((cmdId) => !isNonEmptyString(cmdId)) ||
       !isFiniteNumber(data?.dx) ||
       !isFiniteNumber(data?.dy)
@@ -665,6 +695,8 @@ const handlers = {
   "cmd-batch-update": (ws, data) => {
     if (
       !Array.isArray(data?.updates) ||
+      data.updates.length === 0 ||
+      data.updates.length > config.WS_MAX_BATCH_COMMANDS ||
       data.updates.some(
         (update) => !isNonEmptyString(update?.cmdId) || !isValidPoints(update?.points),
       )
@@ -705,6 +737,8 @@ const handlers = {
   "cmd-batch-stop": (ws, data) => {
     if (
       !Array.isArray(data?.updates) ||
+      data.updates.length === 0 ||
+      data.updates.length > config.WS_MAX_BATCH_COMMANDS ||
       data.updates.some(
         (update) =>
           !isNonEmptyString(update?.cmdId) ||
@@ -865,6 +899,16 @@ module.exports = (ws, message, isBinary = false) => {
         : binaryPayloadToUtf8(message);
     if (typeof rawMessage !== "string") {
       throw new Error("WebSocket message payload type is not supported.");
+    }
+
+    if (getPayloadByteLength(rawMessage) > config.WS_JSON_MAX_BYTES) {
+      rejectOperation(ws, "unknown", {
+        code: "MESSAGE_TOO_LARGE",
+        reason: "WebSocket JSON message is too large.",
+        shouldResync: false,
+        shouldRefresh: false,
+      });
+      return;
     }
 
     const parsedMsg = JSON.parse(rawMessage);

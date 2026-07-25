@@ -5,7 +5,7 @@
 		visible: boolean;
 		onlineCount: number;
 		memberList: [string, string][];
-		currentUsername: string;
+		currentUserId: string;
 		onClose: () => void;
 	}>();
 </script>
@@ -67,7 +67,7 @@
 						<div class="font-bold text-slate-700 text-[13px] truncate flex items-center gap-1.5">
 							<span class="truncate">{{ member[1] }}</span>
 							<span
-								v-if="member[1] === props.currentUsername"
+								v-if="member[0] === props.currentUserId"
 								class="px-1.5 py-px rounded-[4px] shrink-0 text-[9px] items-center bg-emerald-50 text-emerald-600 font-bold tracking-widest border border-emerald-100"
 								>我</span
 							>

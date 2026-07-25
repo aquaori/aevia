@@ -5,10 +5,12 @@ import { createEventBus } from "../utils/editorEventBus";
 import type {
 	EditorHookMap,
 	EditorPlugin,
+	SelectionState,
 	SessionLifecyclePhase,
 	WhiteboardSession,
 	WhiteboardSessionState,
 } from "../utils/editorTypes";
+import type { RemoteCursor } from "../utils/type";
 
 interface CreateWhiteboardSessionOptions {
 	state: WhiteboardSessionState;
@@ -41,8 +43,8 @@ export const createWhiteboardSession = (
 		totalPages: readonly(options.state.totalPages) as Ref<number>,
 		onlineCount: readonly(options.state.onlineCount) as Ref<number>,
 		isReconnecting: readonly(options.state.isReconnecting) as Ref<boolean>,
-		remoteCursors: readonly(options.state.remoteCursors) as Ref<Map<string, any>>,
-		selection: readonly(options.state.selection) as Ref<any>,
+		remoteCursors: readonly(options.state.remoteCursors) as Ref<Map<string, RemoteCursor>>,
+		selection: readonly(options.state.selection) as Ref<SelectionState | null>,
 	};
 
 	const setLifecycle = (phase: SessionLifecyclePhase) => {

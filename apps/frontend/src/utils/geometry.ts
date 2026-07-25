@@ -3,6 +3,16 @@ import type { Command } from "./type";
 
 // 计算单个命令包围盒
 const getCommandBoundingBox = (cmd: Command, padding = 0) => {
+	if (cmd.box && cmd.box.width > 0 && cmd.box.height > 0) {
+		return {
+			minX: cmd.box.minX - padding,
+			minY: cmd.box.minY - padding,
+			maxX: cmd.box.maxX + padding,
+			maxY: cmd.box.maxY + padding,
+			width: cmd.box.width + padding * 2,
+			height: cmd.box.height + padding * 2,
+		};
+	}
 	if (!cmd.points || cmd.points.length === 0) return null;
 	let minX = Infinity,
 		minY = Infinity,
@@ -35,13 +45,7 @@ const getGroupBoundingBox = (cmdIds: Set<string>, commands: Command[], currentPa
 
 	cmdIds.forEach((id) => {
 		const cmd = commands.find((c) => c.id === id);
-		if (
-			cmd &&
-			!cmd.isDeleted &&
-			cmd.pageId === currentPageId &&
-			cmd.points &&
-			cmd.points.length > 0
-		) {
+		if (cmd && !cmd.isDeleted && cmd.pageId === currentPageId) {
 			const box = getCommandBoundingBox(cmd);
 			if (box) {
 				hasValid = true;

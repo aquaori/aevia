@@ -28,6 +28,7 @@ interface CanvasRuntimeOptions {
 	}) => void;
 	syncToolState: () => void;
 	isOffscreenEnabled?: () => boolean;
+	hasRenderableScene?: () => boolean;
 	syncMainCanvasViewport?: (payload: { width: number; height: number; dpr: number }) => void;
 	requestMergeDirtyRects: (payload: {
 		rects: Array<{
@@ -97,7 +98,9 @@ export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 		}
 
 		options.syncMainCanvasViewport?.({ width, height, dpr });
-		options.requestRender();
+		if (options.hasRenderableScene?.() !== false) {
+			options.requestRender();
+		}
 		options.syncToolState();
 	};
 
