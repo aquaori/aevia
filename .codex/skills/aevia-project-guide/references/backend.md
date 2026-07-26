@@ -1,109 +1,110 @@
-# Legacy Backend Guide (Express)
+# Go Backend Guide
 
-> **This is the legacy backend.** `apps/go-backend` is the primary one — see
-> `go-backend.md`. Root `dev`/`start`/`build:backend` run the Go backend; this one
-> is reachable via `dev:legacy` / `start:legacy` and is kept for the existing HTTP
-> integration tests.
->
-> It does not implement `roomSeq`, delta replay, server pressure, or
-> `resync.required`, so the current frontend silently loses those capabilities when
-> pointed at it.
+`apps/go-backend` is the primary backend. Root `dev`, `start` and `build:backend`
+all run it; `apps/backend` (Express) is legacy and only reachable through
+`dev:legacy` / `start:legacy`.
 
-Read this for the legacy Express APIs, WebSocket validation/fan-out, room sessions, SQLite persistence, init streams, page-change streams, and backend configuration.
+Read this for room actors, sequencing, backpressure, delta replay, binary
+protocol, SQLite persistence, or gateway/auth behaviour.
 
-## Entry Points
-
-- `apps/backend/src/index.js`: HTTP server, WebSocket server, upgrade validation, init stream delivery, online count, close handling.
-- `apps/backend/src/app.js`: Express app and route registration.
-- `apps/backend/src/config/index.js`: runtime defaults and tunables.
-
-The backend is runtime JavaScript, not TypeScript.
-
-## HTTP Layer
-
-- `controllers/roomController.js`: room creation, room existence, join, share token, page overview.
-- `middleware/sessionAuth.js`: bearer token middleware for protected routes.
-- `services/authService.js`: JWT sign/verify helpers.
-- `services/passwordService.js`: room password hashing/verification.
-
-Routes registered by `app.js`:
+## Layout
 
 ```text
-POST /create-room
-GET  /check-room
-GET  /generate-room-id
-POST /join-room
-GET  /generate-share-token
-GET  /get-page-review
-GET  /get-token-info
-POST /renew-room-session
+cmd/aevia-go-backend/main.go   process wiring, graceful shutdown, pprof
+internal/config                environment parsing and validation
+internal/gateway               HTTP handlers, WS upgrade, limits, CORS
+internal/room                  per-room actor, state, snapshots, pressure
+internal/protocol              binary realtime frames and render chunks
+internal/storage               SQLite schema, batched writer, WAL maintenance
+internal/domain                Command/Point types and ordering
+internal/console               startup panel and log handler
 ```
 
-## WebSocket Layer
+## Concurrency Model
 
-- `websocket/messageHandler.js`: central command router, validation, persistence, fan-out.
-- `websocket/realtimeBinary.js`: backend binary encode/decode for `mouseMove` and `cmd-update`.
-- `websocket/renderChunkBinary.js`: compact init/page-change flat-point render chunks.
+One `room.Actor` goroutine owns all mutable state for a room. Everything reaches
+it through channels:
 
-Upgrade validation in `index.js` checks:
+- `inbox` — reliable messages (commands, joins, page changes). Full inbox returns
+  `ErrActorBusy`, surfaced to the client as `op-rejected SERVER_BUSY`.
+- `realtime` — droppable messages (`mouseMove`, `mouseLeave`, `box-selection`).
+  When full, the newest event per `clientID:type` is merged instead of queued.
+- `writeFailures` — asynchronous persistence failures, which flip the room to
+  read-only.
 
-- path is `/ws`
-- token comes from `Sec-WebSocket-Protocol`
-- JWT verifies
-- room exists
-- token room creation timestamp matches current room
-- token is not older than server start freshness rules
+Actor lifecycle rules that matter:
 
-## Persistence and Room Service
+- An actor evicts itself after `actorIdleTimeout` (10 min) with no clients and no
+  queued work.
+- `NewActor` takes a `release` callback. It runs from the actor goroutine before
+  `done` closes, so the registry drops its reference before any caller can see a
+  stopped actor.
+- `Join`, `Snapshot` and `PageReview` select on `done` and return
+  `ErrActorStopped` rather than blocking. `Registry.Get` replaces a stopped actor.
+- Never add a request/reply method that waits only on its reply channel; it will
+  hang forever if the actor exits first.
 
-- `services/sqliteService.js`: creates SQLite schema.
-- `services/roomService.js`: most important backend file for rooms, commands, page windows, flat-point queues, chunk creation, snapshot versioning, and page review.
+## Sequencing and Durability
 
-Main tables:
+- `state.RoomSeq` is the room's authoritative counter, allocated in `persist*`
+  and stamped on the command plus `rooms.durable_seq`.
+- `mutationOptions.Barrier` selects durability: `true` blocks the actor until the
+  transaction commits, `false` batches. Non-barrier failures arrive later via
+  `Store.SetAsyncFailureHandler` → `Actor.NotifyWriteFailure` → read-only plus a
+  `resync.required` broadcast.
+- The writer performs group commit: a waited write drains everything already
+  queued into its own transaction, so barrier writes still amortise.
+- `enqueue` is bounded (`enqueueTimeout`); a stalled disk fails the write rather
+  than freezing the room.
 
-- `rooms`
-- `commands`
+## Delta Replay
 
-`roomFlatQueues` are in-memory derived render streams sorted by Lamport, command ID, and point index. They power current-page render snapshots and snapshot versioning.
+`DeltaBuffer` retains recent events per room (TTL plus byte cap). A client
+reconnecting with `?lastRoomSeq=N` resumes from `N` instead of re-downloading the
+page; `handleJoin` falls back to a full init when the buffer cannot cover the gap.
+The client sends `lastRoomSeq` by default (`VITE_ENABLE_DELTA_REPLAY=0` disables).
 
-## Init and Page-Change Streams
+Replay emits `delta-replay-meta`, then the original event envelopes, then
+`delta-replay-complete`. The client treats `delta-replay-meta` as its
+connection-established signal, so any new resume path must keep sending it.
 
-The server streams initialization rather than dumping one large payload. The sequence is conceptually:
+## Limits and Trust
 
-```text
-init-meta
-init-render-meta
-init-render-chunk-meta + binary render chunk(s)
-init-render-done
-init-commands-meta
-init-commands-chunk(s)
-init-commands-done
-init-complete
-```
+- Payload limits are enforced on **both** transports: `validateIncoming` for JSON
+  and `validateIncomingBinary` for decoded binary frames. Binary carries most
+  `cmd-update` traffic, so a limit applied only to JSON is not applied at all.
+- `clientIPResolver` ignores `X-Forwarded-For` unless `TRUST_PROXY_HEADERS=1`, and
+  honours `TRUSTED_PROXIES` as the trust boundary. Per-IP limits are meaningless
+  without this.
+- `keyedBuckets` evicts idle keys and caps its key count; unbounded limiter maps
+  are a memory-exhaustion vector.
+- `/join-room`, `/create-room` and `/get-token-info` also pass through a
+  per-minute `authLimiter`.
+- `/debug/metrics` requires `METRICS_TOKEN`, or a loopback caller.
+- `JWT_SECRET` is mandatory when `APP_ENV`/`NODE_ENV` is production; `config.Load`
+  returns an error rather than falling back to `DevJWTSecret`.
 
-For page changes, inspect `roomService.js`, `messageHandler.js`, frontend `roomPageService.ts`, `collabCommandHandlers.ts`, and `commandStore.ts` together.
+## Render Chunks
 
-## Dangerous Command
+`protocol.EncodeRenderChunk` returns an error instead of silently narrowing the
+per-chunk command index into its `uint16` field. `config.MaxRenderChunkPoints`
+keeps `INIT_FLAT_POINT_CHUNK_SIZE` inside the indexable range, since a chunk can
+never hold more distinct commands than points. Callers in `stream_send.go` send
+`resync.required` on encode failure rather than shipping mis-attributed points.
 
-The backend workspace's `dev:reset` script deletes the dev SQLite DB files before starting:
+## Session Epoch
 
-- `${DB_PATH}`
-- `${DB_PATH}-wal`
-- `${DB_PATH}-shm`
-
-Only `dev:reset` does this. Plain `dev` and `start` leave the database alone — there is no `predev` hook (an earlier version of this guide claimed there was).
+`storage.Store.SessionEpoch` persists the cutoff for stale session tokens in
+`server_state`. It is deliberately *not* process start time: that logged every
+user out on each deploy and made replicas reject each other's tokens. Use
+`BumpSessionEpoch` to force global re-authentication.
 
 ## Verification
 
-Backend build is a placeholder, so choose task-shaped checks:
-
 ```powershell
-cmd /c npm run test:unit
-cmd /c npm run test:integration
+cmd /c npm run test:go:vet
+cmd /c npm run test:go
 ```
 
-For HTTP/WS behavior, run the app only after considering DB reset side effects. Prefer a focused external smoke when services are already running:
-
-```powershell
-cmd /c npm run test:e2e:smoke
-```
+Both run from the repo root and wrap `go vet ./...` / `go test ./...` in
+`apps/go-backend`. `npm run test:ci` includes them.
