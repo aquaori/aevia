@@ -23,6 +23,13 @@ func handleBinaryClientMessage(c *wsClient, payload []byte) {
 		}
 		return
 	}
+	// The binary frame is the hot path for cmd-update, so it must be size-checked
+	// like the JSON path. Skipping it here made WS_MAX_POINTS_PER_UPDATE
+	// unenforced for the only transport that actually carries those updates.
+	if !c.validateIncomingBinary(msg.Type, msg.Data) {
+		sendLimitRejected(c, msg.Type)
+		return
+	}
 	if msg.Binary != nil {
 		if err := c.actor.BinaryEvent(c.id, msg.Type, msg.Data, msg.Binary); err != nil {
 			sendBusy(c, msg.Type)

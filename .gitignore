@@ -18,11 +18,25 @@ packages/*/dist/
 Thumbs.db
 .cache/
 
-.codex/
 .vscode/
 tests/reports/
-apps/frontend/tests/e2e/external/baselines/*
-apps/frontend/tests/e2e/external/history/*
+
+# Local databases and benchmark scratch data. Benchmark runs can leave a
+# multi-gigabyte file here; `npm run benchmark:go -- --clean` removes it.
 data/*.sqlite
 data/*.sqlite-*
-AGENTS.md
+
+# AGENTS.md and the aevia-project-guide skill are tracked on purpose: they are
+# shared project documentation, and leaving them untracked let them drift out of
+# sync with the code without anyone reviewing the difference. Everything else
+# under .codex/ is per-developer tooling and stays ignored.
+.codex/*
+!.codex/AGENTS.md
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/aevia-project-guide/
+__pycache__/
+
+# Benchmark baselines and learned history are tracked as well, so regression
+# detection works in CI and on a teammate's machine instead of only on the
+# machine that happened to generate them.

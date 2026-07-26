@@ -17,20 +17,35 @@ type Server struct {
 	registry        *room.Registry
 	tokens          auth.TokenService
 	started         time.Time
+	sessionEpoch    int64
 	draining        atomic.Bool
 	httpLimiter     *keyedBuckets
+	authLimiter     *keyedBuckets
 	connectionLimit *connectionLimiter
+	ipResolver      *clientIPResolver
 }
 
-func NewServer(cfg config.Config, store *storage.Store, registry *room.Registry) *Server {
+// NewServer wires the HTTP/WS gateway. sessionEpoch is the unix-second boundary
+// before which session tokens are considered stale; it is persisted by the store
+// so restarts and sibling instances agree (see Store.SessionEpoch).
+func NewServer(cfg config.Config, store *storage.Store, registry *room.Registry, sessionEpoch int64) *Server {
 	return &Server{
-		cfg:             cfg,
-		store:           store,
-		registry:        registry,
-		tokens:          auth.NewTokenService(cfg.JWTSecret),
-		started:         time.Now(),
-		httpLimiter:     newKeyedBuckets(cfg.HTTPRequestsPerSecond, cfg.HTTPRequestsBurst),
+		cfg:          cfg,
+		store:        store,
+		registry:     registry,
+		tokens:       auth.NewTokenService(cfg.JWTSecret),
+		started:      time.Now(),
+		sessionEpoch: sessionEpoch,
+		httpLimiter: newKeyedBuckets(
+			float64(cfg.HTTPRequestsPerSecond), cfg.HTTPRequestsBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys,
+		),
+		// Password-bearing endpoints get their own, far tighter budget: the
+		// general HTTP allowance (120/s) is meaningless against brute force.
+		authLimiter: newKeyedBuckets(
+			float64(cfg.AuthRequestsPerMinute)/60, cfg.AuthRequestsBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys,
+		),
 		connectionLimit: newConnectionLimiter(cfg),
+		ipResolver:      newClientIPResolver(cfg),
 	}
 }
 

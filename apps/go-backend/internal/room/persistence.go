@@ -1,15 +1,16 @@
 package room
 
 import (
-	"encoding/json"
 	"log/slog"
 
 	"collaborative-whiteboard/apps/go-backend/internal/domain"
 )
 
+// mutationOptions controls how a room mutation is persisted. Barrier writes block
+// the actor until the transaction commits; non-barrier writes are batched and
+// report failures asynchronously through Actor.NotifyWriteFailure.
 type mutationOptions struct {
 	Barrier bool
-	OpID    string
 	UserID  string
 }
 
@@ -28,7 +29,7 @@ func (a *Actor) persistCommand(client ClientInfo, opType string, cmd domain.Comm
 	}
 	roomSeq := a.state.NextRoomSeq()
 	cmd.Set("roomSeq", roomSeq)
-	a.state.UpsertCommandAtSeq(cmd, roomSeq)
+	a.state.UpsertCommand(cmd)
 
 	err := a.store.SaveCommandAtSeq(a.roomID, cmd, roomSeq, options.Barrier)
 	if err != nil {
@@ -36,7 +37,6 @@ func (a *Actor) persistCommand(client ClientInfo, opType string, cmd domain.Comm
 		a.reject(client, opType, "DB_WRITE_FAILED", "Server failed to persist the command.", cmd.ID())
 		return false
 	}
-	a.persistReceipt(options, roomSeq, "committed")
 	return true
 }
 
@@ -49,14 +49,13 @@ func (a *Actor) persistDelete(client ClientInfo, opType, cmdID string, options m
 		return false
 	}
 	roomSeq := a.state.NextRoomSeq()
-	a.state.DeleteCommandAtSeq(cmdID, roomSeq)
+	a.state.DeleteCommand(cmdID)
 	err := a.store.DeleteCommandAtSeq(a.roomID, cmdID, roomSeq, options.Barrier)
 	if err != nil {
 		a.enterReadOnly("persist delete failed", err)
 		a.reject(client, opType, "DB_WRITE_FAILED", "Server failed to delete the command.", cmdID)
 		return false
 	}
-	a.persistReceipt(options, roomSeq, "committed")
 	return true
 }
 
@@ -65,14 +64,13 @@ func (a *Actor) persistClear(client ClientInfo, pageID *int, options mutationOpt
 		return 0, false
 	}
 	roomSeq := a.state.NextRoomSeq()
-	a.state.ClearAtSeq(pageID, roomSeq)
+	a.state.Clear(pageID)
 	err := a.store.ClearCommandsAtSeq(a.roomID, pageID, roomSeq, options.Barrier)
 	if err != nil {
 		a.enterReadOnly("persist clear failed", err)
 		a.reject(client, "push-cmd", "DB_WRITE_FAILED", "Server failed to clear commands.", "")
 		return 0, false
 	}
-	a.persistReceipt(options, roomSeq, "committed")
 	return roomSeq, true
 }
 
@@ -88,18 +86,7 @@ func (a *Actor) persistPageAdd(client ClientInfo, options mutationOptions) (uint
 		a.reject(client, "cmd-page-add", "DB_WRITE_FAILED", "Server failed to add page.", "")
 		return 0, false
 	}
-	a.persistReceipt(options, roomSeq, "committed")
 	return roomSeq, true
-}
-
-func (a *Actor) persistReceipt(options mutationOptions, roomSeq uint64, status string) {
-	if options.OpID == "" {
-		return
-	}
-	payload, _ := json.Marshal(map[string]any{"status": status, "roomSeq": roomSeq})
-	if err := a.store.SaveReceipt(a.roomID, options.OpID, options.UserID, roomSeq, string(payload), true); err != nil {
-		a.enterReadOnly("persist receipt failed", err)
-	}
 }
 
 func (a *Actor) enterReadOnly(message string, err error) {

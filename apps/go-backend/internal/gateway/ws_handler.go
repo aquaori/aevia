@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -37,10 +38,16 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, err := s.registry.Get(r.Context(), claims.RoomID)
 	if err != nil {
+		if errors.Is(err, room.ErrActorStopped) {
+			// The room was evicted between lookup and start; the client's retry
+			// will mint a fresh actor.
+			fail(w, http.StatusServiceUnavailable, "Room is restarting, please retry")
+			return
+		}
 		fail(w, http.StatusUnauthorized, "Room does not exist")
 		return
 	}
-	ip := clientIP(r)
+	ip := s.ipResolver.ClientIP(r)
 	if !s.connectionLimit.Acquire(ip, claims.RoomID) {
 		fail(w, http.StatusTooManyRequests, "Connection limit exceeded")
 		return
@@ -62,14 +69,13 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(s.cfg.WSMaxPayloadBytes)
 
 	client := newWSClient(conn, actor, claims, initialPageID(r), s.cfg)
-	client.limits = wsClientLimits{
-		maxPointsPerUpdate:  s.cfg.WSMaxPointsPerUpdate,
-		maxPointsPerCommand: s.cfg.WSMaxPointsPerCommand,
-		maxBatchCommands:    s.cfg.WSMaxBatchCommands,
-	}
 	result, err := actor.Join(client.info(), client.pageID, lastRoomSeq(r))
 	if err != nil {
-		_ = conn.Close(websocket.StatusTryAgainLater, "room busy")
+		reason := "room busy"
+		if errors.Is(err, room.ErrActorStopped) {
+			reason = "room restarting"
+		}
+		_ = conn.Close(websocket.StatusTryAgainLater, reason)
 		return
 	}
 	slog.Info("ws connected", "room", claims.RoomID, "user", claims.UserName, "userId", claims.UserID, "page", client.pageID)
@@ -104,14 +110,16 @@ func lastRoomSeq(r *http.Request) uint64 {
 }
 
 type wsClient struct {
-	conn   *websocket.Conn
-	actor  *room.Actor
-	claims auth.Claims
-	id     room.ClientID
-	pageID int
-	send   chan room.Outbound
-	limits wsClientLimits
-	events *wsEventLimiter
+	conn        *websocket.Conn
+	actor       *room.Actor
+	claims      auth.Claims
+	id          room.ClientID
+	pageID      int
+	send        chan room.Outbound
+	limits      wsClientLimits
+	events      *wsEventLimiter
+	heartbeat   time.Duration
+	pongTimeout time.Duration
 }
 
 func newWSClient(conn *websocket.Conn, actor *room.Actor, claims auth.Claims, pageID int, cfg config.Config) *wsClient {
@@ -121,10 +129,12 @@ func newWSClient(conn *websocket.Conn, actor *room.Actor, claims auth.Claims, pa
 		send:   make(chan room.Outbound, cfg.ConnectionSendMessages),
 		events: newWSEventLimiter(cfg),
 		limits: wsClientLimits{
-			maxPointsPerUpdate:  2000,
-			maxPointsPerCommand: 20000,
-			maxBatchCommands:    200,
+			maxPointsPerUpdate:  cfg.WSMaxPointsPerUpdate,
+			maxPointsPerCommand: cfg.WSMaxPointsPerCommand,
+			maxBatchCommands:    cfg.WSMaxBatchCommands,
 		},
+		heartbeat:   cfg.WSHeartbeatInterval,
+		pongTimeout: cfg.WSPongTimeout,
 	}
 }
 
@@ -155,7 +165,7 @@ func (c *wsClient) run(parent context.Context) {
 }
 
 func (c *wsClient) writePump(ctx context.Context) {
-	ping := time.NewTicker(25 * time.Second)
+	ping := time.NewTicker(c.heartbeat)
 	defer ping.Stop()
 	for {
 		select {
@@ -164,25 +174,46 @@ func (c *wsClient) writePump(ctx context.Context) {
 				_ = c.conn.Close(websocket.StatusTryAgainLater, "resync required")
 				return
 			}
-			if msg.Binary != nil {
-				_ = c.conn.Write(ctx, websocket.MessageBinary, msg.Binary)
-				continue
-			}
-			if msg.Text != nil {
-				_ = c.conn.Write(ctx, websocket.MessageText, msg.Text)
-				continue
-			}
-			if msg.JSON != nil {
-				payload, _ := json.Marshal(msg.JSON)
-				_ = c.conn.Write(ctx, websocket.MessageText, payload)
+			if err := c.writeOutbound(ctx, msg); err != nil {
+				// A failed write means the connection is gone; returning here
+				// cancels readPump so the client is reaped instead of lingering.
+				return
 			}
 		case <-ping.C:
-			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			_ = c.conn.Ping(pingCtx)
+			// Ping waits for the matching pong, so a timeout means the peer is
+			// no longer responsive. Previously this error was discarded, which
+			// left half-open connections alive indefinitely.
+			pingCtx, cancel := context.WithTimeout(ctx, c.pongTimeout)
+			err := c.conn.Ping(pingCtx)
 			cancel()
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Info("closing unresponsive websocket", "room", c.claims.RoomID, "userId", c.claims.UserID, "error", err)
+				}
+				_ = c.conn.Close(websocket.StatusPolicyViolation, "heartbeat timeout")
+				return
+			}
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (c *wsClient) writeOutbound(ctx context.Context, msg room.Outbound) error {
+	switch {
+	case msg.Binary != nil:
+		return c.conn.Write(ctx, websocket.MessageBinary, msg.Binary)
+	case msg.Text != nil:
+		return c.conn.Write(ctx, websocket.MessageText, msg.Text)
+	case msg.JSON != nil:
+		payload, err := json.Marshal(msg.JSON)
+		if err != nil {
+			slog.Warn("dropping unencodable outbound message", "room", c.claims.RoomID, "error", err)
+			return nil
+		}
+		return c.conn.Write(ctx, websocket.MessageText, payload)
+	default:
+		return nil
 	}
 }
 

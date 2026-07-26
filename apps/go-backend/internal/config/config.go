@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -10,9 +11,19 @@ import (
 	"time"
 )
 
+// DevJWTSecret is the throwaway secret used when JWT_SECRET is unset outside
+// production. Load refuses to start in production without an explicit secret.
+const DevJWTSecret = "aevia-go-dev-secret"
+
+// MaxRenderChunkPoints bounds a render chunk so its per-chunk command
+// dictionary index always fits the uint16 field in the binary frame. See
+// protocol.EncodeRenderChunk.
+const MaxRenderChunkPoints = 65535
+
 type Config struct {
 	Host                   string
 	Port                   int
+	Environment            string
 	DBPath                 string
 	JWTSecret              string
 	DefaultRoomID          string
@@ -45,6 +56,14 @@ type Config struct {
 	WSRealtimeBurst        int
 	WSReliablePerSecond    int
 	WSReliableBurst        int
+	AuthRequestsPerMinute  int
+	AuthRequestsBurst      int
+	RateLimitIdleTTL       time.Duration
+	RateLimitMaxKeys       int
+	TrustProxyHeaders      bool
+	TrustedProxies         []string
+	WSHeartbeatInterval    time.Duration
+	WSPongTimeout          time.Duration
 	HashPoolSize           int
 	HashQueueTimeout       time.Duration
 	WALCheckpointInterval  time.Duration
@@ -54,19 +73,50 @@ type Config struct {
 	LogLevel               slog.Level
 }
 
-func Load() Config {
+// Load reads configuration from the environment. It returns an error for
+// misconfiguration that must not be silently defaulted away — currently a
+// missing JWT secret in production, which would otherwise let anyone forge
+// room session tokens against the well-known development secret.
+func Load() (Config, error) {
+	cfg := load()
+	environment := strings.ToLower(cfg.Environment)
+	if environment == "production" || environment == "prod" {
+		if strings.TrimSpace(os.Getenv("JWT_SECRET")) == "" {
+			return Config{}, errors.New("JWT_SECRET must be configured in production")
+		}
+		if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*" {
+			slog.Warn("ALLOWED_ORIGINS is '*' in production; set an explicit origin allowlist")
+		}
+		if !cfg.TrustProxyHeaders {
+			slog.Info("X-Forwarded-For is ignored; set TRUST_PROXY_HEADERS=1 when running behind a trusted proxy")
+		}
+	} else if strings.TrimSpace(os.Getenv("JWT_SECRET")) == "" {
+		slog.Warn("JWT_SECRET is unset; using the public development secret", "secret", DevJWTSecret)
+	}
+	return cfg, nil
+}
+
+// IsProduction reports whether the process is configured for a production
+// deployment.
+func (c Config) IsProduction() bool {
+	environment := strings.ToLower(c.Environment)
+	return environment == "production" || environment == "prod"
+}
+
+func load() Config {
 	return Config{
 		Host:                   envString("HOST", "0.0.0.0"),
-		Port:                   envInt("PORT", 4647, 1, 65535),
+		Port:                   envInt("PORT", 4646, 1, 65535),
+		Environment:            envString("APP_ENV", envString("NODE_ENV", "development")),
 		DBPath:                 envString("DB_PATH", filepath.Join("data", "whiteboard-go.sqlite")),
-		JWTSecret:              envString("JWT_SECRET", "aevia-go-dev-secret"),
+		JWTSecret:              envString("JWT_SECRET", DevJWTSecret),
 		DefaultRoomID:          envString("DEFAULT_ROOM_ID", "123123"),
 		SessionTTL:             envDuration("SESSION_TOKEN_TTL", 30*time.Minute),
 		InviteTTL:              envDuration("INVITE_TOKEN_TTL", 24*time.Hour),
 		InitPreloadPageCount:   envInt("INIT_PRELOAD_PAGE_COUNT", 2, 0, 20),
 		PageCacheRadius:        envInt("PAGE_CACHE_RADIUS", 1, 0, 20),
 		InitCommandChunkSize:   envInt("INIT_COMMAND_CHUNK_SIZE", 100, 1, 5000),
-		InitFlatPointChunkSize: envInt("INIT_FLAT_POINT_CHUNK_SIZE", 2000, 1, 100000),
+		InitFlatPointChunkSize: envInt("INIT_FLAT_POINT_CHUNK_SIZE", 2000, 1, MaxRenderChunkPoints),
 		PageChangeDebounce:     time.Duration(envInt("PAGE_CHANGE_DEBOUNCE_MS", 80, 0, 10000)) * time.Millisecond,
 		WSMaxPayloadBytes:      int64(envInt("WS_MAX_PAYLOAD_BYTES", 256*1024, 1024, 16*1024*1024)),
 		WSJSONMaxBytes:         int64(envInt("WS_JSON_MAX_BYTES", 256*1024, 1024, 16*1024*1024)),
@@ -90,13 +140,24 @@ func Load() Config {
 		WSRealtimeBurst:        envInt("WS_REALTIME_BURST", 180, 1, 100000),
 		WSReliablePerSecond:    envInt("WS_RELIABLE_PER_SECOND", 120, 1, 100000),
 		WSReliableBurst:        envInt("WS_RELIABLE_BURST", 240, 1, 100000),
-		HashPoolSize:           envInt("HASH_POOL_SIZE", 2, 1, 128),
-		HashQueueTimeout:       time.Duration(envInt("HASH_QUEUE_TIMEOUT_MS", 1500, 1, 60000)) * time.Millisecond,
-		WALCheckpointInterval:  time.Duration(envInt("WAL_CHECKPOINT_INTERVAL_MS", 30000, 1000, 3600000)) * time.Millisecond,
-		WALCheckpointBytes:     int64(envInt("WAL_CHECKPOINT_BYTES", 64*1024*1024, 1024*1024, 1024*1024*1024)),
-		WALTruncateBytes:       int64(envInt("WAL_TRUNCATE_BYTES", 256*1024*1024, 1024*1024, 2*1024*1024*1024)),
-		PprofAddr:              envString("PPROF_ADDR", ""),
-		LogLevel:               slog.LevelInfo,
+		AuthRequestsPerMinute:  envInt("AUTH_REQUESTS_PER_MINUTE", 12, 1, 10000),
+		AuthRequestsBurst:      envInt("AUTH_REQUESTS_BURST", 8, 1, 10000),
+		RateLimitIdleTTL: time.Duration(envInt("RATE_LIMIT_IDLE_TTL_MS", 600000, 1000, 86400000)) *
+			time.Millisecond,
+		RateLimitMaxKeys:  envInt("RATE_LIMIT_MAX_KEYS", 50000, 128, 5000000),
+		TrustProxyHeaders: envBool("TRUST_PROXY_HEADERS", false),
+		TrustedProxies:    envList("TRUSTED_PROXIES", nil),
+		WSHeartbeatInterval: time.Duration(envInt("WS_HEARTBEAT_INTERVAL_MS", 25000, 1000, 600000)) *
+			time.Millisecond,
+		WSPongTimeout: time.Duration(envInt("WS_PONG_TIMEOUT_MS", 10000, 500, 120000)) *
+			time.Millisecond,
+		HashPoolSize:          envInt("HASH_POOL_SIZE", 2, 1, 128),
+		HashQueueTimeout:      time.Duration(envInt("HASH_QUEUE_TIMEOUT_MS", 1500, 1, 60000)) * time.Millisecond,
+		WALCheckpointInterval: time.Duration(envInt("WAL_CHECKPOINT_INTERVAL_MS", 30000, 1000, 3600000)) * time.Millisecond,
+		WALCheckpointBytes:    int64(envInt("WAL_CHECKPOINT_BYTES", 64*1024*1024, 1024*1024, 1024*1024*1024)),
+		WALTruncateBytes:      int64(envInt("WAL_TRUNCATE_BYTES", 256*1024*1024, 1024*1024, 2*1024*1024*1024)),
+		PprofAddr:             envString("PPROF_ADDR", ""),
+		LogLevel:              slog.LevelInfo,
 	}
 }
 
@@ -121,6 +182,17 @@ func envInt(name string, fallback, min, max int) int {
 		return fallback
 	}
 	return value
+}
+
+func envBool(name string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func envDuration(name string, fallback time.Duration) time.Duration {

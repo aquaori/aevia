@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,12 @@ type Writer struct {
 	done     chan struct{}
 	closing  chan struct{}
 	degraded atomic.Bool
+
+	// onAsyncFailure is notified when a fire-and-forget write fails. Without it
+	// those errors were dropped entirely: the room had already applied the
+	// mutation in memory, so clients saw geometry that would vanish on restart.
+	asyncFailureMu sync.RWMutex
+	onAsyncFailure func(roomID string, err error)
 }
 
 type writeRequest struct {
@@ -30,9 +37,6 @@ type writeRequest struct {
 	pageID         *int
 	totalPageDelta int
 	roomSeq        uint64
-	opID           string
-	userID         string
-	response       string
 	result         chan error
 }
 
@@ -56,46 +60,20 @@ func (w *Writer) Close() {
 	<-w.done
 }
 
-func (w *Writer) SaveCommand(roomID string, cmd domain.Command, wait bool) error {
-	return w.enqueue(writeRequest{kind: "save", roomID: roomID, cmd: cmd.Snapshot()}, wait)
-}
-
 func (w *Writer) SaveCommandAtSeq(roomID string, cmd domain.Command, roomSeq uint64, wait bool) error {
 	return w.enqueue(writeRequest{kind: "save", roomID: roomID, cmd: cmd.Snapshot(), roomSeq: roomSeq}, wait)
-}
-
-func (w *Writer) DeleteCommand(roomID, cmdID string, wait bool) error {
-	return w.enqueue(writeRequest{kind: "delete", roomID: roomID, cmdID: cmdID}, wait)
 }
 
 func (w *Writer) DeleteCommandAtSeq(roomID, cmdID string, roomSeq uint64, wait bool) error {
 	return w.enqueue(writeRequest{kind: "delete", roomID: roomID, cmdID: cmdID, roomSeq: roomSeq}, wait)
 }
 
-func (w *Writer) ClearCommands(roomID string, pageID *int, wait bool) error {
-	return w.enqueue(writeRequest{kind: "clear", roomID: roomID, pageID: pageID}, wait)
-}
-
 func (w *Writer) ClearCommandsAtSeq(roomID string, pageID *int, roomSeq uint64, wait bool) error {
 	return w.enqueue(writeRequest{kind: "clear", roomID: roomID, pageID: pageID, roomSeq: roomSeq}, wait)
 }
 
-func (w *Writer) IncrementPage(roomID string, wait bool) error {
-	return w.enqueue(writeRequest{kind: "increment-page", roomID: roomID, totalPageDelta: 1}, wait)
-}
-
 func (w *Writer) IncrementPageAtSeq(roomID string, roomSeq uint64, wait bool) error {
 	return w.enqueue(writeRequest{kind: "increment-page", roomID: roomID, totalPageDelta: 1, roomSeq: roomSeq}, wait)
-}
-
-func (w *Writer) SaveReceipt(roomID, opID, userID string, roomSeq uint64, response string, wait bool) error {
-	if opID == "" {
-		return nil
-	}
-	return w.enqueue(writeRequest{
-		kind: "receipt", roomID: roomID, opID: opID, userID: userID,
-		roomSeq: roomSeq, response: response,
-	}, wait)
 }
 
 func (w *Writer) Flush() error {
@@ -106,6 +84,23 @@ func (w *Writer) IsDegraded() bool {
 	return w.degraded.Load()
 }
 
+// SetAsyncFailureHandler registers the callback invoked when an unwaited write
+// fails. It is called from the writer goroutine, so the handler must not block.
+func (w *Writer) SetAsyncFailureHandler(handler func(roomID string, err error)) {
+	w.asyncFailureMu.Lock()
+	w.onAsyncFailure = handler
+	w.asyncFailureMu.Unlock()
+}
+
+func (w *Writer) reportAsyncFailure(roomID string, err error) {
+	w.asyncFailureMu.RLock()
+	handler := w.onAsyncFailure
+	w.asyncFailureMu.RUnlock()
+	if handler != nil {
+		handler(roomID, err)
+	}
+}
+
 func (w *Writer) QueueLen() int {
 	return len(w.writes)
 }
@@ -114,19 +109,39 @@ func (w *Writer) QueueCap() int {
 	return cap(w.writes)
 }
 
+// enqueueTimeout bounds how long a caller waits for queue space. The room actor
+// is a single goroutine, so an unbounded wait here froze the whole room whenever
+// the disk stalled, with no signal to anyone.
+const enqueueTimeout = 5 * time.Second
+
+var errWriterQueueFull = errors.New("database write queue is full")
+
 func (w *Writer) enqueue(req writeRequest, wait bool) error {
 	if wait {
 		req.result = make(chan error, 1)
 	}
+
+	// Fast path: space available right now.
 	select {
 	case w.writes <- req:
-		if req.result != nil {
-			return <-req.result
-		}
-		return nil
 	case <-w.closing:
 		return errors.New("writer is closing")
+	default:
+		timer := time.NewTimer(enqueueTimeout)
+		defer timer.Stop()
+		select {
+		case w.writes <- req:
+		case <-w.closing:
+			return errors.New("writer is closing")
+		case <-timer.C:
+			return errWriterQueueFull
+		}
 	}
+
+	if req.result == nil {
+		return nil
+	}
+	return <-req.result
 }
 
 func (w *Writer) loop() {
@@ -135,6 +150,24 @@ func (w *Writer) loop() {
 	defer ticker.Stop()
 
 	batch := make([]writeRequest, 0, w.cfg.DBBatchSize)
+
+	// drainReady pulls any already-queued writes into the current batch. Barrier
+	// writes must commit before their caller continues, but they do not have to
+	// commit *alone*: folding in everything else that is already waiting turns
+	// per-operation transactions into a group commit, which is what DB_BATCH_SIZE
+	// was supposed to buy. Previously any waited write flushed immediately and
+	// batching only ever applied to fire-and-forget updates.
+	drainReady := func() {
+		for len(batch) < w.cfg.DBBatchSize {
+			select {
+			case req := <-w.writes:
+				batch = append(batch, req)
+			default:
+				return
+			}
+		}
+	}
+
 	flush := func() {
 		if len(batch) == 0 {
 			return
@@ -147,6 +180,14 @@ func (w *Writer) loop() {
 		for index, req := range batch {
 			if req.result != nil {
 				req.result <- results[index]
+				continue
+			}
+			if results[index] != nil {
+				// Nobody is waiting on this write, so surface the failure to the
+				// owning room instead of losing it.
+				slog.Error("asynchronous database write failed",
+					"kind", req.kind, "room", req.roomID, "cmd", req.cmdID, "error", results[index])
+				w.reportAsyncFailure(req.roomID, results[index])
 			}
 		}
 		batch = batch[:0]
@@ -156,7 +197,14 @@ func (w *Writer) loop() {
 		select {
 		case req := <-w.writes:
 			batch = append(batch, req)
-			if len(batch) >= w.cfg.DBBatchSize || req.result != nil {
+			if req.result != nil {
+				// A caller is blocked: commit now, but sweep in whatever else is
+				// already queued so they share one transaction.
+				drainReady()
+				flush()
+				continue
+			}
+			if len(batch) >= w.cfg.DBBatchSize {
 				flush()
 			}
 		case <-ticker.C:
@@ -166,6 +214,9 @@ func (w *Writer) loop() {
 				select {
 				case req := <-w.writes:
 					batch = append(batch, req)
+					if len(batch) >= w.cfg.DBBatchSize {
+						flush()
+					}
 				default:
 					flush()
 					return

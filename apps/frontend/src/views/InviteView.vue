@@ -6,6 +6,7 @@
 	import { toast } from "vue-sonner";
 	import { useUserStore } from "../store/userStore";
 	import { getInviteMeta } from "../service/sessionApi";
+	import { apiUrl } from "../config/endpoints";
 
 	const userStore = useUserStore();
 	const route = useRoute();
@@ -53,7 +54,7 @@
 
 		try {
 			await axios
-				.post(`${import.meta.env.VITE_API_URL || "http://127.0.0.1:4646"}/join-room`, {
+				.post(apiUrl("/join-room"), {
 					roomId: roomId.value,
 					userName: username.value,
 					password: password.value,

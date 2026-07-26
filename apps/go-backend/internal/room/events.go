@@ -52,7 +52,7 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 	}
 	if cmd.Type() == "clear" {
 		pageID, _ := cmd.PageID()
-		roomSeq, ok := a.persistClear(client, &pageID, mutationOptions{Barrier: true, OpID: opID(msg.Data), UserID: client.UserID})
+		roomSeq, ok := a.persistClear(client, &pageID, mutationOptions{Barrier: true, UserID: client.UserID})
 		if !ok {
 			return
 		}
@@ -60,7 +60,7 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 		slog.Debug("room command", "room", a.roomID, "type", "clear", "page", pageID, "user", client.UserID)
 	} else {
 		barrier := cmd.Type() != "path" || msg.Type == "push-cmd"
-		if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: barrier, OpID: opID(msg.Data), UserID: client.UserID}) {
+		if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: barrier, UserID: client.UserID}) {
 			return
 		}
 		slog.Debug("room command", "room", a.roomID, "type", msg.Type, "cmd", cmd.ID(), "user", client.UserID)
@@ -70,9 +70,8 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 	if msg.Type == "cmd-start" {
 		pushType = "start"
 	}
-	pageID, _ := cmd.PageID()
 	data := map[string]any{"cmd": cmd, "roomSeq": cmd.Get("roomSeq")}
-	a.recordAndBroadcast(client.ID, "push-cmd", data, Envelope{Type: "push-cmd", PushType: pushType, Data: data}, nilForPage(pageID))
+	a.recordAndBroadcast(client.ID, "push-cmd", data, Envelope{Type: "push-cmd", PushType: pushType, Data: data}, nil)
 	a.ack(client, "accepted", data)
 }
 
@@ -89,9 +88,13 @@ func (a *Actor) handleCommandUpdate(client ClientInfo, msg clientEventMessage) {
 	}
 	cmd := existing.Clone()
 	cmd.SetPoints(append(cmd.Points(), points...))
-	if !a.persistCommand(client, "cmd-update", cmd, mutationOptions{Barrier: false, OpID: opID(msg.Data), UserID: client.UserID}) {
+	if !a.persistCommand(client, "cmd-update", cmd, mutationOptions{Barrier: false, UserID: client.UserID}) {
 		return
 	}
+	// The binary frame is the dominant cmd-update transport, so it must be counted
+	// too; leaving it out made the Commands metric report a small fraction of real
+	// traffic.
+	a.metrics.Commands.Add(1)
 	if msg.Binary {
 		frame := msg.Frame
 		if frame == nil {
@@ -100,7 +103,6 @@ func (a *Actor) handleCommandUpdate(client ClientInfo, msg clientEventMessage) {
 		a.recordAndBroadcast(client.ID, "push-cmd", map[string]any{"cmdId": cmdID, "points": msg.Data["points"], "roomSeq": cmd.Get("roomSeq")}, nil, frame)
 		return
 	}
-	a.metrics.Commands.Add(1)
 	data := map[string]any{"cmdId": cmdID, "points": msg.Data["points"], "roomSeq": cmd.Get("roomSeq")}
 	a.recordAndBroadcast(client.ID, "push-cmd", data, Envelope{Type: "push-cmd", PushType: "update", Data: data}, nil)
 	a.ack(client, "accepted", data)
@@ -122,7 +124,7 @@ func (a *Actor) handleCommandStop(client ClientInfo, msg clientEventMessage) {
 	if nested := commandFromData(msg.Data["cmd"]); nested != nil && nested.Get("box") != nil {
 		cmd.Set("box", nested.Get("box"))
 	}
-	if !a.persistCommand(client, "cmd-stop", cmd, mutationOptions{Barrier: true, OpID: opID(msg.Data), UserID: client.UserID}) {
+	if !a.persistCommand(client, "cmd-stop", cmd, mutationOptions{Barrier: true, UserID: client.UserID}) {
 		return
 	}
 	slog.Debug("room command", "room", a.roomID, "type", "cmd-stop", "cmd", cmdID, "user", client.UserID)
@@ -141,7 +143,7 @@ func (a *Actor) handleUndoRedo(client ClientInfo, msg clientEventMessage) {
 	}
 	cmd := existing.Clone()
 	cmd.Set("isDeleted", msg.Type == "undo-cmd")
-	if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: true, OpID: opID(msg.Data), UserID: client.UserID}) {
+	if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: true, UserID: client.UserID}) {
 		return
 	}
 	slog.Debug("room command", "room", a.roomID, "type", msg.Type, "cmd", cmdID, "user", client.UserID)
@@ -155,7 +157,7 @@ func (a *Actor) handleUndoRedo(client ClientInfo, msg clientEventMessage) {
 
 func (a *Actor) handleDelete(client ClientInfo, msg clientEventMessage) {
 	cmdID := domain.String(msg.Data["cmdId"])
-	if !a.persistDelete(client, "delete-cmd", cmdID, mutationOptions{Barrier: true, OpID: opID(msg.Data), UserID: client.UserID}) {
+	if !a.persistDelete(client, "delete-cmd", cmdID, mutationOptions{Barrier: true, UserID: client.UserID}) {
 		return
 	}
 	slog.Debug("room command", "room", a.roomID, "type", "delete-cmd", "cmd", cmdID, "user", client.UserID)
@@ -166,7 +168,7 @@ func (a *Actor) handleDelete(client ClientInfo, msg clientEventMessage) {
 }
 
 func (a *Actor) handlePageAdd(client ClientInfo, msg clientEventMessage) {
-	roomSeq, ok := a.persistPageAdd(client, mutationOptions{Barrier: true, OpID: opID(msg.Data), UserID: client.UserID})
+	roomSeq, ok := a.persistPageAdd(client, mutationOptions{Barrier: true, UserID: client.UserID})
 	if !ok {
 		return
 	}
@@ -196,5 +198,3 @@ func withTrustedIdentity(client ClientInfo, data map[string]any) map[string]any 
 	out["username"] = client.UserName
 	return out
 }
-
-func nilForPage(_ int) []byte { return nil }

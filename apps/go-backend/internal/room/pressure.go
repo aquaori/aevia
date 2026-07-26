@@ -31,7 +31,17 @@ type pressureSnapshot struct {
 	SampledAt          int64          `json:"sampledAt"`
 }
 
+// pressureSampleInterval bounds how often pressure is recomputed. This runs
+// after every handled message, and sampling walks every client's send queue, so
+// an unthrottled check cost O(clients) per message (up to 1000 per room).
+const pressureSampleInterval = 100 * time.Millisecond
+
 func (a *Actor) maybeBroadcastPressure(now time.Time) {
+	if now.Sub(a.pressureLastChecked) < pressureSampleInterval {
+		return
+	}
+	a.pressureLastChecked = now
+
 	snapshot := a.currentPressure(now)
 	changed := snapshot.Level != a.pressureLevel
 	shouldRefresh := snapshot.Level != pressureNormal && now.Sub(a.pressureLastSent) >= 2*time.Second

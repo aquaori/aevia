@@ -12,7 +12,7 @@ const child = spawn(command, args, {
   cwd: path.join(repoRoot, "apps", "go-backend"),
   env: {
     ...process.env,
-    PORT: process.env.GO_BACKEND_PORT || process.env.PORT || "4647",
+    PORT: process.env.GO_BACKEND_PORT || process.env.PORT || "4646",
     LOG_FORMAT: process.env.LOG_FORMAT || "console",
     DB_PATH:
       process.env.GO_BACKEND_DB_PATH ||

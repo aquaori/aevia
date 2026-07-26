@@ -11,6 +11,18 @@ import (
 	"collaborative-whiteboard/apps/go-backend/internal/storage"
 )
 
+// actorIdleTimeout is how long a room with no connected clients is kept warm
+// before its actor is evicted and its state released.
+const actorIdleTimeout = 10 * time.Minute
+
+// ErrActorStopped is returned when an operation targets a room actor whose loop
+// has already exited (idle eviction or shutdown). Callers should treat it as a
+// retryable condition: the registry mints a fresh actor on the next lookup.
+var ErrActorStopped = errors.New("room actor stopped")
+
+// ErrActorBusy is returned when the reliable inbox is saturated.
+var ErrActorBusy = errors.New("room actor busy")
+
 type Actor struct {
 	roomID              string
 	store               *storage.Store
@@ -21,16 +33,22 @@ type Actor struct {
 	realtimeMu          sync.Mutex
 	pendingRealtime     map[string]clientEventMessage
 	done                chan struct{}
+	release             func(*Actor)
+	writeFailures       chan error
 	state               State
 	builder             SnapshotBuilder
 	metrics             Metrics
 	draining            bool
 	pressureLevel       pressureLevel
 	pressureLastSent    time.Time
+	pressureLastChecked time.Time
 	pressureLastMetrics MetricsSnapshot
 }
 
-func NewActor(ctx context.Context, store *storage.Store, cfg config.Config, roomID string) (*Actor, error) {
+// NewActor loads room state and starts the actor loop. release is invoked once,
+// from the actor goroutine, right before the loop exits so the owner can drop
+// its reference before any new caller can observe a stopped actor.
+func NewActor(ctx context.Context, store *storage.Store, cfg config.Config, roomID string, release func(*Actor)) (*Actor, error) {
 	roomData, ok, err := store.GetRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
@@ -42,6 +60,9 @@ func NewActor(ctx context.Context, store *storage.Store, cfg config.Config, room
 	if err != nil {
 		return nil, err
 	}
+	if release == nil {
+		release = func(*Actor) {}
+	}
 	actor := &Actor{
 		roomID:          roomID,
 		store:           store,
@@ -51,6 +72,8 @@ func NewActor(ctx context.Context, store *storage.Store, cfg config.Config, room
 		realtimeWake:    make(chan struct{}, 1),
 		pendingRealtime: make(map[string]clientEventMessage),
 		done:            make(chan struct{}),
+		release:         release,
+		writeFailures:   make(chan error, 1),
 		state:           NewState(roomData, commands),
 		builder:         NewSnapshotBuilder(cfg),
 		pressureLevel:   pressureNormal,
@@ -59,12 +82,45 @@ func NewActor(ctx context.Context, store *storage.Store, cfg config.Config, room
 	return actor, nil
 }
 
+// NotifyWriteFailure reports an asynchronous persistence failure to the actor,
+// which will enter read-only mode from its own goroutine. Non-blocking: one
+// queued notification is enough to trigger degradation.
+func (a *Actor) NotifyWriteFailure(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case a.writeFailures <- err:
+	default:
+	}
+}
+
+// Stopped reports whether the actor loop has exited.
+func (a *Actor) Stopped() bool {
+	select {
+	case <-a.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// RoomID exposes the room this actor owns.
+func (a *Actor) RoomID() string {
+	return a.roomID
+}
+
 func (a *Actor) Join(client ClientInfo, pageID int, lastRoomSeq uint64) (JoinResult, error) {
 	reply := make(chan JoinResult, 1)
 	if err := a.sendReliable(joinMessage{Client: client, PageID: pageID, LastRoomSeq: lastRoomSeq, Reply: reply}); err != nil {
 		return JoinResult{}, err
 	}
-	return <-reply, nil
+	select {
+	case result := <-reply:
+		return result, nil
+	case <-a.done:
+		return JoinResult{}, ErrActorStopped
+	}
 }
 
 func (a *Actor) Leave(clientID ClientID) {
@@ -100,7 +156,12 @@ func (a *Actor) Snapshot(pageID int) (InitStream, error) {
 	if err := a.sendReliable(snapshotRequest{PageID: pageID, Reply: reply}); err != nil {
 		return InitStream{}, err
 	}
-	return <-reply, nil
+	select {
+	case result := <-reply:
+		return result, nil
+	case <-a.done:
+		return InitStream{}, ErrActorStopped
+	}
 }
 
 func (a *Actor) PageReview() (PageReview, error) {
@@ -108,7 +169,12 @@ func (a *Actor) PageReview() (PageReview, error) {
 	if err := a.sendReliable(pageReviewRequest{Reply: reply}); err != nil {
 		return PageReview{}, err
 	}
-	return <-reply, nil
+	select {
+	case result := <-reply:
+		return result, nil
+	case <-a.done:
+		return PageReview{}, ErrActorStopped
+	}
 }
 
 func (a *Actor) Shutdown(ctx context.Context) {
@@ -133,17 +199,24 @@ func (a *Actor) BeginDraining(reason string) {
 
 func (a *Actor) sendReliable(msg actorMessage) error {
 	select {
+	case <-a.done:
+		return ErrActorStopped
+	default:
+	}
+	select {
 	case a.inbox <- msg:
 		return nil
+	case <-a.done:
+		return ErrActorStopped
 	default:
 		a.metrics.ReliableRejected.Add(1)
-		return errors.New("room actor busy")
+		return ErrActorBusy
 	}
 }
 
 func (a *Actor) loop() {
-	defer close(a.done)
-	idleTimer := time.NewTimer(10 * time.Minute)
+	defer a.shutdownLoop()
+	idleTimer := time.NewTimer(actorIdleTimeout)
 	defer idleTimer.Stop()
 	for {
 		select {
@@ -151,20 +224,33 @@ func (a *Actor) loop() {
 			if a.handle(msg) {
 				return
 			}
-			resetTimer(idleTimer, 10*time.Minute)
+			resetTimer(idleTimer, actorIdleTimeout)
 		case msg := <-a.realtime:
 			if a.handle(msg) {
 				return
 			}
 		case <-a.realtimeWake:
 			a.flushMergedRealtime()
+		case err := <-a.writeFailures:
+			a.enterReadOnly("asynchronous persist failed", err)
 		case <-idleTimer.C:
-			if len(a.state.Clients) == 0 {
+			// Only evict when the room is genuinely idle: an empty client set with
+			// queued work still has messages to drain.
+			if len(a.state.Clients) == 0 && len(a.inbox) == 0 && len(a.realtime) == 0 {
+				slog.Info("room actor evicted after idle timeout", "room", a.roomID)
 				return
 			}
-			resetTimer(idleTimer, 10*time.Minute)
+			resetTimer(idleTimer, actorIdleTimeout)
 		}
 	}
+}
+
+// shutdownLoop detaches the actor from its owner before unblocking waiters, so
+// no caller can obtain a reference to a stopped actor. Any request that raced
+// into the inbox is answered from a.done by its caller.
+func (a *Actor) shutdownLoop() {
+	a.release(a)
+	close(a.done)
 }
 
 func (a *Actor) Stats() MetricsSnapshot {
@@ -222,6 +308,9 @@ func (a *Actor) handle(msg actorMessage) bool {
 		close(m.Reply)
 		return true
 	}
+	// Rate-limited internally; see pressureSampleInterval. Sampling must stay
+	// unconditional because pressure can originate in a client's send queue even
+	// when this actor's own inbox is drained.
 	a.maybeBroadcastPressure(time.Now())
 	return false
 }
@@ -236,16 +325,21 @@ func (a *Actor) handleDraining(reason string) {
 
 func (a *Actor) closeClients(reason string) {
 	for _, client := range a.state.Clients {
-		for {
-			select {
-			case <-client.Send:
-			default:
-				sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "server.draining", Data: map[string]any{"reason": reason, "roomSeq": a.state.RoomSeq}}})
-				sendOutbound(client.Send, Outbound{Close: true})
-				goto nextClient
-			}
+		drainOutbound(client.Send)
+		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "server.draining", Data: map[string]any{"reason": reason, "roomSeq": a.state.RoomSeq}}})
+		sendOutbound(client.Send, Outbound{Close: true})
+	}
+}
+
+// drainOutbound discards anything still queued for a client so the final
+// draining notice and close marker always fit in the buffer.
+func drainOutbound(ch chan Outbound) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
 		}
-	nextClient:
 	}
 }
 

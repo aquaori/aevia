@@ -1,5 +1,32 @@
 package gateway
 
+import "collaborative-whiteboard/apps/go-backend/internal/domain"
+
+// validateIncomingBinary enforces payload limits for decoded binary frames.
+// The decoder yields []domain.Point rather than the []any that JSON produces, so
+// the point count is read through a type-aware helper.
+func (c *wsClient) validateIncomingBinary(typ string, data map[string]any) bool {
+	switch typ {
+	case "cmd-update", "cmd-stop":
+		return decodedPointCount(data["points"]) <= c.maxPointsPerUpdate()
+	case "cmd-start", "push-cmd":
+		return decodedPointCount(data["points"]) <= c.maxPointsPerCommand()
+	default:
+		return true
+	}
+}
+
+func decodedPointCount(value any) int {
+	switch points := value.(type) {
+	case []domain.Point:
+		return len(points)
+	case []any:
+		return len(points)
+	default:
+		return 0
+	}
+}
+
 func (c *wsClient) validateIncoming(typ string, data map[string]any) bool {
 	switch typ {
 	case "cmd-update", "cmd-stop":

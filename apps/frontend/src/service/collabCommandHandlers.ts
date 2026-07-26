@@ -754,6 +754,25 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		tryCompleteInitStream();
 	};
 
+	/**
+	 * Reconnect resumed from a delta stream instead of a full init.
+	 *
+	 * The events that follow are ordinary push-cmd/delete-cmd/undo messages, so no
+	 * buffering is needed here — but the connection-established side effects that
+	 * normally hang off `init-meta` (reconnect toast, clearing the reconnect
+	 * overlay, scheduling session renewal) still have to run, otherwise a
+	 * delta-resumed reconnect leaves the UI stuck in "reconnecting".
+	 */
+	const handleDeltaReplayMeta = (_msg: CollabIncomingMessage) => {
+		options.onInitConnectionState();
+	};
+
+	const handleDeltaReplayComplete = (_msg: CollabIncomingMessage) => {
+		// Replayed events already went through the normal handlers; the scene is
+		// current once the last one is applied.
+		options.requestSceneRefresh?.();
+	};
+
 	const flushPageChangeChunks = () => {
 		if (!pageChangeStreamState) return;
 
@@ -1575,6 +1594,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		handleInitCommandsChunk,
 		handleInitCommandsDone,
 		handleInitComplete,
+		handleDeltaReplayMeta,
+		handleDeltaReplayComplete,
 		handlePageChangeMeta,
 		handlePageChangeRenderMeta,
 		handlePageChangeRenderChunkMeta,

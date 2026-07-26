@@ -24,10 +24,6 @@ func (a *Actor) ack(client ClientInfo, status string, data map[string]any) {
 	}}})
 }
 
-func opID(data map[string]any) string {
-	return domain.String(data["opId"])
-}
-
 func (a *Actor) validateAppend(client ClientInfo, opType, cmdID string, cmd domain.Command, points []domain.Point, data map[string]any) bool {
 	if len(points) == 0 {
 		return true

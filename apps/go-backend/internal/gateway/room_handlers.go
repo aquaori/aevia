@@ -1,14 +1,23 @@
 package gateway
 
 import (
-	"database/sql"
-	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"collaborative-whiteboard/apps/go-backend/internal/auth"
 	"collaborative-whiteboard/apps/go-backend/internal/domain"
 )
+
+// isUniqueConstraintError reports whether err is a primary-key/unique collision,
+// which for room creation means the room already exists.
+func isUniqueConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unique constraint") || strings.Contains(message, "constraint failed")
+}
 
 type createRoomRequest struct {
 	RoomID   string `json:"roomId"`
@@ -33,15 +42,29 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "Password hashing failed")
 		return
 	}
+	// Distinguish a duplicate room from an actual storage failure. Both used to
+	// return 400 "Room already exists", so a full disk or corrupt schema was
+	// reported to users as a name collision.
+	exists, err := s.store.HasRoom(r.Context(), req.RoomID)
+	if err != nil {
+		slog.Error("room existence check failed", "room", req.RoomID, "error", err)
+		fail(w, http.StatusInternalServerError, "Room lookup failed")
+		return
+	}
+	if exists {
+		fail(w, http.StatusBadRequest, "Room already exists")
+		return
+	}
 	err = s.store.CreateRoom(r.Context(), domain.Room{
 		RoomID: req.RoomID, Name: req.RoomName, Password: password, CreatedAt: domain.NowMillis(), TotalPage: 1,
 	})
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if isUniqueConstraintError(err) {
 			fail(w, http.StatusBadRequest, "Room already exists")
 			return
 		}
-		fail(w, http.StatusBadRequest, "Room already exists")
+		slog.Error("room creation failed", "room", req.RoomID, "error", err)
+		fail(w, http.StatusInternalServerError, "Room creation failed")
 		return
 	}
 	slog.Info("room created", "room", req.RoomID, "name", req.RoomName, "password", req.Password != "")

@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
 
 	"collaborative-whiteboard/apps/go-backend/internal/domain"
@@ -24,6 +26,18 @@ type RenderCommandRef struct {
 	IsDeleted bool    `json:"isDeleted"`
 }
 
+// MaxRenderDictionaryEntries is the number of distinct commands a single render
+// chunk can reference, bounded by the uint16 command-index field in the binary
+// record. Chunks are sized in points (config.MaxRenderChunkPoints), and a chunk
+// cannot contain more distinct commands than points, so staying under that point
+// bound keeps this satisfied.
+const MaxRenderDictionaryEntries = 65536
+
+// ErrRenderDictionaryOverflow signals that a chunk references more commands than
+// the wire format can index. Encoding previously wrapped the index silently,
+// which rendered points with another command's tool, colour and size.
+var ErrRenderDictionaryOverflow = errors.New("render chunk references more than 65536 commands")
+
 func BuildRenderDictionary(points []domain.FlatPoint) (map[string]int, []RenderCommandRef) {
 	commandMap := make(map[string]int)
 	commands := make([]RenderCommandRef, 0)
@@ -41,7 +55,13 @@ func BuildRenderDictionary(points []domain.FlatPoint) (map[string]int, []RenderC
 	return commandMap, commands
 }
 
-func EncodeRenderChunk(points []domain.FlatPoint, commandMap map[string]int, snapshotVersion, chunkIndex int) []byte {
+// EncodeRenderChunk serialises a render chunk. snapshotVersion is a stream
+// correlation tag rather than a durable counter; it is transmitted as uint32 and
+// only needs to be unique among concurrently in-flight streams for a room.
+func EncodeRenderChunk(points []domain.FlatPoint, commandMap map[string]int, snapshotVersion, chunkIndex int) ([]byte, error) {
+	if len(commandMap) > MaxRenderDictionaryEntries {
+		return nil, fmt.Errorf("%w: %d entries", ErrRenderDictionaryOverflow, len(commandMap))
+	}
 	buf := make([]byte, RenderHeaderSize+len(points)*int(RenderRecordSize))
 	offset := 0
 	binary.BigEndian.PutUint32(buf[offset:], RenderMagic)
@@ -58,6 +78,10 @@ func EncodeRenderChunk(points []domain.FlatPoint, commandMap map[string]int, sna
 	offset += 4
 
 	for _, p := range points {
+		index, ok := commandMap[p.CmdID]
+		if !ok {
+			return nil, fmt.Errorf("render chunk point references unknown command %q", p.CmdID)
+		}
 		binary.BigEndian.PutUint32(buf[offset:], math.Float32bits(float32(p.X)))
 		offset += 4
 		binary.BigEndian.PutUint32(buf[offset:], math.Float32bits(float32(p.Y)))
@@ -66,8 +90,8 @@ func EncodeRenderChunk(points []domain.FlatPoint, commandMap map[string]int, sna
 		offset += 4
 		binary.BigEndian.PutUint64(buf[offset:], math.Float64bits(p.Lamport))
 		offset += 8
-		binary.BigEndian.PutUint16(buf[offset:], uint16(commandMap[p.CmdID]))
+		binary.BigEndian.PutUint16(buf[offset:], uint16(index))
 		offset += 2
 	}
-	return buf
+	return buf, nil
 }

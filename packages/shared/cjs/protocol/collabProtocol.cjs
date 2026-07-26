@@ -36,6 +36,21 @@ const commandToProtocol = (command) => ({
       : command?.pageId,
 });
 
+// Byte-exact, locale-independent tie-break for equal Lamport timestamps. Mirrors
+// compareCommandIds in ../../src/protocol/collabProtocol.ts and the Go backend's
+// domain.CompareFlatPoint; all three must agree or clients diverge.
+const compareCommandIds = (leftId, rightId) => {
+  if (leftId === rightId) return 0;
+  return leftId < rightId ? -1 : 1;
+};
+
+const compareCommandOrder = (left, right) => {
+  if (left.lamport !== right.lamport) {
+    return left.lamport - right.lamport;
+  }
+  return compareCommandIds(left.id, right.id);
+};
+
 module.exports = {
   protocolPageToState,
   statePageToProtocol,
@@ -43,4 +58,6 @@ module.exports = {
   normalizeCommandFromProtocol,
   normalizeCommandsFromProtocol,
   commandToProtocol,
+  compareCommandIds,
+  compareCommandOrder,
 };

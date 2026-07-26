@@ -36,21 +36,18 @@ func (s *State) NextRoomSeq() uint64 {
 	return s.RoomSeq
 }
 
-func (s *State) UpsertCommand(cmd domain.Command) {
-	s.UpsertCommandAtSeq(cmd, s.NextRoomSeq())
-}
+// The in-memory mutators below deliberately take no roomSeq: the sequence is
+// allocated by the caller (see Actor.persist*) and recorded on the command and in
+// storage. These previously accepted a roomSeq argument and discarded it, which
+// implied a sequencing guarantee this layer never provided.
 
-func (s *State) UpsertCommandAtSeq(cmd domain.Command, roomSeq uint64) {
+func (s *State) UpsertCommand(cmd domain.Command) {
 	stored := cmd.Snapshot()
 	s.Commands[stored.ID()] = stored
 	s.Index.Upsert(stored)
 }
 
 func (s *State) DeleteCommand(cmdID string) bool {
-	return s.DeleteCommandAtSeq(cmdID, s.NextRoomSeq())
-}
-
-func (s *State) DeleteCommandAtSeq(cmdID string, _ uint64) bool {
 	if _, ok := s.Commands[cmdID]; !ok {
 		return false
 	}
@@ -60,10 +57,6 @@ func (s *State) DeleteCommandAtSeq(cmdID string, _ uint64) bool {
 }
 
 func (s *State) Clear(pageID *int) {
-	s.ClearAtSeq(pageID, s.NextRoomSeq())
-}
-
-func (s *State) ClearAtSeq(pageID *int, _ uint64) {
 	if pageID == nil {
 		s.Commands = make(map[string]domain.Command)
 		s.Index.ClearAll()

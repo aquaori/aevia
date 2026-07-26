@@ -2,10 +2,11 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/big"
 
 	"collaborative-whiteboard/apps/go-backend/internal/domain"
 )
@@ -57,12 +58,27 @@ func (s *Store) UpdateRoomPassword(ctx context.Context, roomID, password string)
 	return err
 }
 
+// GenerateRoomID returns an unused six-digit room ID.
+//
+// The source is crypto/rand rather than math/rand: room IDs are the only thing
+// standing between an outsider and an unprotected room, and math/rand is
+// predictable from a known seed. The attempt count is bounded so a saturated or
+// failing table cannot spin forever.
 func (s *Store) GenerateRoomID(ctx context.Context) (string, error) {
-	for {
-		id := fmt.Sprintf("%06d", 100000+rand.Intn(900000))
+	const maxAttempts = 32
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(900000))
+		if err != nil {
+			return "", err
+		}
+		id := fmt.Sprintf("%06d", 100000+n.Int64())
 		exists, err := s.HasRoom(ctx, id)
-		if err != nil || !exists {
-			return id, err
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return id, nil
 		}
 	}
+	return "", errors.New("could not allocate an unused room id")
 }

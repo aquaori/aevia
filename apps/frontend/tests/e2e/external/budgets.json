@@ -1,4 +1,182 @@
 {
   "version": 1,
-  "cases": {}
+  "note": "Absolute ceilings derived from performance-external.baseline.json with 100% headroom. Regenerate with scripts/regen-budgets.mjs after re-baselining.",
+  "cases": {
+    "gpu_cpuHigh::full-render-10000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 223.4
+        },
+        "visuallyStableMsMedian": {
+          "max": 234.4
+        }
+      }
+    },
+    "gpu_cpuHigh::full-render-50000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 483
+        },
+        "visuallyStableMsMedian": {
+          "max": 500
+        }
+      }
+    },
+    "gpu_cpuHigh::full-render-100000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 319.4
+        },
+        "visuallyStableMsMedian": {
+          "max": 840.8
+        }
+      }
+    },
+    "gpu_cpuHigh::incremental-remote-first-pixel": {
+      "metrics": {
+        "remoteFirstPixelMsMedian": {
+          "max": 13
+        }
+      }
+    },
+    "gpu_cpuHigh::local-realtime-first-pixel": {
+      "metrics": {
+        "inputToFirstPixelMsMedian": {
+          "max": 45.6
+        }
+      }
+    },
+    "gpu_cpuLow::full-render-10000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 510.4
+        },
+        "visuallyStableMsMedian": {
+          "max": 628.2
+        }
+      }
+    },
+    "gpu_cpuLow::full-render-50000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 591.6
+        },
+        "visuallyStableMsMedian": {
+          "max": 864.8
+        }
+      }
+    },
+    "gpu_cpuLow::full-render-100000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 650.6
+        },
+        "visuallyStableMsMedian": {
+          "max": 1241.8
+        }
+      }
+    },
+    "gpu_cpuLow::incremental-remote-first-pixel": {
+      "metrics": {
+        "remoteFirstPixelMsMedian": {
+          "max": 40.2
+        }
+      }
+    },
+    "gpu_cpuLow::local-realtime-first-pixel": {
+      "metrics": {
+        "inputToFirstPixelMsMedian": {
+          "max": 78.2
+        }
+      }
+    },
+    "noGpu_cpuHigh::full-render-10000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 185.4
+        },
+        "visuallyStableMsMedian": {
+          "max": 251.6
+        }
+      }
+    },
+    "noGpu_cpuHigh::full-render-50000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 387.6
+        },
+        "visuallyStableMsMedian": {
+          "max": 453.4
+        }
+      }
+    },
+    "noGpu_cpuHigh::full-render-100000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 294.6
+        },
+        "visuallyStableMsMedian": {
+          "max": 361.4
+        }
+      }
+    },
+    "noGpu_cpuHigh::incremental-remote-first-pixel": {
+      "metrics": {
+        "remoteFirstPixelMsMedian": {
+          "max": 13.2
+        }
+      }
+    },
+    "noGpu_cpuHigh::local-realtime-first-pixel": {
+      "metrics": {
+        "inputToFirstPixelMsMedian": {
+          "max": 40.4
+        }
+      }
+    },
+    "noGpu_cpuLow::full-render-10000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 597.8
+        },
+        "visuallyStableMsMedian": {
+          "max": 636.4
+        }
+      }
+    },
+    "noGpu_cpuLow::full-render-50000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 684.2
+        },
+        "visuallyStableMsMedian": {
+          "max": 774.2
+        }
+      }
+    },
+    "noGpu_cpuLow::full-render-100000": {
+      "metrics": {
+        "firstNonBlankMsMedian": {
+          "max": 642.4
+        },
+        "visuallyStableMsMedian": {
+          "max": 722
+        }
+      }
+    },
+    "noGpu_cpuLow::incremental-remote-first-pixel": {
+      "metrics": {
+        "remoteFirstPixelMsMedian": {
+          "max": 49.4
+        }
+      }
+    },
+    "noGpu_cpuLow::local-realtime-first-pixel": {
+      "metrics": {
+        "inputToFirstPixelMsMedian": {
+          "max": 76.4
+        }
+      }
+    }
+  }
 }

@@ -133,6 +133,16 @@ func sendRenderStream(ch chan Outbound, prefix string, requestID int, stream Ini
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: metaType, Data: data}})
 	for _, chunk := range stream.RenderChunks {
 		commandMap, commands := protocol.BuildRenderDictionary(chunk.Points)
+		frame, err := protocol.EncodeRenderChunk(chunk.Points, commandMap, stream.SnapshotVersion, chunk.ChunkIndex)
+		if err != nil {
+			// Better to make the client resync than to paint points with another
+			// command's attributes.
+			slog.Error("render chunk encode failed", "chunkIndex", chunk.ChunkIndex, "error", err)
+			sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "resync.required", Data: map[string]any{
+				"reason": "render-chunk-encode-failed",
+			}}})
+			return
+		}
 		chunkData := map[string]any{
 			"snapshotVersion": stream.SnapshotVersion, "chunkIndex": chunk.ChunkIndex,
 			"isLastChunk": chunk.IsLast, "pointCount": len(chunk.Points), "commands": commands,
@@ -142,7 +152,7 @@ func sendRenderStream(ch chan Outbound, prefix string, requestID int, stream Ini
 			chunkData["requestId"] = requestID
 		}
 		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: chunkType, Data: chunkData}})
-		sendStreamOutbound(ch, Outbound{Binary: protocol.EncodeRenderChunk(chunk.Points, commandMap, stream.SnapshotVersion, chunk.ChunkIndex)})
+		sendStreamOutbound(ch, Outbound{Binary: frame})
 	}
 	done := map[string]any{"snapshotVersion": stream.SnapshotVersion, "totalChunks": len(stream.RenderChunks)}
 	if requestID > 0 {
@@ -185,8 +195,21 @@ func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snaps
 		data["requestId"] = requestID
 	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: metaType, Data: data}})
+	encodeFailed := false
 	index.ForEachPagePointChunk(pageIDs, chunkSize, func(chunk RenderChunk) {
+		if encodeFailed {
+			return
+		}
 		commandMap, commands := protocol.BuildRenderDictionary(chunk.Points)
+		frame, err := protocol.EncodeRenderChunk(chunk.Points, commandMap, snapshotVersion, chunk.ChunkIndex)
+		if err != nil {
+			slog.Error("render chunk encode failed", "chunkIndex", chunk.ChunkIndex, "error", err)
+			sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "resync.required", Data: map[string]any{
+				"reason": "render-chunk-encode-failed",
+			}}})
+			encodeFailed = true
+			return
+		}
 		chunkData := map[string]any{
 			"snapshotVersion": snapshotVersion, "chunkIndex": chunk.ChunkIndex,
 			"isLastChunk": chunk.IsLast, "pointCount": len(chunk.Points), "commands": commands,
@@ -196,8 +219,11 @@ func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snaps
 			chunkData["requestId"] = requestID
 		}
 		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: chunkType, Data: chunkData}})
-		sendStreamOutbound(ch, Outbound{Binary: protocol.EncodeRenderChunk(chunk.Points, commandMap, snapshotVersion, chunk.ChunkIndex)})
+		sendStreamOutbound(ch, Outbound{Binary: frame})
 	})
+	if encodeFailed {
+		return
+	}
 	done := map[string]any{"snapshotVersion": snapshotVersion, "totalChunks": totalChunks}
 	if requestID > 0 {
 		done["requestId"] = requestID

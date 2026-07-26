@@ -1,0 +1,4 @@
+interface:
+  display_name: "Aevia Project Guide"
+  short_description: "Load focused Aevia project knowledge for code, tests, and benchmarks."
+  default_prompt: "Use Aevia Project Guide to load the smallest relevant project reference, file map, and verification commands."

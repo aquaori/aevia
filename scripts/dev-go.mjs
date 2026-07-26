@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const children = [];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const backendPort = process.env.GO_BACKEND_PORT || process.env.PORT || "4647";
+const backendPort = process.env.GO_BACKEND_PORT || process.env.PORT || "4646";
 
 const detectPublicHost = () => {
   if (process.env.AEVIA_PUBLIC_HOST || process.env.PUBLIC_HOST) {

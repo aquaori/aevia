@@ -14,6 +14,7 @@
 	import axios from "axios";
 	import { toast } from "vue-sonner";
 	import { useUserStore } from "../store/userStore";
+	import { apiUrl } from "../config/endpoints";
 
 	const router = useRouter();
 	const userStore = useUserStore();
@@ -70,7 +71,7 @@
 	// 生成随机 ID
 	const getRandomId = () => {
 		axios
-			.get((import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") + "/generate-room-id")
+			.get(apiUrl("/generate-room-id"))
 			.then((res) => {
 				try {
 					otpDigits.value = res.data.data.roomId.split("");
@@ -124,8 +125,7 @@
 			isCheckingId.value = true;
 			roomCheckStatus.value = "checking";
 			try {
-				const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:4646";
-				const res = await axios.get(`${apiUrl}/check-room?roomId=${roomId.value}`);
+				const res = await axios.get(apiUrl(`/check-room?roomId=${roomId.value}`));
 				if (res.data.data.status == true) {
 					roomCheckStatus.value = "invalid";
 					if (mode.value === "create") {
@@ -163,11 +163,7 @@
 					// 模拟检查
 					await new Promise((resolve, reject) => {
 						axios
-							.get(
-								(import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") +
-									"/check-room?roomId=" +
-									roomId.value
-							)
+							.get(apiUrl(`/check-room?roomId=${roomId.value}`))
 							.then((res) => {
 								if (res.data.data.status == true) {
 									step.value = 2;
@@ -189,8 +185,7 @@
 				if (mode.value === "create") {
 					await axios
 						.post(
-							(import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") +
-								"/create-room",
+							apiUrl("/create-room"),
 							{
 								roomId: roomId.value,
 								roomName: roomName.value,
@@ -202,8 +197,7 @@
 								localStorage.setItem("wb_username", username.value);
 								axios
 									.post(
-										(import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") +
-											"/join-room",
+										apiUrl("/join-room"),
 										{
 											roomId: roomId.value,
 											userName: username.value,
@@ -236,11 +230,7 @@
 						});
 				} else {
 					await axios
-						.get(
-							(import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") +
-								"/check-room?roomId=" +
-								roomId.value
-						)
+						.get(apiUrl(`/check-room?roomId=${roomId.value}`))
 						.then((res) => {
 							if (res.data.data.status == true) {
 								submit();
@@ -289,7 +279,7 @@
 		localStorage.setItem("wb_username", username.value);
 		if (mode.value === "create") {
 			axios
-				.post((import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") + "/create-room", {
+				.post(apiUrl("/create-room"), {
 					roomId: roomId.value,
 					roomName: roomName.value,
 					password: password.value || "",
@@ -298,8 +288,7 @@
 					if (res.data.code == 200) {
 						axios
 							.post(
-								(import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") +
-									"/join-room",
+								apiUrl("/join-room"),
 								{
 									roomId: roomId.value,
 									userName: username.value,
@@ -330,7 +319,7 @@
 				});
 		} else {
 			axios
-				.post((import.meta.env.VITE_API_URL || "http://127.0.0.1:4646") + "/join-room", {
+				.post(apiUrl("/join-room"), {
 					roomId: roomId.value,
 					userName: username.value,
 					password: password.value || "",

@@ -17,6 +17,7 @@ import {
 } from "./realtimeBinary";
 import { applyServerPressurePolicy, resetCollabPressurePolicy } from "./collabPressurePolicy";
 import { renewRoomSession as renewRoomSessionRequest } from "./sessionApi";
+import { wsBaseUrl } from "../config/endpoints";
 
 type OutgoingPayload = Record<string, unknown> & {
 	cmd?: Command;
@@ -131,7 +132,12 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	let sessionRenewInFlight: Promise<boolean> | null = null;
 	let isBrowserOffline = typeof navigator !== "undefined" ? !navigator.onLine : false;
 	let browserConnectivityListenersBound = false;
-	const enableDeltaReplay = import.meta.env.VITE_ENABLE_DELTA_REPLAY === "1";
+	// Delta replay lets a reconnect resume from the last applied roomSeq instead of
+	// re-downloading the whole page. On by default now that the backend implements
+	// it and the client handles the replay envelopes; set
+	// VITE_ENABLE_DELTA_REPLAY=0 to force full re-init (e.g. against a backend
+	// that ignores lastRoomSeq).
+	const enableDeltaReplay = import.meta.env.VITE_ENABLE_DELTA_REPLAY !== "0";
 	let lastRoomSeq = 0;
 	let pendingRenderBinaryChunk:
 		| {
@@ -288,6 +294,27 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			socket.value = null;
 		}
 		toast.info("服务器正在维护，已暂停重连。");
+	};
+
+	/**
+	 * Handles `resync.required`, which the server sends when it can no longer
+	 * guarantee our view matches the room: a slow-client eviction, a render chunk
+	 * it refused to encode, or the database dropping to read-only.
+	 *
+	 * This message previously had no handler at all, so a degraded room silently
+	 * rejected every subsequent edit. Two things have to happen: discard the delta
+	 * cursor (the incremental chain is broken, so any reconnect must do a full
+	 * init) and re-pull the current page.
+	 */
+	const handleResyncRequired = (payload: unknown) => {
+		const reason = String((payload as { reason?: unknown } | undefined)?.reason ?? "");
+		lastRoomSeq = 0;
+		if (reason === "degraded-read-only") {
+			toast.error("服务器存储异常，白板暂时只读，正在重新同步。");
+		} else {
+			toast.info("正在与服务器重新同步…");
+		}
+		options.requestCurrentPageResync?.();
 	};
 
 	const renewSessionToken = async (reason: "background" | "connect" = "background") => {
@@ -590,11 +617,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				socket.value.close();
 			}
 
-			const wsBaseUrl = import.meta.env.VITE_WS_URL || "ws://127.0.0.1:4646/ws";
 			const tokenStr = Array.isArray(options.token.value)
 				? (options.token.value[0] ?? "")
 				: options.token.value || "";
-			const wsUrl = `${wsBaseUrl.replace(/\/ws$/, "")}/ws?pageId=${statePageToProtocol(options.currentPageId.value)}${
+			const wsUrl = `${wsBaseUrl}?pageId=${statePageToProtocol(options.currentPageId.value)}${
 				enableDeltaReplay && lastRoomSeq > 0 ? `&lastRoomSeq=${lastRoomSeq}` : ""
 			}`;
 			socket.value = new WebSocket(wsUrl, [tokenStr]);
@@ -634,6 +660,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 						}
 						if (msg.type === "server.draining") {
 							handleServerDraining();
+							return;
+						}
+						if (msg.type === "resync.required") {
+							handleResyncRequired(msg.data);
 							return;
 						}
 						if (enableDeltaReplay) updateLastRoomSeq(msg.data);

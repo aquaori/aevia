@@ -72,15 +72,10 @@ CREATE TABLE IF NOT EXISTS commands (
   FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS operation_receipts (
-  room_id TEXT NOT NULL,
-  op_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  room_seq INTEGER NOT NULL,
-  response TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY(room_id, op_id),
-  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+CREATE TABLE IF NOT EXISTS server_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_commands_room_id_id ON commands(room_id, id);

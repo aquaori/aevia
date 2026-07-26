@@ -2,15 +2,15 @@
   "name": "@collaborative-whiteboard/backend",
   "private": true,
   "version": "1.0.0",
-  "description": "",
+  "description": "Legacy Express/ws backend. Superseded by apps/go-backend, which is what the root dev/start/build scripts run. Kept for reference and for the existing HTTP integration tests; it does not implement roomSeq, delta replay, backpressure or resync, so the current frontend loses those capabilities against it.",
   "main": "src/index.js",
   "scripts": {
-    "build": "node -e \"console.log('Backend uses runtime JS, no build step yet.')\"",
+    "build": "node -e \"console.log('Legacy JS backend: runtime JS, no build step.')\"",
     "start": "node src/index.js",
     "dev": "node src/index.js",
     "dev:reset": "node src/scripts/resetDevDb.js && node src/index.js",
     "dev:watch": "node --watch src/index.js",
-    "test": "node -e \"console.log('No backend tests configured yet.')\""
+    "test": "vitest run --root ../.. --project backend-unit --project backend-integration"
   },
   "keywords": [],
   "author": "",

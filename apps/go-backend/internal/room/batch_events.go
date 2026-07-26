@@ -23,7 +23,7 @@ func (a *Actor) handleBatchMove(client ClientInfo, msg clientEventMessage) {
 			points[i].Y += dy
 		}
 		cmd.SetPoints(points)
-		if !a.persistCommand(client, "cmd-batch-move", cmd, mutationOptions{Barrier: false, OpID: opID(msg.Data), UserID: client.UserID}) {
+		if !a.persistCommand(client, "cmd-batch-move", cmd, mutationOptions{Barrier: false, UserID: client.UserID}) {
 			return
 		}
 	}
@@ -49,7 +49,7 @@ func (a *Actor) handleBatchUpdate(client ClientInfo, msg clientEventMessage) {
 		if msg.Type == "cmd-batch-stop" && update["boxes"] != nil {
 			cmd.Set("box", update["boxes"])
 		}
-		if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: msg.Type == "cmd-batch-stop", OpID: opID(msg.Data), UserID: client.UserID}) {
+		if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: msg.Type == "cmd-batch-stop", UserID: client.UserID}) {
 			return
 		}
 	}

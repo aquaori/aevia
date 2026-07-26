@@ -1,0 +1,360 @@
+{
+  "version": 1,
+  "createdAt": "2026-05-03T09:27:03.642Z",
+  "sourceReport": "apps/frontend/tests/e2e/external/reports/latest/2026-05-03T08-46-27-297Z/external-results.json",
+  "suite": "performance-external",
+  "cases": {
+    "gpu_cpuHigh::full-render-10000": {
+      "id": "full-render-10000",
+      "environment": "gpu_cpuHigh",
+      "runMode": "headless",
+      "scale": 10000,
+      "metrics": {
+        "environment": "gpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 10000,
+        "firstNonBlankMsMedian": 111.69999999925494,
+        "visuallyStableMsMedian": 117.19999999925494,
+        "nonBlankRatioMedian": 0.17843364197530864,
+        "longTaskCountMedian": 0,
+        "longTaskTotalMsMedian": 0
+      }
+    },
+    "gpu_cpuHigh::full-render-50000": {
+      "id": "full-render-50000",
+      "environment": "gpu_cpuHigh",
+      "runMode": "headless",
+      "scale": 50000,
+      "metrics": {
+        "environment": "gpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 50000,
+        "firstNonBlankMsMedian": 241.5,
+        "visuallyStableMsMedian": 250,
+        "nonBlankRatioMedian": 0.6309799382716049,
+        "longTaskCountMedian": 1,
+        "longTaskTotalMsMedian": 91
+      }
+    },
+    "gpu_cpuHigh::full-render-100000": {
+      "id": "full-render-100000",
+      "environment": "gpu_cpuHigh",
+      "runMode": "headless",
+      "scale": 100000,
+      "metrics": {
+        "environment": "gpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 100000,
+        "firstNonBlankMsMedian": 159.7000000011176,
+        "visuallyStableMsMedian": 420.40000000037253,
+        "nonBlankRatioMedian": 0.7457561728395061,
+        "longTaskCountMedian": 1,
+        "longTaskTotalMsMedian": 116
+      }
+    },
+    "gpu_cpuHigh::incremental-remote-first-pixel": {
+      "id": "incremental-remote-first-pixel",
+      "environment": "gpu_cpuHigh",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "gpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "remoteFirstPixelMsMedian": 6.5,
+        "protocolDispatchOverheadMsMedian": 164.38709999999992,
+        "observerPollElapsedMsMedian": 6.5,
+        "framesToFirstPixelMedian": 1,
+        "roiDiffRatioMedian": 0.022705078125,
+        "longTaskCountMedian": 0
+      }
+    },
+    "gpu_cpuHigh::local-realtime-first-pixel": {
+      "id": "local-realtime-first-pixel",
+      "environment": "gpu_cpuHigh",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "gpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "inputToFirstPixelMsMedian": 22.800000000745058,
+        "observerPollElapsedMsMedian": 22.800000000745058,
+        "inputToFirstPixelFramesMedian": 3,
+        "roiDiffRatioMedian": 0.010498046875,
+        "inputDelayMsMedian": 3.099999999627471,
+        "longTaskCountMedian": 0
+      }
+    },
+    "gpu_cpuLow::full-render-10000": {
+      "id": "full-render-10000",
+      "environment": "gpu_cpuLow",
+      "runMode": "headless",
+      "scale": 10000,
+      "metrics": {
+        "environment": "gpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 10000,
+        "firstNonBlankMsMedian": 255.2000000011176,
+        "visuallyStableMsMedian": 314.1000000014901,
+        "nonBlankRatioMedian": 0.17843364197530864,
+        "longTaskCountMedian": 1,
+        "longTaskTotalMsMedian": 133
+      }
+    },
+    "gpu_cpuLow::full-render-50000": {
+      "id": "full-render-50000",
+      "environment": "gpu_cpuLow",
+      "runMode": "headless",
+      "scale": 50000,
+      "metrics": {
+        "environment": "gpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 50000,
+        "firstNonBlankMsMedian": 295.7999999988824,
+        "visuallyStableMsMedian": 432.40000000037253,
+        "nonBlankRatioMedian": 0.6309799382716049,
+        "longTaskCountMedian": 3,
+        "longTaskTotalMsMedian": 245
+      }
+    },
+    "gpu_cpuLow::full-render-100000": {
+      "id": "full-render-100000",
+      "environment": "gpu_cpuLow",
+      "runMode": "headless",
+      "scale": 100000,
+      "metrics": {
+        "environment": "gpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 100000,
+        "firstNonBlankMsMedian": 325.2999999988824,
+        "visuallyStableMsMedian": 620.9000000003725,
+        "nonBlankRatioMedian": 0.7457561728395061,
+        "longTaskCountMedian": 4,
+        "longTaskTotalMsMedian": 327
+      }
+    },
+    "gpu_cpuLow::incremental-remote-first-pixel": {
+      "id": "incremental-remote-first-pixel",
+      "environment": "gpu_cpuLow",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "gpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "remoteFirstPixelMsMedian": 20.09999999962747,
+        "protocolDispatchOverheadMsMedian": 217.7035999999789,
+        "observerPollElapsedMsMedian": 20.09999999962747,
+        "framesToFirstPixelMedian": 1,
+        "roiDiffRatioMedian": 0.022705078125,
+        "longTaskCountMedian": 2
+      }
+    },
+    "gpu_cpuLow::local-realtime-first-pixel": {
+      "id": "local-realtime-first-pixel",
+      "environment": "gpu_cpuLow",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "gpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "inputToFirstPixelMsMedian": 39.100000001490116,
+        "observerPollElapsedMsMedian": 39.100000001490116,
+        "inputToFirstPixelFramesMedian": 3,
+        "roiDiffRatioMedian": 0.010498046875,
+        "inputDelayMsMedian": 12.5,
+        "longTaskCountMedian": 1
+      }
+    },
+    "noGpu_cpuHigh::full-render-10000": {
+      "id": "full-render-10000",
+      "environment": "noGpu_cpuHigh",
+      "runMode": "headless",
+      "scale": 10000,
+      "metrics": {
+        "environment": "noGpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 10000,
+        "firstNonBlankMsMedian": 92.70000000111759,
+        "visuallyStableMsMedian": 125.80000000074506,
+        "nonBlankRatioMedian": 0.17939814814814814,
+        "longTaskCountMedian": 0,
+        "longTaskTotalMsMedian": 0
+      }
+    },
+    "noGpu_cpuHigh::full-render-50000": {
+      "id": "full-render-50000",
+      "environment": "noGpu_cpuHigh",
+      "runMode": "headless",
+      "scale": 50000,
+      "metrics": {
+        "environment": "noGpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 50000,
+        "firstNonBlankMsMedian": 193.80000000074506,
+        "visuallyStableMsMedian": 226.69999999925494,
+        "nonBlankRatioMedian": 0.6359953703703703,
+        "longTaskCountMedian": 0,
+        "longTaskTotalMsMedian": 0
+      }
+    },
+    "noGpu_cpuHigh::full-render-100000": {
+      "id": "full-render-100000",
+      "environment": "noGpu_cpuHigh",
+      "runMode": "headless",
+      "scale": 100000,
+      "metrics": {
+        "environment": "noGpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 100000,
+        "firstNonBlankMsMedian": 147.2999999988824,
+        "visuallyStableMsMedian": 180.69999999925494,
+        "nonBlankRatioMedian": 0.16801697530864199,
+        "longTaskCountMedian": 0,
+        "longTaskTotalMsMedian": 0
+      }
+    },
+    "noGpu_cpuHigh::incremental-remote-first-pixel": {
+      "id": "incremental-remote-first-pixel",
+      "environment": "noGpu_cpuHigh",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "noGpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "remoteFirstPixelMsMedian": 6.599999999627471,
+        "protocolDispatchOverheadMsMedian": 158.78580000039074,
+        "observerPollElapsedMsMedian": 6.599999999627471,
+        "framesToFirstPixelMedian": 1,
+        "roiDiffRatioMedian": 0.022216796875,
+        "longTaskCountMedian": 0
+      }
+    },
+    "noGpu_cpuHigh::local-realtime-first-pixel": {
+      "id": "local-realtime-first-pixel",
+      "environment": "noGpu_cpuHigh",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "noGpu_cpuHigh",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "inputToFirstPixelMsMedian": 20.200000001117587,
+        "observerPollElapsedMsMedian": 20.200000001117587,
+        "inputToFirstPixelFramesMedian": 2,
+        "roiDiffRatioMedian": 0.0107421875,
+        "inputDelayMsMedian": 3,
+        "longTaskCountMedian": 0
+      }
+    },
+    "noGpu_cpuLow::full-render-10000": {
+      "id": "full-render-10000",
+      "environment": "noGpu_cpuLow",
+      "runMode": "headless",
+      "scale": 10000,
+      "metrics": {
+        "environment": "noGpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 10000,
+        "firstNonBlankMsMedian": 298.90000000037253,
+        "visuallyStableMsMedian": 318.2000000011176,
+        "nonBlankRatioMedian": 0.17939814814814814,
+        "longTaskCountMedian": 1,
+        "longTaskTotalMsMedian": 125
+      }
+    },
+    "noGpu_cpuLow::full-render-50000": {
+      "id": "full-render-50000",
+      "environment": "noGpu_cpuLow",
+      "runMode": "headless",
+      "scale": 50000,
+      "metrics": {
+        "environment": "noGpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 50000,
+        "firstNonBlankMsMedian": 342.1000000014901,
+        "visuallyStableMsMedian": 387.1000000014901,
+        "nonBlankRatioMedian": 0.2330246913580247,
+        "longTaskCountMedian": 2,
+        "longTaskTotalMsMedian": 184
+      }
+    },
+    "noGpu_cpuLow::full-render-100000": {
+      "id": "full-render-100000",
+      "environment": "noGpu_cpuLow",
+      "runMode": "headless",
+      "scale": 100000,
+      "metrics": {
+        "environment": "noGpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "scaleMedian": 100000,
+        "firstNonBlankMsMedian": 321.2000000011176,
+        "visuallyStableMsMedian": 361,
+        "nonBlankRatioMedian": 0.18248456790123457,
+        "longTaskCountMedian": 1,
+        "longTaskTotalMsMedian": 133
+      }
+    },
+    "noGpu_cpuLow::incremental-remote-first-pixel": {
+      "id": "incremental-remote-first-pixel",
+      "environment": "noGpu_cpuLow",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "noGpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "remoteFirstPixelMsMedian": 24.699999999254942,
+        "protocolDispatchOverheadMsMedian": 213.63980000116862,
+        "observerPollElapsedMsMedian": 24.699999999254942,
+        "framesToFirstPixelMedian": 1,
+        "roiDiffRatioMedian": 0.022216796875,
+        "longTaskCountMedian": 2
+      }
+    },
+    "noGpu_cpuLow::local-realtime-first-pixel": {
+      "id": "local-realtime-first-pixel",
+      "environment": "noGpu_cpuLow",
+      "runMode": "headless",
+      "metrics": {
+        "environment": "noGpu_cpuLow",
+        "runMode": "headless",
+        "runs": 3,
+        "warmup": 1,
+        "inputToFirstPixelMsMedian": 38.19999999925494,
+        "observerPollElapsedMsMedian": 38.19999999925494,
+        "inputToFirstPixelFramesMedian": 2,
+        "roiDiffRatioMedian": 0.0107421875,
+        "inputDelayMsMedian": 14.300000000745058,
+        "longTaskCountMedian": 1
+      }
+    }
+  }
+}

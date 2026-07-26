@@ -1,6 +1,10 @@
 package room
 
-import "collaborative-whiteboard/apps/go-backend/internal/domain"
+import (
+	"sort"
+
+	"collaborative-whiteboard/apps/go-backend/internal/domain"
+)
 
 const pointBlockSize = 2000
 
@@ -249,9 +253,43 @@ func (p *pagePointBlocks) insertMany(points []domain.FlatPoint) {
 		return
 	}
 	domain.SortFlatPoints(points)
+	// Bulk append when the whole run sorts after everything already stored, which
+	// covers page hydration and live stroke growth. Falling through to per-point
+	// insertion there cost a memmove per point.
+	if p.appendSortedRun(points) {
+		return
+	}
 	for _, point := range points {
 		p.insert(point)
 	}
+}
+
+// appendSortedRun appends an already-sorted run that starts after the current
+// tail, reporting whether it handled the run.
+func (p *pagePointBlocks) appendSortedRun(points []domain.FlatPoint) bool {
+	lastBlock := len(p.blocks) - 1
+	if lastBlock >= 0 {
+		block := p.blocks[lastBlock]
+		if len(block) > 0 && domain.CompareFlatPoint(points[0], block[len(block)-1]) <= 0 {
+			return false
+		}
+	}
+	for _, point := range points {
+		p.appendTail(point)
+	}
+	return true
+}
+
+// appendTail appends to the final block, opening a new one at the block size
+// boundary so blocks stay bounded without repeated splitting.
+func (p *pagePointBlocks) appendTail(point domain.FlatPoint) {
+	if len(p.blocks) == 0 || len(p.blocks[len(p.blocks)-1]) >= pointBlockSize {
+		block := make([]domain.FlatPoint, 0, pointBlockSize)
+		p.blocks = append(p.blocks, append(block, point))
+		return
+	}
+	last := len(p.blocks) - 1
+	p.blocks[last] = append(p.blocks[last], point)
 }
 
 func (p *pagePointBlocks) insert(point domain.FlatPoint) {
@@ -271,17 +309,32 @@ func (p *pagePointBlocks) insert(point domain.FlatPoint) {
 	}
 }
 
+// findBlock returns the block that should receive point.
+//
+// Blocks partition the page in ascending order, so the target is the first block
+// whose last element is not less than the point — a binary search. This was a
+// linear scan, which meant the common case (appending at the tail, where no block
+// qualifies) walked every block for every point: O(points x blocks) to load a
+// page, roughly 5M comparisons for 100k points.
 func (p *pagePointBlocks) findBlock(point domain.FlatPoint) int {
-	for index, block := range p.blocks {
-		if len(block) == 0 {
-			continue
-		}
-		last := block[len(block)-1]
-		if domain.CompareFlatPoint(point, last) <= 0 {
-			return index
+	// Tail fast path: live drawing appends in order.
+	if last := len(p.blocks) - 1; last >= 0 {
+		block := p.blocks[last]
+		if len(block) > 0 && domain.CompareFlatPoint(point, block[len(block)-1]) > 0 {
+			return last
 		}
 	}
-	return len(p.blocks) - 1
+	index := sort.Search(len(p.blocks), func(i int) bool {
+		block := p.blocks[i]
+		if len(block) == 0 {
+			return false
+		}
+		return domain.CompareFlatPoint(point, block[len(block)-1]) <= 0
+	})
+	if index >= len(p.blocks) {
+		return len(p.blocks) - 1
+	}
+	return index
 }
 
 func findPointInsertAt(block []domain.FlatPoint, point domain.FlatPoint) int {

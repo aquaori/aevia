@@ -28,42 +28,34 @@ func (s *Store) ListCommands(ctx context.Context, roomID string) ([]domain.Comma
 	return commands, rows.Err()
 }
 
-func (s *Store) SaveCommand(roomID string, cmd domain.Command, wait bool) error {
-	return s.writer.SaveCommand(roomID, cmd, wait)
-}
+// The *AtSeq writes stamp rooms.durable_seq alongside the mutation so a restart
+// knows how far the persisted log advanced. wait=true commits before returning;
+// wait=false batches and reports failures through the async failure handler.
 
 func (s *Store) SaveCommandAtSeq(roomID string, cmd domain.Command, roomSeq uint64, wait bool) error {
 	return s.writer.SaveCommandAtSeq(roomID, cmd, roomSeq, wait)
-}
-
-func (s *Store) DeleteCommand(roomID, cmdID string, wait bool) error {
-	return s.writer.DeleteCommand(roomID, cmdID, wait)
 }
 
 func (s *Store) DeleteCommandAtSeq(roomID, cmdID string, roomSeq uint64, wait bool) error {
 	return s.writer.DeleteCommandAtSeq(roomID, cmdID, roomSeq, wait)
 }
 
-func (s *Store) ClearCommands(roomID string, pageID *int, wait bool) error {
-	return s.writer.ClearCommands(roomID, pageID, wait)
-}
-
 func (s *Store) ClearCommandsAtSeq(roomID string, pageID *int, roomSeq uint64, wait bool) error {
 	return s.writer.ClearCommandsAtSeq(roomID, pageID, roomSeq, wait)
-}
-
-func (s *Store) IncrementPage(roomID string, wait bool) error {
-	return s.writer.IncrementPage(roomID, wait)
 }
 
 func (s *Store) IncrementPageAtSeq(roomID string, roomSeq uint64, wait bool) error {
 	return s.writer.IncrementPageAtSeq(roomID, roomSeq, wait)
 }
 
-func (s *Store) SaveReceipt(roomID, opID, userID string, roomSeq uint64, response string, wait bool) error {
-	return s.writer.SaveReceipt(roomID, opID, userID, roomSeq, response, wait)
-}
-
 func (s *Store) IsDegraded() bool {
 	return s.writer.IsDegraded()
+}
+
+// SetAsyncFailureHandler routes fire-and-forget write failures to the caller so
+// the owning room can degrade instead of silently serving non-durable state.
+func (s *Store) SetAsyncFailureHandler(handler func(roomID string, err error)) {
+	if s.writer != nil {
+		s.writer.SetAsyncFailureHandler(handler)
+	}
 }

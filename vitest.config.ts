@@ -39,10 +39,7 @@ export default defineConfig({
 					name: "backend-unit",
 					globals: true,
 					environment: "node",
-					include: [
-						"apps/backend/src/**/*.spec.js",
-						"!apps/backend/src/app.spec.js",
-					],
+					include: ["apps/backend/src/**/*.spec.js"],
 					setupFiles: ["apps/backend/tests/setup.cjs"],
 				},
 			},
@@ -98,6 +95,11 @@ export default defineConfig({
 						provider: playwright(),
 						headless: true,
 						instances: [{ browser: "chromium" }],
+						// Vitest's default browser port (63315) falls inside the range
+						// Windows reserves for Hyper-V/WSL, so the server fails to bind
+						// with EACCES before any test loads. Pin a port outside the
+						// usual reserved ranges.
+						api: { port: 51204 },
 					},
 				},
 				resolve: {

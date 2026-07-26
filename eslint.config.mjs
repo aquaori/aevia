@@ -29,6 +29,10 @@ export default defineConfig(
 		".agents/**",
 		".codex/**",
 		".vscode/**",
+		// Go build/module cache. Vendored JS in there (pprof, x/tools) produced
+		// 800+ bogus errors and made `npm run lint` useless.
+		".cache/**",
+		"apps/go-backend/**",
 	]),
 	js.configs.recommended,
 	...typescriptRecommended,

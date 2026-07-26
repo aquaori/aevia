@@ -53,6 +53,16 @@ export const createCollabMessageDispatcher = (options: CollabMessageDispatcherOp
 			return;
 		}
 
+		if (msg.type === "delta-replay-meta") {
+			commandHandlers.handleDeltaReplayMeta(msg);
+			return;
+		}
+
+		if (msg.type === "delta-replay-complete") {
+			commandHandlers.handleDeltaReplayComplete(msg);
+			return;
+		}
+
 		if (msg.type === "page-change-meta") {
 			commandHandlers.handlePageChangeMeta(msg);
 			return;

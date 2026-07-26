@@ -275,6 +275,49 @@ const attachObservabilityToReport = async () => {
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
+// Benchmark runs seed millions of points and never cleaned up, so the scratch
+// database grew unboundedly across runs (a single tree here reached 2.7 GB).
+// Start each run from an empty database unless --keep-db is passed, and support
+// --clean to reclaim the space without running a benchmark.
+const benchDbPath = path.resolve(
+  repoRoot,
+  "data",
+  path.basename(
+    process.env.GO_BENCH_DB_PATH ||
+      process.env.GO_BACKEND_DB_PATH ||
+      process.env.DB_PATH ||
+      "whiteboard-go-benchmark.sqlite"
+  )
+);
+
+const removeBenchDatabase = async () => {
+  let reclaimed = 0;
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const target = `${benchDbPath}${suffix}`;
+    try {
+      const stat = await fs.stat(target);
+      reclaimed += stat.size;
+      await fs.rm(target, { force: true });
+    } catch {
+      // Nothing to remove.
+    }
+  }
+  if (reclaimed > 0) {
+    console.log(
+      `[benchmark:go] removed benchmark database (${(reclaimed / 1024 / 1024).toFixed(1)} MB)`
+    );
+  }
+};
+
+if (process.argv.includes("--clean")) {
+  await removeBenchDatabase();
+  process.exit(0);
+}
+
+if (!process.argv.includes("--keep-db")) {
+  await removeBenchDatabase();
+}
+
 spawnChild("go-backend", "go", ["run", "./cmd/aevia-go-backend"], {
   cwd: path.join(repoRoot, "apps", "go-backend"),
   env: {

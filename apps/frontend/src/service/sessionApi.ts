@@ -1,6 +1,7 @@
 import axios from "axios";
+import { apiBaseUrl } from "../config/endpoints";
 
-const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:4646";
+const apiUrl = apiBaseUrl;
 
 const buildSessionHeaders = (sessionToken: string) => ({
 	Authorization: `Bearer ${sessionToken}`,

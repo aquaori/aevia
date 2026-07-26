@@ -37,15 +37,6 @@ func applyWrite(ctx context.Context, tx *sql.Tx, req writeRequest) error {
 	case "increment-page":
 		_, err := tx.ExecContext(ctx, `UPDATE rooms SET total_page=total_page+?, durable_seq=max(durable_seq, ?) WHERE room_id=?`, req.totalPageDelta, req.roomSeq, req.roomID)
 		return err
-	case "receipt":
-		_, err := tx.ExecContext(ctx, `
-INSERT INTO operation_receipts(room_id,op_id,user_id,room_seq,response,created_at)
-VALUES(?,?,?,?,?,?)
-ON CONFLICT(room_id, op_id) DO UPDATE SET
-  room_seq=excluded.room_seq,
-  response=excluded.response`,
-			req.roomID, req.opID, req.userID, req.roomSeq, req.response, now)
-		return err
 	default:
 		return nil
 	}

@@ -21,7 +21,14 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	bootLogger := slog.New(console.NewHandler(os.Stdout, slog.LevelInfo))
+	slog.SetDefault(bootLogger)
+
+	cfg, err := config.Load()
+	if err != nil {
+		bootLogger.Error("invalid configuration", "error", err)
+		os.Exit(1)
+	}
 	logger := slog.New(console.NewHandler(os.Stdout, cfg.LogLevel))
 	slog.SetDefault(logger)
 	auth.ConfigureHashPool(cfg.HashPoolSize, cfg.HashQueueTimeout)
@@ -37,8 +44,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	sessionEpoch, err := store.SessionEpoch(context.Background())
+	if err != nil {
+		logger.Error("load session epoch", "error", err)
+		os.Exit(1)
+	}
+
 	registry := room.NewRegistry(store, cfg)
-	server := gateway.NewServer(cfg, store, registry)
+	server := gateway.NewServer(cfg, store, registry, sessionEpoch)
 	httpServer := &http.Server{
 		Addr:              cfg.Addr(),
 		Handler:           server.Routes(),
