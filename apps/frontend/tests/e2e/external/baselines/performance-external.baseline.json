@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "createdAt": "2026-05-03T09:27:03.642Z",
-  "sourceReport": "apps/frontend/tests/e2e/external/reports/latest/2026-05-03T08-46-27-297Z/external-results.json",
+  "createdAt": "2026-07-26T14:43:29.414Z",
+  "sourceReport": "apps/frontend/tests/e2e/external/reports/baseline-run/performance-external-standard-external-results.json",
   "suite": "performance-external",
   "cases": {
     "gpu_cpuHigh::full-render-10000": {
@@ -14,10 +14,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 111.69999999925494,
-        "visuallyStableMsMedian": 117.19999999925494,
-        "nonBlankRatioMedian": 0.17843364197530864,
+        "firstNonBlankMsMedian": 34.100000001490116,
+        "visuallyStableMsMedian": 43.900000002235174,
+        "nonBlankRatioMedian": 0.18094135802469136,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -32,12 +34,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 241.5,
-        "visuallyStableMsMedian": 250,
-        "nonBlankRatioMedian": 0.6309799382716049,
-        "longTaskCountMedian": 1,
-        "longTaskTotalMsMedian": 91
+        "firstNonBlankMsMedian": 62.80000000074506,
+        "visuallyStableMsMedian": 71.19999999925494,
+        "nonBlankRatioMedian": 0.21315586419753085,
+        "longTaskCountMedian": 0,
+        "longTaskTotalMsMedian": 0
       }
     },
     "gpu_cpuHigh::full-render-100000": {
@@ -50,12 +54,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 159.7000000011176,
-        "visuallyStableMsMedian": 420.40000000037253,
-        "nonBlankRatioMedian": 0.7457561728395061,
-        "longTaskCountMedian": 1,
-        "longTaskTotalMsMedian": 116
+        "firstNonBlankMsMedian": 39.599999997764826,
+        "visuallyStableMsMedian": 54.69999999925494,
+        "nonBlankRatioMedian": 0.18229166666666666,
+        "longTaskCountMedian": 0,
+        "longTaskTotalMsMedian": 0
       }
     },
     "gpu_cpuHigh::incremental-remote-first-pixel": {
@@ -67,11 +73,13 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "remoteFirstPixelMsMedian": 6.5,
-        "protocolDispatchOverheadMsMedian": 164.38709999999992,
-        "observerPollElapsedMsMedian": 6.5,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
+        "remoteFirstPixelMsMedian": 8.300000000745058,
+        "protocolDispatchOverheadMsMedian": 177.7809999985111,
+        "observerPollElapsedMsMedian": 8.300000000745058,
         "framesToFirstPixelMedian": 1,
-        "roiDiffRatioMedian": 0.022705078125,
+        "roiDiffRatioMedian": 0.0234375,
         "longTaskCountMedian": 0
       }
     },
@@ -84,11 +92,13 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "inputToFirstPixelMsMedian": 22.800000000745058,
-        "observerPollElapsedMsMedian": 22.800000000745058,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
+        "inputToFirstPixelMsMedian": 17,
+        "observerPollElapsedMsMedian": 17,
         "inputToFirstPixelFramesMedian": 3,
-        "roiDiffRatioMedian": 0.010498046875,
-        "inputDelayMsMedian": 3.099999999627471,
+        "roiDiffRatioMedian": 0.0166015625,
+        "inputDelayMsMedian": 1.199999999254942,
         "longTaskCountMedian": 0
       }
     },
@@ -102,12 +112,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 255.2000000011176,
-        "visuallyStableMsMedian": 314.1000000014901,
-        "nonBlankRatioMedian": 0.17843364197530864,
-        "longTaskCountMedian": 1,
-        "longTaskTotalMsMedian": 133
+        "firstNonBlankMsMedian": 82,
+        "visuallyStableMsMedian": 114.30000000074506,
+        "nonBlankRatioMedian": 0.18094135802469136,
+        "longTaskCountMedian": 2,
+        "longTaskTotalMsMedian": 210
       }
     },
     "gpu_cpuLow::full-render-50000": {
@@ -120,12 +132,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 295.7999999988824,
-        "visuallyStableMsMedian": 432.40000000037253,
-        "nonBlankRatioMedian": 0.6309799382716049,
-        "longTaskCountMedian": 3,
-        "longTaskTotalMsMedian": 245
+        "firstNonBlankMsMedian": 92.10000000149012,
+        "visuallyStableMsMedian": 123,
+        "nonBlankRatioMedian": 0.21122685185185186,
+        "longTaskCountMedian": 2,
+        "longTaskTotalMsMedian": 205
       }
     },
     "gpu_cpuLow::full-render-100000": {
@@ -138,12 +152,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 325.2999999988824,
-        "visuallyStableMsMedian": 620.9000000003725,
-        "nonBlankRatioMedian": 0.7457561728395061,
-        "longTaskCountMedian": 4,
-        "longTaskTotalMsMedian": 327
+        "firstNonBlankMsMedian": 106.30000000074506,
+        "visuallyStableMsMedian": 124,
+        "nonBlankRatioMedian": 0.17978395061728394,
+        "longTaskCountMedian": 2,
+        "longTaskTotalMsMedian": 213
       }
     },
     "gpu_cpuLow::incremental-remote-first-pixel": {
@@ -155,12 +171,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "remoteFirstPixelMsMedian": 20.09999999962747,
-        "protocolDispatchOverheadMsMedian": 217.7035999999789,
-        "observerPollElapsedMsMedian": 20.09999999962747,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
+        "remoteFirstPixelMsMedian": 25.5,
+        "protocolDispatchOverheadMsMedian": 267.75869999925635,
+        "observerPollElapsedMsMedian": 25.5,
         "framesToFirstPixelMedian": 1,
-        "roiDiffRatioMedian": 0.022705078125,
-        "longTaskCountMedian": 2
+        "roiDiffRatioMedian": 0.0234375,
+        "longTaskCountMedian": 3
       }
     },
     "gpu_cpuLow::local-realtime-first-pixel": {
@@ -172,12 +190,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "inputToFirstPixelMsMedian": 39.100000001490116,
-        "observerPollElapsedMsMedian": 39.100000001490116,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
+        "inputToFirstPixelMsMedian": 65.20000000298023,
+        "observerPollElapsedMsMedian": 65.20000000298023,
         "inputToFirstPixelFramesMedian": 3,
-        "roiDiffRatioMedian": 0.010498046875,
-        "inputDelayMsMedian": 12.5,
-        "longTaskCountMedian": 1
+        "roiDiffRatioMedian": 0.0166015625,
+        "inputDelayMsMedian": 26.5,
+        "longTaskCountMedian": 2
       }
     },
     "noGpu_cpuHigh::full-render-10000": {
@@ -190,10 +210,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 92.70000000111759,
-        "visuallyStableMsMedian": 125.80000000074506,
-        "nonBlankRatioMedian": 0.17939814814814814,
+        "firstNonBlankMsMedian": 50.600000001490116,
+        "visuallyStableMsMedian": 83.30000000074506,
+        "nonBlankRatioMedian": 0.18171296296296297,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -208,10 +230,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 193.80000000074506,
-        "visuallyStableMsMedian": 226.69999999925494,
-        "nonBlankRatioMedian": 0.6359953703703703,
+        "firstNonBlankMsMedian": 66.19999999925494,
+        "visuallyStableMsMedian": 98.80000000074506,
+        "nonBlankRatioMedian": 0.21431327160493827,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -226,10 +250,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 147.2999999988824,
-        "visuallyStableMsMedian": 180.69999999925494,
-        "nonBlankRatioMedian": 0.16801697530864199,
+        "firstNonBlankMsMedian": 60.5,
+        "visuallyStableMsMedian": 93.5,
+        "nonBlankRatioMedian": 0.18441358024691357,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -243,11 +269,13 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "remoteFirstPixelMsMedian": 6.599999999627471,
-        "protocolDispatchOverheadMsMedian": 158.78580000039074,
-        "observerPollElapsedMsMedian": 6.599999999627471,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
+        "remoteFirstPixelMsMedian": 13.300000000745058,
+        "protocolDispatchOverheadMsMedian": 169.0207000022492,
+        "observerPollElapsedMsMedian": 13.300000000745058,
         "framesToFirstPixelMedian": 1,
-        "roiDiffRatioMedian": 0.022216796875,
+        "roiDiffRatioMedian": 0.0234375,
         "longTaskCountMedian": 0
       }
     },
@@ -260,11 +288,13 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "inputToFirstPixelMsMedian": 20.200000001117587,
-        "observerPollElapsedMsMedian": 20.200000001117587,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
+        "inputToFirstPixelMsMedian": 25.100000001490116,
+        "observerPollElapsedMsMedian": 25.100000001490116,
         "inputToFirstPixelFramesMedian": 2,
-        "roiDiffRatioMedian": 0.0107421875,
-        "inputDelayMsMedian": 3,
+        "roiDiffRatioMedian": 0.01708984375,
+        "inputDelayMsMedian": 14.5,
         "longTaskCountMedian": 0
       }
     },
@@ -278,12 +308,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 298.90000000037253,
-        "visuallyStableMsMedian": 318.2000000011176,
-        "nonBlankRatioMedian": 0.17939814814814814,
-        "longTaskCountMedian": 1,
-        "longTaskTotalMsMedian": 125
+        "firstNonBlankMsMedian": 119.69999999925494,
+        "visuallyStableMsMedian": 164.59999999776483,
+        "nonBlankRatioMedian": 0.18171296296296297,
+        "longTaskCountMedian": 2,
+        "longTaskTotalMsMedian": 278
       }
     },
     "noGpu_cpuLow::full-render-50000": {
@@ -296,12 +328,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 342.1000000014901,
-        "visuallyStableMsMedian": 387.1000000014901,
-        "nonBlankRatioMedian": 0.2330246913580247,
+        "firstNonBlankMsMedian": 108.19999999925494,
+        "visuallyStableMsMedian": 138.09999999776483,
+        "nonBlankRatioMedian": 0.21180555555555555,
         "longTaskCountMedian": 2,
-        "longTaskTotalMsMedian": 184
+        "longTaskTotalMsMedian": 216
       }
     },
     "noGpu_cpuLow::full-render-100000": {
@@ -314,12 +348,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 321.2000000011176,
-        "visuallyStableMsMedian": 361,
-        "nonBlankRatioMedian": 0.18248456790123457,
-        "longTaskCountMedian": 1,
-        "longTaskTotalMsMedian": 133
+        "firstNonBlankMsMedian": 111.39999999850988,
+        "visuallyStableMsMedian": 142.70000000298023,
+        "nonBlankRatioMedian": 0.18036265432098766,
+        "longTaskCountMedian": 2,
+        "longTaskTotalMsMedian": 219
       }
     },
     "noGpu_cpuLow::incremental-remote-first-pixel": {
@@ -331,12 +367,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "remoteFirstPixelMsMedian": 24.699999999254942,
-        "protocolDispatchOverheadMsMedian": 213.63980000116862,
-        "observerPollElapsedMsMedian": 24.699999999254942,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
+        "remoteFirstPixelMsMedian": 26.399999998509884,
+        "protocolDispatchOverheadMsMedian": 264.1247000000003,
+        "observerPollElapsedMsMedian": 26.399999998509884,
         "framesToFirstPixelMedian": 1,
-        "roiDiffRatioMedian": 0.022216796875,
-        "longTaskCountMedian": 2
+        "roiDiffRatioMedian": 0.0234375,
+        "longTaskCountMedian": 3
       }
     },
     "noGpu_cpuLow::local-realtime-first-pixel": {
@@ -348,13 +386,30 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "inputToFirstPixelMsMedian": 38.19999999925494,
-        "observerPollElapsedMsMedian": 38.19999999925494,
-        "inputToFirstPixelFramesMedian": 2,
-        "roiDiffRatioMedian": 0.0107421875,
-        "inputDelayMsMedian": 14.300000000745058,
-        "longTaskCountMedian": 1
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
+        "inputToFirstPixelMsMedian": 67.60000000149012,
+        "observerPollElapsedMsMedian": 67.60000000149012,
+        "inputToFirstPixelFramesMedian": 3,
+        "roiDiffRatioMedian": 0.01708984375,
+        "inputDelayMsMedian": 27.899999998509884,
+        "longTaskCountMedian": 2
       }
     }
+  },
+  "conditions": {
+    "suite": "performance-external",
+    "mode": "headless",
+    "matrix": true,
+    "runs": 3,
+    "warmup": 1,
+    "scales": [
+      10000,
+      50000,
+      100000
+    ],
+    "backend": "apps/backend (Go), fresh database",
+    "command": "npx tsx tests/e2e/external/runner.ts --suite=performance-external --mode=headless --matrix=true --runs=3 --warmup=1 --scales=10000,50000,100000",
+    "note": "Compare only against a run produced with this same command on the same host. Do not compare against numbers recorded on other machines or dates."
   }
 }

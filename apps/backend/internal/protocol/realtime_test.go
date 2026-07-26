@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func TestDecodeCommandUpdateRoundTrip(t *testing.T) {

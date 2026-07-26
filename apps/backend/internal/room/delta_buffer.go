@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 type DeltaBuffer struct {

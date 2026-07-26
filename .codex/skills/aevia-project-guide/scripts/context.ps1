@@ -23,12 +23,11 @@ $topics = @{
     backend = @{
         references = @("references/backend.md", "references/protocol.md")
         files = @(
-            "apps/backend/src/index.js",
-            "apps/backend/src/app.js",
-            "apps/backend/src/services/roomService.js",
-            "apps/backend/src/websocket/messageHandler.js"
+
+
+            "apps/backend/internal/room/events.go"
         )
-        searches = @("rg `"cmd-|init-|page-change|join-room`" apps/backend/src")
+        searches = @("rg `"cmd-|init-|page-change|join-room`" apps/backend/internal")
         verify = @("cmd /c npm run test:integration")
     }
     protocol = @{
@@ -36,9 +35,8 @@ $topics = @{
         files = @(
             "packages/shared/src/types/collab.ts",
             "packages/shared/src/protocol/collabProtocol.ts",
-            "packages/shared/cjs/protocol/collabProtocol.cjs",
             "apps/frontend/src/service/realtimeBinary.ts",
-            "apps/backend/src/websocket/realtimeBinary.js"
+            "apps/backend/internal/protocol/realtime.go"
         )
         searches = @("rg `"Command|FlatPoint|cmd-update|mouseMove`" apps packages")
         verify = @("cmd /c npm run test:unit", "cmd /c npm run test:integration")
@@ -78,8 +76,7 @@ $topics = @{
         files = @(
             "apps/frontend/src/service/roomCollabTransport.ts",
             "apps/frontend/src/service/collabMessageDispatcher.ts",
-            "apps/backend/src/index.js",
-            "apps/backend/src/websocket/messageHandler.js"
+            "apps/backend/internal/room/events.go"
         )
         searches = @("rg `"WebSocket|Sec-WebSocket-Protocol|cmd-update|mouseMove`" apps")
         verify = @("cmd /c npm run test:e2e:smoke")
@@ -89,8 +86,7 @@ $topics = @{
         files = @(
             "apps/frontend/src/service/roomPageService.ts",
             "apps/frontend/src/store/commandStore.ts",
-            "apps/backend/src/services/roomService.js",
-            "apps/backend/src/websocket/messageHandler.js"
+            "apps/backend/internal/room/events.go"
         )
         searches = @("rg `"page-change|loadedPageIds|PAGE_CACHE_RADIUS|pageId`" apps packages")
         verify = @("cmd /c npm run test:browser", "cmd /c npm run test:e2e:smoke")
@@ -98,9 +94,8 @@ $topics = @{
     auth = @{
         references = @("references/backend.md", "references/frontend.md")
         files = @(
-            "apps/backend/src/controllers/roomController.js",
-            "apps/backend/src/services/authService.js",
-            "apps/backend/src/middleware/sessionAuth.js",
+
+
             "apps/frontend/src/service/sessionApi.ts",
             "apps/frontend/src/store/userStore.ts"
         )

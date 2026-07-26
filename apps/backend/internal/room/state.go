@@ -3,7 +3,7 @@ package room
 import (
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 type State struct {

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func (s *Store) EnsureDefaultRoom(ctx context.Context, roomID string) error {

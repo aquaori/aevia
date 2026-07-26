@@ -3,7 +3,7 @@ package room
 import (
 	"log/slog"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func (a *Actor) handleClientEvent(msg clientEventMessage) {

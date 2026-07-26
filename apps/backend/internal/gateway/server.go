@@ -5,10 +5,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/auth"
-	"collaborative-whiteboard/apps/go-backend/internal/config"
-	"collaborative-whiteboard/apps/go-backend/internal/room"
-	"collaborative-whiteboard/apps/go-backend/internal/storage"
+	"collaborative-whiteboard/apps/backend/internal/auth"
+	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/room"
+	"collaborative-whiteboard/apps/backend/internal/storage"
 )
 
 type Server struct {
@@ -39,10 +39,10 @@ func NewServer(cfg config.Config, store *storage.Store, registry *room.Registry,
 		httpLimiter: newKeyedBuckets(
 			float64(cfg.HTTPRequestsPerSecond), cfg.HTTPRequestsBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys,
 		),
-		// Password-bearing endpoints get their own, far tighter budget: the
-		// general HTTP allowance (120/s) is meaningless against brute force.
+		// Budget for *failed* password attempts only, so brute force is cut off
+		// without penalising legitimate joins.
 		authLimiter: newKeyedBuckets(
-			float64(cfg.AuthRequestsPerMinute)/60, cfg.AuthRequestsBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys,
+			float64(cfg.AuthFailuresPerMinute)/60, cfg.AuthFailureBurst, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys,
 		),
 		connectionLimit: newConnectionLimiter(cfg),
 		ipResolver:      newClientIPResolver(cfg),

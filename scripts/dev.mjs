@@ -61,8 +61,8 @@ const shutdown = (code = 0) => {
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
-spawnChild("go-backend", "go", ["run", "./cmd/aevia-go-backend"], {
-  cwd: path.join(repoRoot, "apps", "go-backend"),
+spawnChild("backend", "go", ["run", "./cmd/aevia-backend"], {
+  cwd: path.join(repoRoot, "apps", "backend"),
   env: {
     ...process.env,
     PORT: backendPort,

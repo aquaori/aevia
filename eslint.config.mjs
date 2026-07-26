@@ -32,7 +32,7 @@ export default defineConfig(
 		// Go build/module cache. Vendored JS in there (pprof, x/tools) produced
 		// 800+ bogus errors and made `npm run lint` useless.
 		".cache/**",
-		"apps/go-backend/**",
+		"apps/backend/**",
 	]),
 	js.configs.recommended,
 	...typescriptRecommended,
@@ -48,20 +48,6 @@ export default defineConfig(
 			"@typescript-eslint": tseslint.plugin,
 		},
 		rules: typescriptRecommendedRules,
-	},
-	{
-		files: [
-			"apps/backend/**/*.{js,cjs}",
-			"packages/shared/cjs/**/*.cjs",
-		],
-		languageOptions: {
-			sourceType: "commonjs",
-			globals: {
-				...globals.node,
-				crypto: "off",
-				WebSocket: "off",
-			},
-		},
 	},
 	{
 		files: [

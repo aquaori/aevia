@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func applyWrite(ctx context.Context, tx *sql.Tx, req writeRequest) error {

@@ -8,13 +8,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const goBackendDir = path.join(repoRoot, "apps", "go-backend");
+const goBackendDir = path.join(repoRoot, "apps", "backend");
 
 const TASKS = {
 	build: ["build", "./..."],
 	vet: ["vet", "./..."],
 	test: ["test", "./..."],
-	start: ["run", "./cmd/aevia-go-backend"],
+	start: ["run", "./cmd/aevia-backend"],
 };
 
 const task = process.argv[2];

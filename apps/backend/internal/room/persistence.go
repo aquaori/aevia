@@ -3,7 +3,7 @@ package room
 import (
 	"log/slog"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 // mutationOptions controls how a room mutation is persisted. Barrier writes block

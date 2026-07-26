@@ -20,8 +20,7 @@ Use this skill as the narrow entry point for project knowledge. Do not load ever
 
 - Project overview, architecture, repo shape, package commands: `references/overview.md`
 - Frontend whiteboard behavior, rendering, command state, page switching, UI composition: `references/frontend.md`
-- Go backend (primary): room actors, backpressure, delta replay, storage writer: `references/go-backend.md`
-- Legacy Express backend HTTP, WebSocket, sessions, SQLite, room/page streaming: `references/backend.md`
+- Backend (Go): HTTP/WS gateway, room actors, backpressure, delta replay, storage writer: `references/backend.md`
 - Shared protocol/types and cross-file coupling: `references/protocol.md`
 - Tests, external E2E harness, benchmark runner, reports, baselines: `references/testing-benchmarks.md`
 - Updating or extending this skill as the project evolves: `references/update-skill.md`
@@ -52,9 +51,8 @@ The script prints JSON containing reference files, source files to inspect first
 
 ## Project-Specific Cautions
 
-- `apps/go-backend` is the primary backend; root `dev`/`start`/`build:backend` run it. `apps/backend` is legacy (`dev:legacy`/`start:legacy`).
-- Only backend `dev:reset` deletes the dev SQLite DB (`apps/backend/src/scripts/resetDevDb.js`); plain `dev` does not.
-- The legacy backend is JavaScript runtime code; the primary backend is Go; frontend/shared are TypeScript.
+- `apps/backend` is a Go server and the only backend; root `dev`/`start`/`build:backend` run it.
+- The backend is Go; frontend and shared are TypeScript.
 - Root `build` compiles the Go backend and typechecks the frontend; `test:ci` also runs `go vet` and `go test`.
 - Root test scripts are task-specific and benchmark-heavy; choose the smallest relevant check.
 - Keep AGENTS.md light. Put implementation details in this skill's references instead.

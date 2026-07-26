@@ -1,5 +1,10 @@
 import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
-import { finishStroke, paintStrokeSample, type StrokeState } from "../service/strokeRasterizer";
+import {
+	createStrokeBatch,
+	finishStroke,
+	paintStrokeSample,
+	type StrokeState,
+} from "../service/strokeRasterizer";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 
 interface Rect {
@@ -141,6 +146,9 @@ const renderPointsToCanvas = (points: FlatPoint[]) => {
 		remainingPoints.set(point.cmdId, (remainingPoints.get(point.cmdId) ?? 0) + 1);
 	});
 
+	// Full replay batches same-style geometry; the batch disables itself when the
+	// stream turns out to be interleaved (see createStrokeBatch).
+	const batch = createStrokeBatch(mainCtx as unknown as CanvasRenderingContext2D);
 	let renderedPointCount = 0;
 	points.forEach((point) => {
 		if (point.pageId !== currentPageId) return;
@@ -154,6 +162,7 @@ const renderPointsToCanvas = (points: FlatPoint[]) => {
 			baseSize: point.size,
 			logicalWidth: viewport.width,
 			logicalHeight: viewport.height,
+			batch,
 		});
 		const remaining = (remainingPoints.get(point.cmdId) ?? 1) - 1;
 		remainingPoints.set(point.cmdId, remaining);
@@ -167,6 +176,7 @@ const renderPointsToCanvas = (points: FlatPoint[]) => {
 					baseSize: point.size,
 					logicalWidth: viewport.width,
 					logicalHeight: viewport.height,
+					batch,
 				}) ?? nextState;
 		}
 		if (nextState.finished) {
@@ -176,6 +186,7 @@ const renderPointsToCanvas = (points: FlatPoint[]) => {
 		}
 		renderedPointCount += 1;
 	});
+	batch.flush();
 
 	return renderedPointCount;
 };
@@ -342,6 +353,9 @@ const appendInitRenderBinaryChunkToCanvas = (data: InitRenderBinaryChunkData) =>
 	let renderedPointCount = 0;
 	let offset = INIT_RENDER_CHUNK_HEADER_SIZE;
 	const sample: Point = { x: 0, y: 0, p: 0, lamport: 0 };
+	// One batch per chunk: flushed below, so buffered geometry stays bounded while
+	// incrementalStates keeps carrying stroke continuity across chunks.
+	const batch = createStrokeBatch(mainCtx as unknown as CanvasRenderingContext2D);
 	for (let index = 0; index < header.pointCount; index += 1) {
 		sample.x = view.getFloat32(offset, false);
 		offset += 4;
@@ -367,10 +381,12 @@ const appendInitRenderBinaryChunkToCanvas = (data: InitRenderBinaryChunkData) =>
 			baseSize: commandMeta.size,
 			logicalWidth: viewport.width,
 			logicalHeight: viewport.height,
+			batch,
 		});
 		incrementalStates.set(commandMeta.cmdId, nextState);
 		renderedPointCount += 1;
 	}
+	batch.flush();
 
 	return renderedPointCount;
 };

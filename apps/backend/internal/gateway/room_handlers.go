@@ -5,9 +5,16 @@ import (
 	"net/http"
 	"strings"
 
-	"collaborative-whiteboard/apps/go-backend/internal/auth"
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/auth"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
+
+// notePasswordFailure charges one token against the caller's failure budget.
+// Only wrong passwords count, so honest traffic never approaches the limit while
+// guessing is cut off after a handful of tries.
+func (s *Server) notePasswordFailure(r *http.Request) {
+	s.authLimiter.Allow(s.ipResolver.ClientIP(r))
+}
 
 // isUniqueConstraintError reports whether err is a primary-key/unique collision,
 // which for room creation means the room already exists.
@@ -110,6 +117,7 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.VerifyPassword(req.Password, roomData.Password) {
+		s.notePasswordFailure(r)
 		fail(w, http.StatusBadRequest, "Password incorrect")
 		return
 	}

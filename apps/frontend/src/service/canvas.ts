@@ -5,6 +5,7 @@ import { useLamportStore } from "../store/lamportStore";
 import { useCommandStore } from "../store/commandStore";
 import {
 	advanceStrokeState,
+	createStrokeBatch,
 	createStrokeStateFromSample,
 	finishStroke,
 	paintStrokeSample,
@@ -131,6 +132,8 @@ const renderPointSequence = (
 		remainingPoints.set(point.cmdId, (remainingPoints.get(point.cmdId) ?? 0) + 1);
 	});
 
+	// Mirrors the worker path: batch same-style geometry during full replay.
+	const batch = createStrokeBatch(ctx);
 	points.forEach((point) => {
 		if (point.isDeleted) return;
 		let state = paintStrokeSample({
@@ -142,6 +145,7 @@ const renderPointSequence = (
 			baseSize: point.size,
 			logicalWidth: width,
 			logicalHeight: height,
+			batch,
 		});
 		const remaining = (remainingPoints.get(point.cmdId) ?? 1) - 1;
 		remainingPoints.set(point.cmdId, remaining);
@@ -155,10 +159,12 @@ const renderPointSequence = (
 					baseSize: point.size,
 					logicalWidth: width,
 					logicalHeight: height,
+					batch,
 				}) ?? state;
 		}
 		states.set(point.cmdId, state);
 	});
+	batch.flush();
 
 	void renderStart;
 	return states;

@@ -56,8 +56,8 @@ type Config struct {
 	WSRealtimeBurst        int
 	WSReliablePerSecond    int
 	WSReliableBurst        int
-	AuthRequestsPerMinute  int
-	AuthRequestsBurst      int
+	AuthFailuresPerMinute  int
+	AuthFailureBurst       int
 	RateLimitIdleTTL       time.Duration
 	RateLimitMaxKeys       int
 	TrustProxyHeaders      bool
@@ -140,8 +140,8 @@ func load() Config {
 		WSRealtimeBurst:        envInt("WS_REALTIME_BURST", 180, 1, 100000),
 		WSReliablePerSecond:    envInt("WS_RELIABLE_PER_SECOND", 120, 1, 100000),
 		WSReliableBurst:        envInt("WS_RELIABLE_BURST", 240, 1, 100000),
-		AuthRequestsPerMinute:  envInt("AUTH_REQUESTS_PER_MINUTE", 12, 1, 10000),
-		AuthRequestsBurst:      envInt("AUTH_REQUESTS_BURST", 8, 1, 10000),
+		AuthFailuresPerMinute:  envInt("AUTH_FAILURES_PER_MINUTE", 20, 1, 100000),
+		AuthFailureBurst:       envInt("AUTH_FAILURE_BURST", 10, 1, 100000),
 		RateLimitIdleTTL: time.Duration(envInt("RATE_LIMIT_IDLE_TTL_MS", 600000, 1000, 86400000)) *
 			time.Millisecond,
 		RateLimitMaxKeys:  envInt("RATE_LIMIT_MAX_KEYS", 50000, 128, 5000000),

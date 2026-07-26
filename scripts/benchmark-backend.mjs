@@ -318,8 +318,8 @@ if (!process.argv.includes("--keep-db")) {
   await removeBenchDatabase();
 }
 
-spawnChild("go-backend", "go", ["run", "./cmd/aevia-go-backend"], {
-  cwd: path.join(repoRoot, "apps", "go-backend"),
+spawnChild("backend", "go", ["run", "./cmd/aevia-backend"], {
+  cwd: path.join(repoRoot, "apps", "backend"),
   env: {
     ...process.env,
     PORT: backendPort,
@@ -354,9 +354,9 @@ spawnChild("frontend", "npm", ["run", "dev", "--workspace", "@collaborative-whit
 });
 
 try {
-  await waitForUrl(`${apiUrl}/health/ready`, "go-backend");
+  await waitForUrl(`${apiUrl}/health/ready`, "backend");
   if (pprofEnabled) {
-    await waitForUrl(`${pprofUrl}/debug/pprof/`, "go-backend pprof");
+    await waitForUrl(`${pprofUrl}/debug/pprof/`, "backend pprof");
   }
   await waitForUrl(frontendUrl, "frontend");
   console.log(`[benchmark:go] frontend=${frontendUrl}`);

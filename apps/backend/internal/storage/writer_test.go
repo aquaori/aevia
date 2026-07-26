@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/config"
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func testStoreConfig(t *testing.T) config.Config {

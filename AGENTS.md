@@ -10,8 +10,7 @@ Prefer targeted loading:
 
 - Benchmark, E2E, report, baseline, or test harness work: read `aevia-project-guide/references/testing-benchmarks.md`.
 - Frontend whiteboard, canvas, rendering, command state, page UI, pointer, or Vue work: read `aevia-project-guide/references/frontend.md`.
-- Backend HTTP, WebSocket, session, SQLite, init stream, or page-window work: read `aevia-project-guide/references/backend.md`.
-- Room actor, registry, backpressure, delta replay, storage writer, or Go internals: read `aevia-project-guide/references/go-backend.md`.
+- Backend HTTP, WebSocket, session, SQLite, room actors, backpressure, delta replay, or Go internals: read `aevia-project-guide/references/backend.md`.
 - Shared types, command shape, binary transport, page normalization, or cross-file coupling: read `aevia-project-guide/references/protocol.md`.
 - Repository scripts, package layout, environment defaults, or high-level mental model: read `aevia-project-guide/references/overview.md`.
 - Updating the project skill itself: read `aevia-project-guide/references/update-skill.md`.
@@ -32,9 +31,7 @@ powershell -ExecutionPolicy Bypass -File .codex\skills\aevia-project-guide\scrip
 
 ## Safety Notes
 
-- `apps/go-backend` (Go) is the primary backend and what root `dev`/`start`/`build:backend` run. `apps/backend` (Express) is legacy; reach it through `dev:legacy` / `start:legacy`.
-- Only `apps/backend`'s `dev:reset` deletes the local SQLite DB (via `src/scripts/resetDevDb.js`). Plain `dev` does not.
-- The Go backend and the frontend use separate database files, so switching backends does not share room data.
-- Backend JS code is runtime JavaScript; frontend/shared are TypeScript; the Go backend is Go.
+- `apps/backend` is a Go server and the only backend; root `dev`/`start`/`build:backend` run it.
+- The backend is Go; frontend and shared are TypeScript.
 - Root `build` compiles the Go backend and typechecks the frontend. `test:ci` also runs `go vet` and `go test`.
 - Root tests are benchmark-heavy; choose the smallest task-shaped verification command.

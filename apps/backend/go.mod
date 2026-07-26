@@ -1,4 +1,4 @@
-module collaborative-whiteboard/apps/go-backend
+module collaborative-whiteboard/apps/backend
 
 go 1.24.0
 

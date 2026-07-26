@@ -3,7 +3,7 @@ package gateway
 import (
 	"testing"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func testClient() *wsClient {

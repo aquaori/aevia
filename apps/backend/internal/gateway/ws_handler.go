@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/auth"
-	"collaborative-whiteboard/apps/go-backend/internal/config"
-	"collaborative-whiteboard/apps/go-backend/internal/room"
+	"collaborative-whiteboard/apps/backend/internal/auth"
+	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/room"
 	"github.com/coder/websocket"
 )
 

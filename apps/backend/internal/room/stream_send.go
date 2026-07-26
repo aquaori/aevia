@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
-	"collaborative-whiteboard/apps/go-backend/internal/protocol"
+	"collaborative-whiteboard/apps/backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/protocol"
 )
 
 func SendInitStream(ch chan Outbound, roomName string, client ClientInfo, result JoinResult) {

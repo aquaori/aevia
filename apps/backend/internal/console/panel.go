@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"collaborative-whiteboard/apps/go-backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/config"
 )
 
 func PrintStartupPanel(out io.Writer, cfg config.Config) {

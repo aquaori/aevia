@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/config"
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 type Writer struct {

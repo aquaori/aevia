@@ -3,7 +3,7 @@ package room
 import (
 	"encoding/json"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func snapshotOutbound(msg Outbound) Outbound {

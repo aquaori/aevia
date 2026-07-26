@@ -3,7 +3,7 @@ package room
 import (
 	"sort"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 const pointBlockSize = 2000

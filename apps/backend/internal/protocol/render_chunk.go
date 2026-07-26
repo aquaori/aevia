@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 const (

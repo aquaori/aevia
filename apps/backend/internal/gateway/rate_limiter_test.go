@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/config"
 )
 
 // TestClientIPIgnoresForwardedHeaderByDefault covers the bypass this fix closes:
@@ -100,6 +100,27 @@ func TestKeyedBucketsEvictsIdleKeys(t *testing.T) {
 
 	if size := buckets.Size(); size != 1 {
 		t.Fatalf("expected idle keys to be evicted leaving 1, got %d", size)
+	}
+}
+
+// Exhausted must report the current allowance without consuming it: the join
+// path checks it on every request but only charges on a wrong password.
+func TestKeyedBucketsExhaustedDoesNotConsume(t *testing.T) {
+	buckets := newKeyedBuckets(60, 2, time.Minute, 1000)
+
+	if buckets.Exhausted("fresh") {
+		t.Fatal("an unseen key must not be reported exhausted")
+	}
+	for i := 0; i < 10; i++ {
+		if buckets.Exhausted("fresh") {
+			t.Fatal("Exhausted must not consume budget")
+		}
+	}
+
+	buckets.Allow("spender")
+	buckets.Allow("spender")
+	if !buckets.Exhausted("spender") {
+		t.Fatal("expected the key to be exhausted after spending its burst")
 	}
 }
 

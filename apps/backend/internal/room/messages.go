@@ -1,6 +1,6 @@
 package room
 
-import "collaborative-whiteboard/apps/go-backend/internal/domain"
+import "collaborative-whiteboard/apps/backend/internal/domain"
 
 type actorMessage interface{ isActorMessage() }
 

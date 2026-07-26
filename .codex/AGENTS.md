@@ -31,7 +31,7 @@ powershell -ExecutionPolicy Bypass -File .codex\skills\aevia-project-guide\scrip
 
 ## Safety Notes
 
-- Backend `dev` resets the local SQLite DB through `apps/backend/src/scripts/resetDevDb.js`.
-- Backend code is runtime JavaScript; frontend/shared are TypeScript.
-- Root `build` mainly validates frontend; backend build is currently a placeholder.
+- `apps/backend` is a Go server and the only backend; root `dev`/`start`/`build:backend` run it.
+- The backend is Go; frontend and shared are TypeScript.
+- Root `build` compiles the Go backend and typechecks the frontend; `test:ci` also runs `go vet` and `go test`.
 - Root tests are benchmark-heavy; choose the smallest task-shaped verification command.

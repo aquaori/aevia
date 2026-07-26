@@ -1,6 +1,6 @@
 package gateway
 
-import "collaborative-whiteboard/apps/go-backend/internal/domain"
+import "collaborative-whiteboard/apps/backend/internal/domain"
 
 // validateIncomingBinary enforces payload limits for decoded binary frames.
 // The decoder yields []domain.Point rather than the []any that JSON produces, so

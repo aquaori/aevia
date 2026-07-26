@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"collaborative-whiteboard/apps/go-backend/internal/config"
-	"collaborative-whiteboard/apps/go-backend/internal/storage"
+	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/storage"
 )
 
 type Registry struct {

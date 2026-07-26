@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/auth"
+	"collaborative-whiteboard/apps/backend/internal/auth"
 )
 
 var errStaleSessionToken = errors.New("session token predates the session epoch")

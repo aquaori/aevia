@@ -35,24 +35,6 @@ export default defineConfig({
 				},
 			},
 			{
-				test: {
-					name: "backend-unit",
-					globals: true,
-					environment: "node",
-					include: ["apps/backend/src/**/*.spec.js"],
-					setupFiles: ["apps/backend/tests/setup.cjs"],
-				},
-			},
-			{
-				test: {
-					name: "backend-integration",
-					globals: true,
-					environment: "node",
-					include: ["apps/backend/tests/integration/**/*.spec.js"],
-					setupFiles: ["apps/backend/tests/setup.cjs"],
-				},
-			},
-			{
 				plugins: [vue()],
 				test: {
 					name: "frontend-unit",

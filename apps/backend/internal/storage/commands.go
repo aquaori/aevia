@@ -3,7 +3,7 @@ package storage
 import (
 	"context"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
 func (s *Store) ListCommands(ctx context.Context, roomID string) ([]domain.Command, error) {

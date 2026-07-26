@@ -1,8 +1,8 @@
-# Go Backend Guide
+# Backend Guide
 
-`apps/go-backend` is the primary backend. Root `dev`, `start` and `build:backend`
-all run it; `apps/backend` (Express) is legacy and only reachable through
-`dev:legacy` / `start:legacy`.
+`apps/backend` is the backend: a Go server. Root `dev`, `start` and
+`build:backend` all run it. The Express implementation that used to live here was
+removed once the Go server reached full parity; see git history if you need it.
 
 Read this for room actors, sequencing, backpressure, delta replay, binary
 protocol, SQLite persistence, or gateway/auth behaviour.
@@ -10,7 +10,7 @@ protocol, SQLite persistence, or gateway/auth behaviour.
 ## Layout
 
 ```text
-cmd/aevia-go-backend/main.go   process wiring, graceful shutdown, pprof
+cmd/aevia-backend/main.go      process wiring, graceful shutdown, pprof
 internal/config                environment parsing and validation
 internal/gateway               HTTP handlers, WS upgrade, limits, CORS
 internal/room                  per-room actor, state, snapshots, pressure
@@ -78,8 +78,9 @@ connection-established signal, so any new resume path must keep sending it.
   without this.
 - `keyedBuckets` evicts idle keys and caps its key count; unbounded limiter maps
   are a memory-exhaustion vector.
-- `/join-room`, `/create-room` and `/get-token-info` also pass through a
-  per-minute `authLimiter`.
+- `/join-room` is gated on a per-IP failure budget: only a wrong password spends
+  a token (`notePasswordFailure`), so a shared NAT address cannot lock out honest
+  users while guessing is still cut off.
 - `/debug/metrics` requires `METRICS_TOKEN`, or a loopback caller.
 - `JWT_SECRET` is mandatory when `APP_ENV`/`NODE_ENV` is production; `config.Load`
   returns an error rather than falling back to `DevJWTSecret`.
@@ -106,5 +107,9 @@ cmd /c npm run test:go:vet
 cmd /c npm run test:go
 ```
 
-Both run from the repo root and wrap `go vet ./...` / `go test ./...` in
-`apps/go-backend`. `npm run test:ci` includes them.
+`internal/gateway/server_test.go` holds the HTTP contract tests (httptest
+against `Server.Routes()`): room creation/join, password rejection, invite
+tokens, protected-route auth, and the failure-only join throttle.
+
+Both commands run from the repo root and wrap `go vet ./...` / `go test ./...` in
+`apps/backend`. `npm run test:ci` includes them.

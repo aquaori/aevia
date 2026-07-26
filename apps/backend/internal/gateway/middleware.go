@@ -39,15 +39,6 @@ func limitBody(next http.Handler, limit int64) http.Handler {
 	})
 }
 
-// authRateLimitedPaths are endpoints that accept or verify a room password, or
-// mint a token from one. They get a per-minute budget instead of the per-second
-// one so credential guessing is not practical.
-var authRateLimitedPaths = map[string]bool{
-	"/join-room":      true,
-	"/create-room":    true,
-	"/get-token-info": true,
-}
-
 func (s *Server) limitHTTPRate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
@@ -59,9 +50,14 @@ func (s *Server) limitHTTPRate(next http.Handler) http.Handler {
 			fail(w, http.StatusTooManyRequests, "Too many requests")
 			return
 		}
-		if authRateLimitedPaths[r.URL.Path] && !s.authLimiter.Allow(ip) {
-			slog.Warn("auth rate limit exceeded", "path", r.URL.Path, "ip", ip)
-			fail(w, http.StatusTooManyRequests, "Too many attempts, please retry later")
+		// Password guessing is throttled by charging only *failed* attempts (see
+		// Server.notePasswordFailure). Charging every request instead would
+		// throttle legitimate users too: a whole classroom behind one NAT shares
+		// a single client IP, and rooms without a password would be limited for
+		// no security benefit.
+		if r.URL.Path == "/join-room" && s.authLimiter.Exhausted(ip) {
+			slog.Warn("join rejected after repeated password failures", "ip", ip)
+			fail(w, http.StatusTooManyRequests, "Too many failed attempts, please retry later")
 			return
 		}
 		next.ServeHTTP(w, r)

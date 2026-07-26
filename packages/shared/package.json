@@ -6,15 +6,13 @@
   "main": "./src/index.ts",
   "exports": {
     ".": {
-      "import": "./src/index.ts",
-      "require": "./cjs/index.cjs"
+      "import": "./src/index.ts"
     },
     "./types/collab": {
       "import": "./src/types/collab.ts"
     },
     "./protocol/collabProtocol": {
-      "import": "./src/protocol/collabProtocol.ts",
-      "require": "./cjs/protocol/collabProtocol.cjs"
+      "import": "./src/protocol/collabProtocol.ts"
     }
   },
   "scripts": {

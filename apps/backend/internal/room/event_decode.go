@@ -3,8 +3,8 @@ package room
 import (
 	"encoding/json"
 
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
-	"collaborative-whiteboard/apps/go-backend/internal/protocol"
+	"collaborative-whiteboard/apps/backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/protocol"
 )
 
 func commandFromData(value any) domain.Command {

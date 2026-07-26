@@ -1,6 +1,6 @@
 package room
 
-import "collaborative-whiteboard/apps/go-backend/internal/domain"
+import "collaborative-whiteboard/apps/backend/internal/domain"
 
 func (a *Actor) recordAndBroadcast(exclude ClientID, typ string, data map[string]any, json any, binary []byte) {
 	roomSeq := uint64(0)

@@ -2,13 +2,14 @@ package gateway
 
 import (
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/config"
 )
 
 type tokenBucket struct {
@@ -104,6 +105,29 @@ func (b *keyedBuckets) purgeLocked(now time.Time) {
 			delete(b.buckets, key)
 		}
 	}
+}
+
+// Exhausted reports whether key has no budget left, without consuming any. Used
+// to gate an endpoint on past failures rather than on request volume.
+func (b *keyedBuckets) Exhausted(key string) bool {
+	if key == "" {
+		key = "unknown"
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	bucket, ok := b.buckets[key]
+	if !ok {
+		return false
+	}
+	// Refill before reading so the caller sees the current allowance.
+	now := time.Now()
+	elapsed := now.Sub(bucket.last).Seconds()
+	if elapsed > 0 {
+		bucket.tokens = math.Min(bucket.burst, bucket.tokens+elapsed*bucket.rate)
+		bucket.last = now
+		b.buckets[key] = bucket
+	}
+	return bucket.tokens < 1
 }
 
 func (b *keyedBuckets) Size() int {

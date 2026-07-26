@@ -3,8 +3,8 @@ package gateway
 import (
 	"encoding/json"
 
-	"collaborative-whiteboard/apps/go-backend/internal/protocol"
-	"collaborative-whiteboard/apps/go-backend/internal/room"
+	"collaborative-whiteboard/apps/backend/internal/protocol"
+	"collaborative-whiteboard/apps/backend/internal/room"
 )
 
 type incomingMessage struct {

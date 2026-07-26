@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"collaborative-whiteboard/apps/go-backend/internal/auth"
+	"collaborative-whiteboard/apps/backend/internal/auth"
 )
 
 type contextKey string

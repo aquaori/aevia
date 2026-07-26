@@ -119,6 +119,36 @@ Run direct runner commands from `apps/frontend`, because `config.ts` builds path
 - For real UI pointer behavior, inspect `ui-driver.ts`.
 - Keep report output changes aligned with `tests/report/aggregate.ts` if root summary generation consumes them.
 
+## Benchmark Database Hygiene
+
+Every performance case seeds its history through the protocol driver, so the
+backend database grows with each run: a full matrix at `--scales=...,100000`
+adds millions of points. Past roughly 200 MB the backend starts returning
+`HTTP 500` on `create-room` and `ETIMEDOUT`, which surfaces as unrelated-looking
+case failures.
+
+Reset the database before each measured run, and point the backend at a
+throwaway file rather than the dev one:
+
+```powershell
+$env:DB_PATH = "<repo>\data\whiteboard-bench.sqlite"
+Remove-Item "<repo>\data\whiteboard-bench.sqlite*" -Force
+```
+
+`npm run benchmark:go` does this automatically (and `-- --clean` reclaims the
+space without running a benchmark). The standalone `runner.ts` does not, so a
+before/after comparison must reset between the two sides or the second run is
+measured against a slower backend.
+
+## Baseline Comparability
+
+`baselines/performance-external.baseline.json` carries a `conditions` block
+recording the exact command, matrix setting, run/warmup counts and scales it was
+produced with. Absolute timings depend on host, browser build and viewport, so
+only compare a run against a baseline produced the same way on the same machine.
+Re-baseline with `benchmark:external:set-baseline`, then regenerate budgets with
+`node scripts/regen-budgets.mjs`.
+
 ## Verification
 
 For benchmark harness script changes, use the smallest direct run that exercises the changed path. If local frontend/backend are not running, start them carefully and remember backend dev resets the DB.

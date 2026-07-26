@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/config"
-	"collaborative-whiteboard/apps/go-backend/internal/domain"
-	"collaborative-whiteboard/apps/go-backend/internal/storage"
+	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/storage"
 )
 
 func testConfig(t *testing.T) config.Config {

@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"collaborative-whiteboard/apps/go-backend/internal/auth"
-	"collaborative-whiteboard/apps/go-backend/internal/config"
-	"collaborative-whiteboard/apps/go-backend/internal/console"
-	"collaborative-whiteboard/apps/go-backend/internal/gateway"
-	"collaborative-whiteboard/apps/go-backend/internal/room"
-	"collaborative-whiteboard/apps/go-backend/internal/storage"
+	"collaborative-whiteboard/apps/backend/internal/auth"
+	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/console"
+	"collaborative-whiteboard/apps/backend/internal/gateway"
+	"collaborative-whiteboard/apps/backend/internal/room"
+	"collaborative-whiteboard/apps/backend/internal/storage"
 )
 
 func main() {
