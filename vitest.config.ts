@@ -1,9 +1,11 @@
-import { fileURLToPath, URL } from "node:url";
+import { realpathSync } from "node:fs";
+import path from "node:path";
 import { playwright } from "@vitest/browser-playwright";
 import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vitest/config";
 
-const fromRoot = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+const projectRoot = realpathSync(process.cwd());
+const fromRoot = (relativePath: string) => path.resolve(projectRoot, relativePath);
 
 const sharedAlias = {
 	"@collaborative-whiteboard/shared": fromRoot("./packages/shared/src/index.ts"),
@@ -15,6 +17,7 @@ const frontendAlias = {
 };
 
 export default defineConfig({
+	root: projectRoot,
 	test: {
 		globals: true,
 		coverage: {
@@ -43,6 +46,7 @@ export default defineConfig({
 					include: [
 						"apps/frontend/src/utils/**/*.spec.ts",
 						"apps/frontend/src/states/**/*.spec.ts",
+						"apps/frontend/src/scene/**/*.spec.ts",
 						"apps/frontend/src/service/**/*.unit.spec.ts",
 					],
 				},

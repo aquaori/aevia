@@ -61,6 +61,26 @@ func TestEncodeRenderChunkRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuildRenderDictionaryKeepsElementAndOperationIdentity(t *testing.T) {
+	points := []domain.FlatPoint{
+		{CmdID: "element-1", OrderOpID: "create-op", PointIndex: 0},
+		{CmdID: "element-1", OrderOpID: "append-op", PointIndex: 4},
+	}
+	commandMap, commands := BuildRenderDictionary(points)
+	if len(commands) != 2 {
+		t.Fatalf("expected separate operation dictionary entries, got %d", len(commands))
+	}
+	if commands[0].CmdID != "element-1" || commands[0].OrderOpID != "create-op" || commands[0].SourceStart != 0 {
+		t.Fatalf("unexpected create dictionary entry: %+v", commands[0])
+	}
+	if commands[1].OrderOpID != "append-op" || commands[1].SourceStart != 4 {
+		t.Fatalf("unexpected append dictionary entry: %+v", commands[1])
+	}
+	if commandMap["element-1\x00append-op"] != 1 {
+		t.Fatalf("unexpected dictionary map: %v", commandMap)
+	}
+}
+
 // TestEncodeRenderChunkRejectsDictionaryOverflow covers the bug this guard was
 // added for: the command index is a uint16, and silently wrapping it rendered
 // points with another command's tool, colour and size.

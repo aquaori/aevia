@@ -19,6 +19,15 @@ const makeCommand = (id: string, lamport: number, pageId = 0): Command =>
 		lamport,
 	}) as unknown as Command;
 
+const makeBox = (minX: number, minY: number): Command["box"] => ({
+	minX,
+	minY,
+	maxX: minX + 0.1,
+	maxY: minY + 0.1,
+	width: 0.1,
+	height: 0.1,
+});
+
 describe("commandStore ordering", () => {
 	beforeEach(() => {
 		setActivePinia(createPinia());
@@ -125,5 +134,40 @@ describe("commandStore ordering", () => {
 		expect(store.resolveConflict(lower, higher)).toBe(lower);
 		expect(store.resolveConflict(higher, lower)).toBe(lower);
 		expect(store.resolveConflict(makeCommand("zzz", 1), higher).id).toBe("zzz");
+	});
+
+	it("stores immutable scene operations without rewriting path geometry", () => {
+		const store = useCommandStore();
+		store.replaceLoadedPageWindow([0], []);
+		const path = {
+			...makeCommand("path", 1),
+			points: [{ x: 0.1, y: 0.2, p: 1, lamport: 1 }],
+			box: makeBox(0.1, 0.2),
+		};
+		const transform: Command = {
+			...makeCommand("transform-op", 2),
+			type: "scene-op",
+			points: [],
+			schemaVersion: 2,
+			sceneOperation: {
+				schemaVersion: 2,
+				opId: "transform-op",
+				elementId: path.id,
+				actorId: "user-1",
+				roomId: "room-1",
+				pageId: 0,
+				lamport: 2,
+				historyGroupId: "transform-op",
+				kind: "element.transform",
+				payload: { targets: [{ elementId: path.id, deltaMatrix: [1, 0, 0, 1, 0.6, 0.6] }] },
+			},
+			box: makeBox(0, 0),
+		};
+
+		store.insertCommand(path);
+		store.insertCommand(transform);
+		expect(path.points?.[0]?.x).toBe(0.1);
+		expect(path.box.minX).toBe(0.1);
+		expect(store.commandMap.get("transform-op")?.sceneOperation?.kind).toBe("element.transform");
 	});
 });

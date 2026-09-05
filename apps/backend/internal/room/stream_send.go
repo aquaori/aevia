@@ -25,6 +25,7 @@ func SendInitStream(ch chan Outbound, roomName string, client ClientInfo, result
 		"memberList": result.Members, "snapshotVersion": result.Init.SnapshotVersion,
 		"totalPage": result.Init.Meta["totalPage"], "pageId": result.Init.Meta["pageId"],
 		"loadedPageIds": result.Init.Meta["loadedPageIds"], "chunkSummary": result.Init.Meta["chunkSummary"],
+		"maxLamport": result.Init.Meta["maxLamport"],
 	}}})
 	renderStartedAt := time.Now()
 	sendRenderStream(ch, "init", 0, result.Init)
@@ -52,14 +53,15 @@ func (b SnapshotBuilder) SendLiveInitStream(ch chan Outbound, state State, clien
 	loaded := initPageIDs(current, state.Room.TotalPage, b.cfg.InitPreloadPageCount)
 	snapshotVersion := int(state.RoomSeq)
 	renderPageIDs := []int{current}
-	renderPointCount := state.Index.PagePointCount(renderPageIDs)
+	renderPointCount := state.Index.VisiblePagePointCount(renderPageIDs, state.ClearBefore)
 	renderChunkCount := chunkCount(renderPointCount, b.cfg.InitFlatPointChunkSize)
-	commandCount := countCommandsForPages(state.Commands, loaded)
+	commandCount := countCommandsForPages(state.Commands, loaded, state.ClearBefore)
 	commandChunkCount := chunkCount(commandCount, b.cfg.InitCommandChunkSize)
 	meta := map[string]any{
 		"pageId":        current,
 		"totalPage":     state.Room.TotalPage,
 		"loadedPageIds": loaded,
+		"maxLamport":    maxCommandLamport(state.Commands),
 		"chunkSummary": map[string]any{
 			"renderChunks":       renderChunkCount,
 			"commandChunks":      commandChunkCount,
@@ -74,13 +76,13 @@ func (b SnapshotBuilder) SendLiveInitStream(ch chan Outbound, state State, clien
 		"roomId": state.Room.RoomID, "roomName": state.Room.Name, "onlineCount": online,
 		"memberList": members, "snapshotVersion": snapshotVersion,
 		"totalPage": state.Room.TotalPage, "pageId": current,
-		"loadedPageIds": loaded, "chunkSummary": meta["chunkSummary"],
+		"loadedPageIds": loaded, "chunkSummary": meta["chunkSummary"], "maxLamport": meta["maxLamport"],
 	}}})
 	renderStartedAt := time.Now()
-	sendRenderStreamFromIndex(ch, "init", 0, snapshotVersion, meta, state.Index, renderPageIDs, renderChunkCount, b.cfg.InitFlatPointChunkSize)
+	sendRenderStreamFromIndex(ch, "init", 0, snapshotVersion, meta, state.Index, renderPageIDs, state.ClearBefore, renderPointCount, renderChunkCount, b.cfg.InitFlatPointChunkSize)
 	renderDuration := time.Since(renderStartedAt)
 	commandsStartedAt := time.Now()
-	sendCommandStreamFromState(ch, "init", 0, snapshotVersion, meta, state.Commands, loaded, commandChunkCount, b.cfg.InitCommandChunkSize)
+	sendCommandStreamFromState(ch, "init", 0, snapshotVersion, meta, state.Commands, loaded, state.ClearBefore, commandChunkCount, b.cfg.InitCommandChunkSize)
 	commandsDuration := time.Since(commandsStartedAt)
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "init-complete", Data: map[string]any{"snapshotVersion": snapshotVersion}}})
 	if profile {
@@ -186,7 +188,7 @@ func sendCommandStream(ch chan Outbound, prefix string, requestID int, stream In
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: doneType, Data: done}})
 }
 
-func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snapshotVersion int, meta map[string]any, index *PagePointIndex, pageIDs []int, totalChunks, chunkSize int) {
+func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snapshotVersion int, meta map[string]any, index *PagePointIndex, pageIDs []int, clearBefore map[int]sceneOrderKey, totalPoints, totalChunks, chunkSize int) {
 	metaType := prefix + "-render-meta"
 	doneType := prefix + "-render-done"
 	chunkType := prefix + "-render-chunk-meta"
@@ -196,7 +198,7 @@ func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snaps
 	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: metaType, Data: data}})
 	encodeFailed := false
-	index.ForEachPagePointChunk(pageIDs, chunkSize, func(chunk RenderChunk) {
+	index.ForEachVisiblePagePointChunk(pageIDs, clearBefore, totalPoints, chunkSize, func(chunk RenderChunk) {
 		if encodeFailed {
 			return
 		}
@@ -231,7 +233,7 @@ func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snaps
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: doneType, Data: done}})
 }
 
-func sendCommandStreamFromState(ch chan Outbound, prefix string, requestID, snapshotVersion int, meta map[string]any, commands map[string]domain.Command, pageIDs []int, totalChunks, chunkSize int) {
+func sendCommandStreamFromState(ch chan Outbound, prefix string, requestID, snapshotVersion int, meta map[string]any, commands map[string]domain.Command, pageIDs []int, clearBefore map[int]sceneOrderKey, totalChunks, chunkSize int) {
 	metaType := prefix + "-commands-meta"
 	doneType := prefix + "-commands-done"
 	chunkType := prefix + "-commands-chunk"
@@ -257,11 +259,16 @@ func sendCommandStreamFromState(ch chan Outbound, prefix string, requestID, snap
 		chunk = make([]domain.Command, 0, chunkSize)
 	}
 	allowed := pageIDSet(pageIDs)
+	ordered := make([]domain.Command, 0, len(commands))
 	for _, cmd := range commands {
 		pageID, ok := cmd.PageID()
-		if !ok || !allowed[pageID] {
+		if !ok || !allowed[pageID] || !commandVisibleAfterClear(cmd, clearBefore) {
 			continue
 		}
+		ordered = append(ordered, cmd)
+	}
+	domain.SortCommands(ordered)
+	for _, cmd := range ordered {
 		chunk = append(chunk, cmd.Snapshot())
 		if len(chunk) >= chunkSize {
 			emit(chunkIndex == totalChunks-1)
@@ -277,12 +284,12 @@ func sendCommandStreamFromState(ch chan Outbound, prefix string, requestID, snap
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: doneType, Data: done}})
 }
 
-func countCommandsForPages(commands map[string]domain.Command, pageIDs []int) int {
+func countCommandsForPages(commands map[string]domain.Command, pageIDs []int, clearBefore map[int]sceneOrderKey) int {
 	allowed := pageIDSet(pageIDs)
 	count := 0
 	for _, cmd := range commands {
 		pageID, ok := cmd.PageID()
-		if ok && allowed[pageID] {
+		if ok && allowed[pageID] && commandVisibleAfterClear(cmd, clearBefore) {
 			count++
 		}
 	}

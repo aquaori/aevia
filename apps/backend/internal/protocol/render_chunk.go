@@ -17,13 +17,16 @@ const (
 )
 
 type RenderCommandRef struct {
-	CmdIndex  int     `json:"cmdIndex"`
-	CmdID     string  `json:"cmdId"`
-	UserID    string  `json:"userId"`
-	Tool      string  `json:"tool"`
-	Color     string  `json:"color"`
-	Size      float64 `json:"size"`
-	IsDeleted bool    `json:"isDeleted"`
+	CmdIndex      int     `json:"cmdIndex"`
+	CmdID         string  `json:"cmdId"`
+	OrderOpID     string  `json:"orderOpId,omitempty"`
+	SourceStart   int     `json:"sourceStart,omitempty"`
+	UserID        string  `json:"userId"`
+	Tool          string  `json:"tool"`
+	Color         string  `json:"color"`
+	Size          float64 `json:"size"`
+	StrokePattern string  `json:"strokePattern,omitempty"`
+	IsDeleted     bool    `json:"isDeleted"`
 }
 
 // MaxRenderDictionaryEntries is the number of distinct commands a single render
@@ -42,14 +45,16 @@ func BuildRenderDictionary(points []domain.FlatPoint) (map[string]int, []RenderC
 	commandMap := make(map[string]int)
 	commands := make([]RenderCommandRef, 0)
 	for _, p := range points {
-		if _, exists := commandMap[p.CmdID]; exists {
+		key := renderPointDictionaryKey(p)
+		if _, exists := commandMap[key]; exists {
 			continue
 		}
 		index := len(commands)
-		commandMap[p.CmdID] = index
+		commandMap[key] = index
 		commands = append(commands, RenderCommandRef{
 			CmdIndex: index, CmdID: p.CmdID, UserID: p.UserID,
-			Tool: p.Tool, Color: p.Color, Size: p.Size, IsDeleted: p.IsDeleted,
+			OrderOpID: p.OrderOpID, SourceStart: p.PointIndex,
+			Tool: p.Tool, Color: p.Color, Size: p.Size, StrokePattern: p.StrokePattern, IsDeleted: p.IsDeleted,
 		})
 	}
 	return commandMap, commands
@@ -78,7 +83,7 @@ func EncodeRenderChunk(points []domain.FlatPoint, commandMap map[string]int, sna
 	offset += 4
 
 	for _, p := range points {
-		index, ok := commandMap[p.CmdID]
+		index, ok := commandMap[renderPointDictionaryKey(p)]
 		if !ok {
 			return nil, fmt.Errorf("render chunk point references unknown command %q", p.CmdID)
 		}
@@ -94,4 +99,11 @@ func EncodeRenderChunk(points []domain.FlatPoint, commandMap map[string]int, sna
 		offset += 2
 	}
 	return buf, nil
+}
+
+func renderPointDictionaryKey(point domain.FlatPoint) string {
+	if point.OrderOpID == "" || point.OrderOpID == point.CmdID {
+		return point.CmdID
+	}
+	return point.CmdID + "\x00" + point.OrderOpID
 }

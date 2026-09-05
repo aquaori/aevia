@@ -1,9 +1,10 @@
 <!-- File role: transient brush or eraser size preview overlay. -->
 <script setup lang="ts">
+	import type { EditorTool } from "@collaborative-whiteboard/shared";
 	const props = defineProps<{
 		visible: boolean;
 		currentSize: number;
-		currentTool: "pen" | "eraser" | "cursor";
+		currentTool: EditorTool;
 		currentColor: string;
 	}>();
 </script>

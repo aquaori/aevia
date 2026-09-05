@@ -2,6 +2,7 @@
 import type { ComputedRef, Ref } from "vue";
 import type { Command, RemoteCursor } from "./type";
 import type { TypedEventBus } from "./editorEventBus";
+import type { EditorTool } from "@collaborative-whiteboard/shared";
 
 export interface SelectionState {
 	x: number;
@@ -21,7 +22,7 @@ export type SessionLifecyclePhase =
 	| "destroyed";
 
 export interface WhiteboardSessionState {
-	currentTool: Ref<"pen" | "eraser" | "cursor">;
+	currentTool: Ref<EditorTool>;
 	currentColor: Ref<string>;
 	currentPageId: Ref<number>;
 	totalPages: Ref<number>;
@@ -39,7 +40,7 @@ export interface EditorHookMap {
 	"session:before-init": void;
 	"session:ready": void;
 	"session:before-destroy": void;
-	"tool:changed": { tool: "pen" | "eraser" | "cursor" };
+	"tool:changed": { tool: EditorTool };
 	"command:before-apply": { command: Command; source: "local" | "remote" };
 	"command:applied": { command: Command; source: "local" | "remote" };
 	"page:changed": { pageId: number };
@@ -73,7 +74,7 @@ export interface WhiteboardSession extends EditorHost {
 	unmount(): void;
 	connect(): void;
 	disconnect(): void;
-	setTool(tool: "pen" | "eraser" | "cursor"): void;
+	setTool(tool: EditorTool): void;
 	undo(): void;
 	redo(): void;
 	goToPage(page: number): void;

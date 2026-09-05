@@ -2,13 +2,11 @@
 <script setup lang="ts">
 	import { Monitor, Users, Copy, Check, Keyboard } from "lucide-vue-next";
 
-	type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
-
 	const props = defineProps<{
 		visible: boolean;
 		roomName: string;
 		roomId: string;
-		activeMenu: ActiveMenu;
+		moreOpen: boolean;
 		onlineCount: number;
 		hasCopied: boolean;
 		onToggleMore: () => void;
@@ -59,7 +57,7 @@
 							class="group flex items-center gap-1.5 hmd:gap-2 p-0.5 hmd:p-1 pr-2.5 hmd:pr-4 rounded-lg hmd:rounded-full bg-white/90 backdrop-blur-md shadow-sm border border-slate-200/60 hover:border-indigo-300 hover:bg-white hover:shadow-md transition-all duration-300"
 							:class="{
 								'ring-4 ring-indigo-500/10 border-indigo-300 bg-white':
-									props.activeMenu === 'more',
+									props.moreOpen,
 							}"
 						>
 							<div class="relative flex items-center justify-center">
@@ -67,7 +65,7 @@
 									class="w-6 h-6 hmd:w-7 hmd:h-7 rounded-lg hmd:rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center group-hover:bg-indigo-100 transition-colors"
 									:class="{
 										'bg-indigo-500 text-white group-hover:bg-indigo-600':
-											props.activeMenu === 'more',
+											props.moreOpen,
 									}"
 								>
 									<Users class="w-3 h-3 hmd:w-3.5 hmd:h-3.5" />
@@ -98,7 +96,7 @@
 							leave-to-class="opacity-0 scale-95 translate-y-2"
 						>
 							<div
-								v-if="props.activeMenu === 'more'"
+								v-if="props.moreOpen"
 								class="absolute top-full right-0 mt-3 w-56 hmd:w-64 bg-white/95 backdrop-blur-sm border border-white/20 rounded-2xl shadow-2xl overflow-hidden origin-top-right p-1.5 flex flex-col gap-1 z-50"
 							>
 								<button

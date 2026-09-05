@@ -13,8 +13,18 @@
 		ChevronLeft,
 		ChevronRight,
 		Grip,
+		PenTool,
+		Highlighter,
+		Minus,
+		ArrowUpRight,
+		Square,
+		Circle,
+		Type,
+		StickyNote,
+		Shapes,
 	} from "lucide-vue-next";
-	type Tool = "pen" | "eraser" | "cursor";
+	import type { EditorTool, StrokePattern } from "@collaborative-whiteboard/shared";
+	type Tool = EditorTool;
 	type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
 	const COLORS = [
 		"#000000",
@@ -36,12 +46,16 @@
 		currentTool: Tool;
 		currentColor: string;
 		currentSize: number;
+		currentStrokePattern: StrokePattern;
+		currentSticker: string;
 		isFullscreen: boolean;
 		isToolbarCollapsed: boolean;
 		toggleFullscreen: () => void;
 		toggleMenu: (menu: "pen" | "eraser" | "color" | "more") => void;
 		setTool: (tool: Tool) => void;
 		setColor: (color: string) => void;
+		setStrokePattern: (pattern: StrokePattern) => void;
+		setSticker: (sticker: string) => void;
 		clearCanvas: () => void;
 		undo: () => void;
 		redo: () => void;
@@ -205,8 +219,17 @@
 					>
 						<div
 							v-if="props.activeMenu === 'pen'"
-							class="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 p-3 hmd:p-4 bg-white/90 backdrop-blur-sm border border-white rounded-xl shadow-xl w-40 hmd:w-48 origin-bottom"
+							class="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 p-3 hmd:p-4 bg-white/95 backdrop-blur-sm border border-white rounded-xl shadow-xl w-64 origin-bottom"
 						>
+							<div class="grid grid-cols-3 gap-1 mb-3">
+								<button
+									v-for="tool in ([['pen', '钢笔'], ['pencil', '铅笔'], ['highlighter', '荧光笔']] as const)"
+									:key="tool[0]"
+									@click="props.setTool(tool[0])"
+									class="rounded-lg px-2 py-2 text-xs font-medium transition-colors"
+									:class="props.currentTool === tool[0] ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'"
+								>{{ tool[1] }}</button>
+							</div>
 							<div
 								class="text-[10px] hmd:text-xs font-bold text-slate-400 mb-1.5 hmd:mb-2 flex justify-between"
 							>
@@ -230,12 +253,14 @@
 						@click="props.toggleMenu('pen')"
 						class="p-2 hmd:p-3 cursor-pointer rounded-xl transition-all relative z-10"
 						:class="
-							props.currentTool === 'pen'
+							['pen', 'pencil', 'highlighter'].includes(props.currentTool) && props.activeMenu !== 'more'
 								? 'bg-indigo-50 text-indigo-600 shadow-sm ring-1 ring-indigo-200'
 								: 'text-slate-400 hover:bg-slate-50'
 						"
 					>
-						<Pencil class="w-4 h-4 hmd:w-5 hmd:h-5" />
+						<Highlighter v-if="props.currentTool === 'highlighter'" class="w-4 h-4 hmd:w-5 hmd:h-5" />
+						<PenTool v-else-if="props.currentTool === 'pen'" class="w-4 h-4 hmd:w-5 hmd:h-5" />
+						<Pencil v-else class="w-4 h-4 hmd:w-5 hmd:h-5" />
 					</button>
 				</div>
 
@@ -304,6 +329,70 @@
 						"
 					>
 						<Eraser class="w-4 h-4 hmd:w-5 hmd:h-5" />
+					</button>
+				</div>
+
+				<div class="relative shrink-0">
+					<transition
+						enter-active-class="transition duration-200"
+						enter-from-class="opacity-0 translate-y-4 scale-95"
+						enter-to-class="opacity-100 translate-y-0 scale-100"
+						leave-active-class="transition duration-150"
+						leave-from-class="opacity-100 translate-y-0 scale-100"
+						leave-to-class="opacity-0 translate-y-4 scale-95"
+					>
+						<div
+							v-if="props.activeMenu === 'more'"
+							class="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 p-2 bg-white/95 backdrop-blur-sm border border-white rounded-xl shadow-xl w-72 origin-bottom"
+						>
+							<div class="grid grid-cols-4 gap-1">
+								<button
+								v-for="item in ([
+									['line', '直线', ''], ['arrow', '箭头', ''], ['rectangle', '矩形', ''],
+									['rounded-rectangle', '圆角矩形', ''], ['ellipse', '椭圆', ''], ['text', '文字', ''],
+									['sticky', '便签', ''], ['object-eraser', '对象擦除', ''],
+									['sticker', '星星', '✨'], ['sticker', '庆祝', '🎉'], ['sticker', '点赞', '👍'], ['sticker', '灵感', '💡']
+								] as const)"
+								:key="item[0] + item[2]"
+								@click="item[0] === 'sticker' ? props.setSticker(item[2]) : props.setTool(item[0])"
+								class="flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition-colors"
+								:class="props.currentTool === item[0] && (item[0] !== 'sticker' || props.currentSticker === item[2]) ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'"
+							>
+								<Minus v-if="item[0] === 'line'" class="w-4 h-4" />
+								<ArrowUpRight v-else-if="item[0] === 'arrow'" class="w-4 h-4" />
+								<Square v-else-if="item[0] === 'rectangle' || item[0] === 'rounded-rectangle'" class="w-4 h-4" />
+								<Circle v-else-if="item[0] === 'ellipse'" class="w-4 h-4" />
+								<Type v-else-if="item[0] === 'text'" class="w-4 h-4" />
+								<StickyNote v-else-if="item[0] === 'sticky'" class="w-4 h-4" />
+								<span v-else-if="item[0] === 'sticker'" class="text-base leading-4">{{ item[2] }}</span>
+								<Eraser v-else class="w-4 h-4" />
+									<span>{{ item[1] }}</span>
+								</button>
+							</div>
+							<div
+								v-if="['line', 'arrow', 'rectangle', 'rounded-rectangle', 'ellipse'].includes(props.currentTool)"
+								class="mt-2 border-t border-slate-100 pt-2"
+							>
+								<div class="mb-1.5 text-[10px] font-semibold text-slate-400">图形线型</div>
+								<div class="grid grid-cols-5 gap-1">
+									<button
+										v-for="pattern in ([['solid', '实线'], ['dashed', '虚线'], ['dotted', '点线'], ['dash-dot', '点划'], ['double', '双线']] as const)"
+										:key="pattern[0]"
+										@click.stop="props.setStrokePattern(pattern[0])"
+										class="rounded-md px-1 py-1.5 text-[10px] transition-colors"
+										:class="props.currentStrokePattern === pattern[0] ? 'bg-slate-800 text-white' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'"
+									>{{ pattern[1] }}</button>
+								</div>
+							</div>
+						</div>
+					</transition>
+					<button
+						@click="props.toggleMenu('more')"
+						class="p-2 hmd:p-3 cursor-pointer rounded-xl transition-all"
+						:class="props.activeMenu === 'more' || !['cursor', 'pen', 'pencil', 'highlighter', 'eraser'].includes(props.currentTool) ? 'bg-indigo-50 text-indigo-600 shadow-sm ring-1 ring-indigo-200' : 'text-slate-400 hover:bg-slate-50'"
+						title="形状与内容"
+					>
+						<Shapes class="w-4 h-4 hmd:w-5 hmd:h-5" />
 					</button>
 				</div>
 

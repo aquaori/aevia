@@ -1,9 +1,10 @@
 // File role: top-level editor controller for tool switching, color changes, and transform finalization.
 import type { Ref } from "vue";
+import type { EditorTool } from "@collaborative-whiteboard/shared";
 import type { InteractionMode, TransformAnimState } from "../states/roomInteractionState";
 import { useRoomSessionEmitHook } from "../service/roomSessionContext";
 
-type Tool = "pen" | "eraser" | "cursor";
+type Tool = EditorTool;
 type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
 
 interface PointerControllerLike {

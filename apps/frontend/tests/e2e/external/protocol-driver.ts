@@ -111,6 +111,12 @@ export class ProtocolClient {
 				try {
 					const msg = JSON.parse(data.toString());
 					if (msg?.type === "init-meta") {
+						const trustedUserId = msg?.data?.userId;
+						if (typeof trustedUserId !== "string" || trustedUserId.length === 0) {
+							reject(new Error("websocket init did not include a trusted user id"));
+							return;
+						}
+						this.user.userId = trustedUserId;
 						clearTimeout(timer);
 						resolve();
 					}
@@ -152,6 +158,55 @@ export class ProtocolClient {
 		});
 	}
 
+	private sceneStrokeCommand(options: {
+		opId: string;
+		elementId: string;
+		pageId: number;
+		lamport: number;
+		color: string;
+		size: number;
+		kind: "element.create" | "element.append";
+		payload: Record<string, unknown>;
+	}) {
+		return {
+			id: options.opId,
+			type: "scene-op",
+			timestamp: Date.now(),
+			userId: this.user.userId,
+			roomId: this.user.roomId,
+			pageId: options.pageId,
+			isDeleted: false,
+			lamport: options.lamport,
+			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+			schemaVersion: 2,
+			sceneOperation: {
+				schemaVersion: 2,
+				opId: options.opId,
+				elementId: options.elementId,
+				actorId: this.user.userId,
+				roomId: this.user.roomId,
+				pageId: options.pageId,
+				lamport: options.lamport,
+				historyGroupId: options.elementId,
+				kind: options.kind,
+				payload: options.payload,
+			},
+		};
+	}
+
+	private createStrokePayload(points: Array<{ x: number; y: number; p: number; lamport: number }>, color: string, size: number, isComplete: boolean) {
+		return {
+			descriptor: {
+				elementKind: "path",
+				toolId: "pen",
+				recipeId: "stroke",
+				style: { color, size, strokePattern: "solid" },
+			},
+			points,
+			isComplete,
+		};
+	}
+
 	sendStroke(options: {
 		points: Array<{ x: number; y: number; p?: number }>;
 		color?: string;
@@ -174,38 +229,23 @@ export class ProtocolClient {
 		}
 
 		const commandId = options.commandId || uuidv4();
-		const command = {
-			id: commandId,
-			type: "path",
-			points: [points[0]],
-			tool: "pen",
-			color: options.color || "#111827",
-			size: options.size || 4,
-			timestamp: Date.now(),
-			userId: this.user.userId,
-			roomId: this.user.roomId,
-			pageId: options.pageId ?? 0,
-			isDeleted: false,
+		const pageId = options.pageId ?? 0;
+		const color = options.color || "#111827";
+		const size = options.size || 4;
+		const command = this.sceneStrokeCommand({
+			opId: commandId,
+			elementId: commandId,
+			pageId,
 			lamport: points[0]!.lamport,
-			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-		};
+			color,
+			size,
+			kind: "element.create",
+			payload: this.createStrokePayload(points, color, size, true),
+		});
 
 		this.ws.send(JSON.stringify({
-			type: "cmd-start",
+			type: "push-cmd",
 			data: { id: commandId, cmd: command, lamport: command.lamport },
-		}));
-
-		const stopPoints = points.slice(1);
-		const lastPoint = points[points.length - 1]!;
-		this.ws.send(JSON.stringify({
-			type: "cmd-stop",
-			data: {
-				cmdId: commandId,
-				cmd: { ...command, points, lamport: lastPoint.lamport },
-				lamport: lastPoint.lamport,
-				points: stopPoints,
-				box: command.box,
-			},
 		}));
 
 		return commandId;
@@ -233,21 +273,14 @@ export class ProtocolClient {
 		}
 
 		const commandId = options.commandId || uuidv4();
-		const command = {
-			id: commandId,
-			type: "path",
-			points,
-			tool: "pen",
-			color: options.color || "#111827",
-			size: options.size || 4,
-			timestamp: Date.now(),
-			userId: this.user.userId,
-			roomId: this.user.roomId,
-			pageId: options.pageId ?? 0,
-			isDeleted: false,
-			lamport: points[points.length - 1]!.lamport,
-			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-		};
+		const pageId = options.pageId ?? 0;
+		const color = options.color || "#111827";
+		const size = options.size || 4;
+		const command = this.sceneStrokeCommand({
+			opId: commandId, elementId: commandId, pageId,
+			lamport: points[0]!.lamport, color, size, kind: "element.create",
+			payload: this.createStrokePayload(points, color, size, true),
+		});
 
 		await this.sendJsonAwait({
 			type: "push-cmd",
@@ -279,39 +312,31 @@ export class ProtocolClient {
 		}
 
 		const commandId = options.commandId || uuidv4();
-		const command = {
-			id: commandId,
-			type: "path",
-			points: [points[0]],
-			tool: "pen",
-			color: options.color || "#111827",
-			size: options.size || 4,
-			timestamp: Date.now(),
-			userId: this.user.userId,
-			roomId: this.user.roomId,
-			pageId: options.pageId ?? 0,
-			isDeleted: false,
-			lamport: points[0]!.lamport,
-			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-		};
+		const pageId = options.pageId ?? 0;
+		const color = options.color || "#111827";
+		const size = options.size || 4;
+		const command = this.sceneStrokeCommand({
+			opId: commandId, elementId: commandId, pageId,
+			lamport: points[0]!.lamport, color, size, kind: "element.create",
+			payload: this.createStrokePayload([points[0]!], color, size, points.length === 1),
+		});
 
 		await this.sendJsonAwait({
-			type: "cmd-start",
+			type: "push-cmd",
 			data: { id: commandId, cmd: command, lamport: command.lamport },
 		});
 
 		const stopPoints = points.slice(1);
-		const lastPoint = points[points.length - 1]!;
-		await this.sendJsonAwait({
-			type: "cmd-stop",
-			data: {
-				cmdId: commandId,
-				cmd: { ...command, points, lamport: lastPoint.lamport },
-				lamport: lastPoint.lamport,
-				points: stopPoints,
-				box: command.box,
-			},
-		});
+		if (stopPoints.length > 0) {
+			const appendId = uuidv4();
+			const lastPoint = stopPoints[stopPoints.length - 1]!;
+			const append = this.sceneStrokeCommand({
+				opId: appendId, elementId: commandId, pageId, lamport: lastPoint.lamport,
+				color, size, kind: "element.append",
+				payload: { points: stopPoints, sourceStart: 1, isComplete: true },
+			});
+			await this.sendJsonAwait({ type: "push-cmd", data: { id: appendId, cmd: append, lamport: append.lamport } });
+		}
 
 		return commandId;
 	}

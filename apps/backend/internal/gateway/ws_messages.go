@@ -30,6 +30,10 @@ func handleBinaryClientMessage(c *wsClient, payload []byte) {
 		sendLimitRejected(c, msg.Type)
 		return
 	}
+	if code, reason, ok := validateSceneCommand(c, msg.Type, msg.Data); !ok {
+		sendSceneRejected(c, msg.Type, msg.Data, code, reason)
+		return
+	}
 	if msg.Binary != nil {
 		if err := c.actor.BinaryEvent(c.id, msg.Type, msg.Data, msg.Binary); err != nil {
 			sendBusy(c, msg.Type)
@@ -54,6 +58,10 @@ func handleTextClientMessage(c *wsClient, payload []byte) {
 	}
 	if !c.validateIncoming(msg.Type, msg.Data) {
 		sendLimitRejected(c, msg.Type)
+		return
+	}
+	if code, reason, ok := validateSceneCommand(c, msg.Type, msg.Data); !ok {
+		sendSceneRejected(c, msg.Type, msg.Data, code, reason)
 		return
 	}
 	if msg.Type == "page-change" {
@@ -101,6 +109,23 @@ func sendBusy(c *wsClient, opType string) {
 		"reason":        "Room is overloaded. Please retry shortly.",
 		"shouldRefresh": false,
 		"shouldResync":  false,
+	}}}:
+	default:
+	}
+}
+
+func sendSceneRejected(c *wsClient, opType string, data map[string]any, code, reason string) {
+	var cmdID any
+	var pageID any
+	if cmd, ok := data["cmd"].(map[string]any); ok {
+		cmdID = cmd["id"]
+		pageID = cmd["pageId"]
+	}
+	select {
+	case c.send <- room.Outbound{JSON: room.Envelope{Type: "op-rejected", Data: map[string]any{
+		"opType": opType, "code": code, "reason": reason,
+		"cmdId": cmdID, "pageId": pageID,
+		"shouldRefresh": false, "shouldResync": false,
 	}}}:
 	default:
 	}

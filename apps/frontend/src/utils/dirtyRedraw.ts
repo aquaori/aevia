@@ -1,5 +1,4 @@
 // File role: utility helpers for dirty-rect based redraw calculations.
-import { useCommandStore } from "../store/commandStore";
 import { renderClippedPointSequence } from "../service/canvas";
 import type { aabbBox } from "./type";
 
@@ -33,7 +32,6 @@ const reRenderDirtyRect = (
 		ctx,
 		canvasW,
 		canvasH,
-		useCommandStore().lastSortedPoints,
 		dirtyRectSnapshot,
 		transformingCmdIds
 	);

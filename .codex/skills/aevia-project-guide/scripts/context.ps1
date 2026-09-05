@@ -15,7 +15,9 @@ $topics = @{
             "apps/frontend/src/views/RoomView.vue",
             "apps/frontend/src/store/commandStore.ts",
             "apps/frontend/src/service/localCommandService.ts",
-            "apps/frontend/src/service/collabCommandHandlers.ts"
+            "apps/frontend/src/service/collabCommandHandlers.ts",
+            "apps/frontend/src/scene/sceneEngine.ts",
+            "apps/frontend/src/scene/toolRegistry.ts"
         )
         searches = @("rg `"function|const|export`" apps/frontend/src/service apps/frontend/src/controllers")
         verify = @("cmd /c npm run build --workspace @collaborative-whiteboard/frontend")
@@ -25,7 +27,8 @@ $topics = @{
         files = @(
 
 
-            "apps/backend/internal/room/events.go"
+            "apps/backend/internal/room/events.go",
+            "apps/backend/internal/gateway/scene_validation.go"
         )
         searches = @("rg `"cmd-|init-|page-change|join-room`" apps/backend/internal")
         verify = @("cmd /c npm run test:integration")
@@ -35,6 +38,8 @@ $topics = @{
         files = @(
             "packages/shared/src/types/collab.ts",
             "packages/shared/src/protocol/collabProtocol.ts",
+            "packages/shared/src/types/scene.ts",
+            "packages/shared/src/protocol/sceneProtocol.ts",
             "apps/frontend/src/service/realtimeBinary.ts",
             "apps/backend/internal/protocol/realtime.go"
         )
@@ -64,6 +69,9 @@ $topics = @{
         files = @(
             "apps/frontend/src/service/renderWorkerBridge.ts",
             "apps/frontend/src/workers/canvasWorker.ts",
+            "apps/frontend/src/scene/sceneEngine.ts",
+            "apps/frontend/src/scene/spatialGridIndex.ts",
+            "apps/frontend/src/scene/primitiveRenderer.ts",
             "apps/frontend/src/service/strokeRasterizer.ts",
             "apps/frontend/src/service/dirtyRenderQueue.ts",
             "apps/frontend/src/utils/dirtyRedraw.ts"

@@ -50,6 +50,12 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 		a.reject(client, msg.Type, "INVALID_COMMAND_FORMAT", "Command payload is malformed.", "")
 		return
 	}
+	if cmd.Type() == "scene-op" {
+		if _, exists := a.state.Commands[cmd.ID()]; exists {
+			a.reject(client, msg.Type, "DUPLICATE_OPERATION", "Immutable scene operation id already exists.", cmd.ID())
+			return
+		}
+	}
 	if cmd.Type() == "clear" {
 		pageID, _ := cmd.PageID()
 		roomSeq, ok := a.persistClear(client, &pageID, mutationOptions{Barrier: true, UserID: client.UserID})
@@ -59,8 +65,7 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 		cmd.Set("roomSeq", roomSeq)
 		slog.Debug("room command", "room", a.roomID, "type", "clear", "page", pageID, "user", client.UserID)
 	} else {
-		barrier := cmd.Type() != "path" || msg.Type == "push-cmd"
-		if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: barrier, UserID: client.UserID}) {
+		if !a.persistCommand(client, msg.Type, cmd, mutationOptions{Barrier: true, UserID: client.UserID}) {
 			return
 		}
 		slog.Debug("room command", "room", a.roomID, "type", msg.Type, "cmd", cmd.ID(), "user", client.UserID)
@@ -70,7 +75,13 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 	if msg.Type == "cmd-start" {
 		pushType = "start"
 	}
-	data := map[string]any{"cmd": cmd, "roomSeq": cmd.Get("roomSeq")}
+	opID := cmd.ID()
+	if operation := sceneOperation(cmd); operation != nil {
+		if value := domain.String(operation["opId"]); value != "" {
+			opID = value
+		}
+	}
+	data := map[string]any{"cmd": cmd, "cmdId": cmd.ID(), "opId": opID, "roomSeq": cmd.Get("roomSeq")}
 	a.recordAndBroadcast(client.ID, "push-cmd", data, Envelope{Type: "push-cmd", PushType: pushType, Data: data}, nil)
 	a.ack(client, "accepted", data)
 }
@@ -88,7 +99,7 @@ func (a *Actor) handleCommandUpdate(client ClientInfo, msg clientEventMessage) {
 	}
 	cmd := existing.Clone()
 	cmd.SetPoints(append(cmd.Points(), points...))
-	if !a.persistCommand(client, "cmd-update", cmd, mutationOptions{Barrier: false, UserID: client.UserID}) {
+	if !a.persistCommand(client, "cmd-update", cmd, mutationOptions{Barrier: true, UserID: client.UserID}) {
 		return
 	}
 	// The binary frame is the dominant cmd-update transport, so it must be counted

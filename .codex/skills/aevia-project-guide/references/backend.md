@@ -85,6 +85,12 @@ connection-established signal, so any new resume path must keep sending it.
 - `JWT_SECRET` is mandatory when `APP_ENV`/`NODE_ENV` is production; `config.Load`
   returns an error rather than falling back to `DevJWTSecret`.
 
+`internal/gateway/scene_validation.go` is the V2 write boundary. It validates the root schema, trusted identity, envelope equality, operation kind, recipe, matrix, box, points, erasure intervals, text patches, and clear order key before the room actor persists anything. Unsupported versions return `UPGRADE_REQUIRED`; unsupported recipes return `UNSUPPORTED_RECIPE`. Keep geometry, text layout, hit testing, and clipping out of Go—the backend only validates, sequences, persists, and broadcasts explicit operation results.
+
+`PagePointIndex` intentionally indexes only legacy path points for initialization compatibility. V2 scene operations are delivered through command chunks and compiled client-side; do not add a backend region-render API or duplicate client spatial indexing here.
+
+`State.ClearBefore` is the effective per-page clear watermark. Both materialized snapshots and `SendLiveInitStream`'s direct index stream must apply it to render points and command chunks: keep the effective `page.clear` marker and operations after it, but never return commands or points before it. The live path must filter while iterating the index so the client can still paint chunks progressively without buffering the complete scene. When `history.toggle` disables that clear group, the watermark disappears and a forced current-page reload may return the restored history again. Filtering only render points is insufficient because a client could otherwise replay pre-clear V2 commands during init or resync.
+
 ## Render Chunks
 
 `protocol.EncodeRenderChunk` returns an error instead of silently narrowing the

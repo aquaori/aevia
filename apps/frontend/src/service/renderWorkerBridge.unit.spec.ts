@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { reactive } from "vue";
 import type { Command } from "@collaborative-whiteboard/shared";
 import { cloneCommandForStateSync } from "./renderWorkerBridge";
 
@@ -31,5 +32,30 @@ describe("cloneCommandForStateSync", () => {
 
 		expect(cloned.points).toEqual(source.points);
 		expect(cloned.points).not.toBe(source.points);
+	});
+
+	it("removes Vue proxies from nested scene operations before posting to the worker", () => {
+		const source = reactive({
+			...command(undefined),
+			id: "transform-1",
+			type: "scene-op" as const,
+			schemaVersion: 2 as const,
+			sceneOperation: {
+				schemaVersion: 2 as const,
+				opId: "transform-1",
+				elementId: "stroke-1",
+				actorId: "user-1",
+				roomId: "room-1",
+				pageId: 0,
+				lamport: 2,
+				historyGroupId: "transform-1",
+				kind: "element.transform" as const,
+				payload: { targets: [{ elementId: "stroke-1", deltaMatrix: [1, 0, 0, 1, 0.1, 0.2] as const }] },
+			},
+		});
+
+		const cloned = cloneCommandForStateSync(source);
+		expect(() => structuredClone(cloned)).not.toThrow();
+		expect(cloned.sceneOperation).not.toBe(source.sceneOperation);
 	});
 });

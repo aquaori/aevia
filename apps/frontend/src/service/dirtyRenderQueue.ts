@@ -19,26 +19,31 @@ export const createDirtyRenderQueue = (
 			undefined as never,
 			undefined as never
 		);
-	}
+	},
+	renderFull: () => void = () => undefined,
+	renderBatch?: (rects: DirtyRect[]) => void
 ) => {
-	let pendingDirtyRect: DirtyRect | null = null;
+	let pendingDirtyRects: DirtyRect[] = [];
+	let fullRenderPending = false;
 	let dirtyRafId: number | null = null;
 
 	const enqueue = (rect: DirtyRect) => {
-		if (!pendingDirtyRect) {
-			pendingDirtyRect = { ...rect };
-		} else {
-			const newMinX = Math.min(pendingDirtyRect.minX, rect.minX);
-			const newMinY = Math.min(pendingDirtyRect.minY, rect.minY);
+		let next = { ...rect };
+		for (let index = pendingDirtyRects.length - 1; index >= 0; index -= 1) {
+			const pending = pendingDirtyRects[index]!;
+			if (next.maxX < pending.minX || next.minX > pending.maxX || next.maxY < pending.minY || next.minY > pending.maxY) continue;
+			pendingDirtyRects.splice(index, 1);
+			const newMinX = Math.min(pending.minX, next.minX);
+			const newMinY = Math.min(pending.minY, next.minY);
 			const newMaxX = Math.max(
-				pendingDirtyRect.minX + pendingDirtyRect.width,
-				rect.minX + rect.width
+				pending.maxX,
+				next.maxX
 			);
 			const newMaxY = Math.max(
-				pendingDirtyRect.minY + pendingDirtyRect.height,
-				rect.minY + rect.height
+				pending.maxY,
+				next.maxY
 			);
-			pendingDirtyRect = {
+			next = {
 				minX: newMinX,
 				minY: newMinY,
 				maxX: newMaxX,
@@ -47,19 +52,22 @@ export const createDirtyRenderQueue = (
 				height: newMaxY - newMinY,
 				candidateCommandIds: Array.from(
 					new Set([
-						...(pendingDirtyRect.candidateCommandIds ?? []),
-						...(rect.candidateCommandIds ?? []),
+						...(pending.candidateCommandIds ?? []),
+						...(next.candidateCommandIds ?? []),
 					])
 				),
 			};
 		}
+		pendingDirtyRects.push(next);
+		if (pendingDirtyRects.length > 8) fullRenderPending = true;
 
 		if (!dirtyRafId) {
 			dirtyRafId = requestAnimationFrame(() => {
-				if (pendingDirtyRect) {
-					renderer(pendingDirtyRect);
-				}
-				pendingDirtyRect = null;
+				if (fullRenderPending) renderFull();
+				else if (renderBatch) renderBatch(pendingDirtyRects.map((pending) => ({ ...pending })));
+				else pendingDirtyRects.forEach((pending) => renderer(pending));
+				pendingDirtyRects = [];
+				fullRenderPending = false;
 				dirtyRafId = null;
 			});
 		}
@@ -70,7 +78,8 @@ export const createDirtyRenderQueue = (
 			cancelAnimationFrame(dirtyRafId);
 			dirtyRafId = null;
 		}
-		pendingDirtyRect = null;
+		pendingDirtyRects = [];
+		fullRenderPending = false;
 	};
 
 	return {

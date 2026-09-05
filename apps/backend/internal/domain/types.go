@@ -24,18 +24,20 @@ type Point struct {
 }
 
 type FlatPoint struct {
-	X          float64 `json:"x"`
-	Y          float64 `json:"y"`
-	P          float64 `json:"p"`
-	Lamport    float64 `json:"lamport"`
-	CmdID      string  `json:"cmdId"`
-	PageID     int     `json:"pageId"`
-	UserID     string  `json:"userId"`
-	Tool       string  `json:"tool"`
-	Color      string  `json:"color"`
-	Size       float64 `json:"size"`
-	IsDeleted  bool    `json:"isDeleted"`
-	PointIndex int     `json:"-"`
+	X             float64 `json:"x"`
+	Y             float64 `json:"y"`
+	P             float64 `json:"p"`
+	Lamport       float64 `json:"lamport"`
+	CmdID         string  `json:"cmdId"`
+	OrderOpID     string  `json:"orderOpId,omitempty"`
+	PageID        int     `json:"pageId"`
+	UserID        string  `json:"userId"`
+	Tool          string  `json:"tool"`
+	Color         string  `json:"color"`
+	Size          float64 `json:"size"`
+	StrokePattern string  `json:"strokePattern,omitempty"`
+	IsDeleted     bool    `json:"isDeleted"`
+	PointIndex    int     `json:"-"`
 }
 
 type Command = *CommandData
@@ -256,6 +258,9 @@ func FlattenCommand(cmd Command) []FlatPoint {
 }
 
 func FlattenCommandRange(cmd Command, startIndex int) []FlatPoint {
+	if cmd.Type() != "path" {
+		return nil
+	}
 	id := cmd.ID()
 	pageID, ok := cmd.PageID()
 	if id == "" || !ok || pageID < 0 {
@@ -285,6 +290,73 @@ func FlattenCommandRange(cmd Command, startIndex int) []FlatPoint {
 	return out
 }
 
+// ScenePathFragment is the transport-level point projection of a V2 path
+// operation. It deliberately contains no geometry-derived state: the backend
+// only exposes the already ordered samples through the existing render stream.
+type ScenePathFragment struct {
+	OperationID   string
+	ElementID     string
+	UserID        string
+	PageID        int
+	Lamport       float64
+	SourceStart   int
+	Points        []Point
+	Tool          string
+	Color         string
+	Size          float64
+	StrokePattern string
+	IsCreate      bool
+}
+
+func ScenePathFragmentFromCommand(cmd Command) (ScenePathFragment, bool) {
+	if cmd == nil || cmd.Type() != "scene-op" {
+		return ScenePathFragment{}, false
+	}
+	operation, ok := cmd.Get("sceneOperation").(map[string]any)
+	if !ok {
+		return ScenePathFragment{}, false
+	}
+	payload, ok := operation["payload"].(map[string]any)
+	if !ok {
+		return ScenePathFragment{}, false
+	}
+	fragment := ScenePathFragment{
+		OperationID: String(operation["opId"]),
+		ElementID:   String(operation["elementId"]),
+		UserID:      cmd.UserID(),
+		PageID:      IntDefault(operation["pageId"], -1),
+		Lamport:     FloatDefault(operation["lamport"], 0),
+		Tool:        "pen",
+		Color:       "#000000",
+		Size:        3,
+	}
+	if fragment.OperationID == "" || fragment.ElementID == "" || fragment.PageID < 0 {
+		return ScenePathFragment{}, false
+	}
+
+	switch String(operation["kind"]) {
+	case "element.create":
+		descriptor, ok := payload["descriptor"].(map[string]any)
+		if !ok || String(descriptor["elementKind"]) != "path" || String(descriptor["recipeId"]) != "stroke" {
+			return ScenePathFragment{}, false
+		}
+		style, _ := descriptor["style"].(map[string]any)
+		fragment.IsCreate = true
+		fragment.Tool = StringDefault(descriptor["toolId"], "pen")
+		fragment.Color = StringDefault(style["color"], "#000000")
+		fragment.Size = FloatDefault(style["size"], 3)
+		fragment.StrokePattern = StringDefault(style["strokePattern"], "solid")
+		fragment.Points = pointsFromValue(payload["points"])
+		return fragment, true
+	case "element.append":
+		fragment.SourceStart = IntDefault(payload["sourceStart"], 0)
+		fragment.Points = pointsFromValue(payload["points"])
+		return fragment, true
+	default:
+		return ScenePathFragment{}, false
+	}
+}
+
 func CompareFlatPoint(a, b FlatPoint) int {
 	if a.Lamport < b.Lamport {
 		return -1
@@ -292,10 +364,18 @@ func CompareFlatPoint(a, b FlatPoint) int {
 	if a.Lamport > b.Lamport {
 		return 1
 	}
-	if a.CmdID < b.CmdID {
+	aOrderID := a.OrderOpID
+	if aOrderID == "" {
+		aOrderID = a.CmdID
+	}
+	bOrderID := b.OrderOpID
+	if bOrderID == "" {
+		bOrderID = b.CmdID
+	}
+	if aOrderID < bOrderID {
 		return -1
 	}
-	if a.CmdID > b.CmdID {
+	if aOrderID > bOrderID {
 		return 1
 	}
 	if a.PointIndex < b.PointIndex {
@@ -309,6 +389,17 @@ func CompareFlatPoint(a, b FlatPoint) int {
 
 func SortFlatPoints(points []FlatPoint) {
 	sort.Slice(points, func(i, j int) bool { return CompareFlatPoint(points[i], points[j]) < 0 })
+}
+
+func SortCommands(commands []Command) {
+	sort.Slice(commands, func(i, j int) bool {
+		leftLamport := FloatDefault(commands[i].Get("lamport"), 0)
+		rightLamport := FloatDefault(commands[j].Get("lamport"), 0)
+		if leftLamport != rightLamport {
+			return leftLamport < rightLamport
+		}
+		return commands[i].ID() < commands[j].ID()
+	})
 }
 
 func String(v any) string {

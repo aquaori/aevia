@@ -22,6 +22,9 @@
 		ctx,
 		finishIncrementalStroke,
 		renderWithPoints,
+		renderSceneCommands,
+		hitTestScene,
+		querySceneElements,
 		renderIncrementPoint,
 		resetIncrementalStroke,
 	} from "../service/canvas";
@@ -58,6 +61,7 @@
 	import RoomConnectionOverlays from "../components/RoomConnectionOverlays.vue";
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
+	import RoomTextEditor from "../components/RoomTextEditor.vue";
 	import { fetchPageOverview, type PageOverviewItem } from "../service/pageOverviewService";
 	import type { SelectionState } from "../utils/editorTypes";
 	import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
@@ -84,6 +88,7 @@
 	// 当前激活的菜单 (画笔设置 / 橡皮设置 / 颜色盘 / 更多菜单)
 	const {
 		activeMenu,
+		headerMenuOpen,
 		showShortcuts,
 		isFullscreen,
 		hasCopied,
@@ -98,6 +103,8 @@
 		memberList,
 		currentTool,
 		currentColor,
+		currentStrokePattern,
+		currentSticker,
 		currentSize,
 		userId,
 		currentPageId,
@@ -106,10 +113,10 @@
 	} = createRoomEditorState();
 
 	const commandStore = useCommandStore();
+	const textEditorRef = ref<InstanceType<typeof RoomTextEditor> | null>(null);
 	const { commands, pendingUpdates, currentCommandIndex, loadedPageIds } = storeToRefs(commandStore);
 	const replaceLoadedPageWindow = commandStore.replaceLoadedPageWindow;
 	const applyLoadedPageDelta = commandStore.applyLoadedPageDelta;
-	const pruneDeletedCommandsAfterPointer = commandStore.pruneDeletedCommandsAfterPointer;
 	// 统一使用 Store 中的状态，并通过 storeToRefs 保持响应性
 	const commandMapRef = commandStore.commandMap;
 	const insertCommand = commandStore.insertCommand;
@@ -130,7 +137,11 @@
 		interactionMode,
 		activeTransformHandle,
 		initialCmdsState,
+		previewTransform,
 		initialGroupBox,
+		selectedSceneBounds,
+		productPreview,
+		canvasCursor,
 		lastX,
 		lastY,
 		lastWidth,
@@ -176,18 +187,11 @@
 			return;
 		}
 
-		// 向 Worker 发送请求，计算排好序的点集
 		const rawCommands = toRaw(commands.value).map((c: Command) => ({
 			...c,
 			points: c.points ? toRaw(c.points) : [],
 		}));
-
-		workerBridge.renderMainCanvas({
-			commands: rawCommands,
-			pageId: currentPageId.value,
-			transformingCmdIds: Array.from(transformingCmdIds.value),
-			requestId: "main-canvas",
-		});
+		renderSceneCommands(rawCommands, currentPageId.value, transformingCmdIds.value);
 	};
 
 	const renderIncrementalCommand = (
@@ -251,6 +255,12 @@
 				currentPageId.value,
 				Array.from(transformingCmdIds.value)
 			),
+		requestWorkerDirtyRenderBatch: (rects) =>
+			workerBridge.renderDirtyRects(
+				rects,
+				currentPageId.value,
+				Array.from(transformingCmdIds.value)
+			),
 		syncToolState: () => roomEditorController.setTool(currentTool.value),
 		isOffscreenEnabled: () => workerBridge.isOffscreenEnabled(),
 		hasRenderableScene: () => commands.value.length > 0,
@@ -301,6 +311,7 @@
 		transformingCmdIds.value.clear();
 		transformAnim.value = null;
 		initialCmdsState.value.clear();
+		previewTransform.value = null;
 		dragStartPos.value = null;
 		activeTransformHandle.value = null;
 		interactionMode.value = "none";
@@ -332,8 +343,6 @@
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
 		syncCommandState: (command) => workerBridge.syncCommandState(command),
 		removeCommandState: (cmdId) => workerBridge.removeCommandState(cmdId),
-		translateCommandPoints: (cmdIds, dx, dy) =>
-			workerBridge.translateCommandPoints(cmdIds, dx, dy),
 		requestSceneRefresh: refreshWorkerScene,
 		renderIncrementalCommand,
 		renderSinglePointCommand,
@@ -344,6 +353,8 @@
 		appendInitRenderBinaryChunk: (meta, buffer) =>
 			workerBridge.appendInitRenderBinaryChunk(meta, buffer),
 		finishInitRenderStream: () => workerBridge.finishInitRenderStream(),
+		setInitSceneOperations: (nextCommands, pageId) =>
+			workerBridge.setInitSceneOperations(nextCommands, pageId),
 		syncWorkerScene: (
 			nextCommands: Command[],
 			pageId: number,
@@ -368,6 +379,7 @@
 		requestCurrentPageResync,
 		cancelRejectedLocalCommand,
 		cancelRejectedOperation,
+		notifyRemoteTextPatch: (elementId) => textEditorRef.value?.notifyRemotePatch(elementId),
 		persistSessionAuth: ({ sessionToken, expiresAt }) => {
 			userStore.setToken(sessionToken);
 			userStore.setSessionExpiresAt(expiresAt);
@@ -387,11 +399,10 @@
 		username,
 		currentTool,
 		insertCommand,
-		clearClearedCommands,
-		pruneDeletedCommandsAfterPointer,
 		renderCanvas,
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
 		syncCommandState: (command) => workerBridge.syncCommandState(command),
+		isOffscreenMainCanvas: () => workerBridge.isOffscreenEnabled(),
 		requestSceneRefresh: refreshWorkerScene,
 		syncWorkerScene: (nextCommands, pageId, transformingIds = []) =>
 			workerBridge.syncWorkerScene(nextCommands, pageId, transformingIds),
@@ -419,13 +430,17 @@
 	});
 	const roomToolController = createRoomToolController({
 		activeMenu,
+		headerMenuOpen,
 		currentTool,
 		currentSize: currentSize as unknown as Ref<number>,
+		currentStrokePattern,
+		currentSticker,
 		showSizePreview,
 		setTool: roomEditorController.setTool,
 	});
 	const roomPanelController = createRoomPanelController({
 		activeMenu,
+		headerMenuOpen,
 		showShortcuts,
 		showPageOverview,
 		showMemberList,
@@ -456,6 +471,8 @@
 		currentTool,
 		currentColor,
 		currentSize,
+		currentStrokePattern,
+		currentSticker,
 		currentPageId,
 		roomId,
 		userId,
@@ -472,7 +489,11 @@
 		selectedCommandIds,
 		transformingCmdIds,
 		initialCmdsState,
+		previewTransform,
 		initialGroupBox: initialGroupBox as Ref<GroupBoxState | null>,
+		selectedSceneBounds: selectedSceneBounds as Ref<GroupBoxState | null>,
+		productPreview,
+		canvasCursor,
 		transformAnim: transformAnim as Ref<TransformAnimState | null>,
 		activeMenu,
 		commands,
@@ -488,6 +509,7 @@
 		finishIncrementalCommand,
 		isOffscreenMainCanvas: () => workerBridge.isOffscreenEnabled(),
 		syncCommandState: (cmd) => workerBridge.syncCommandState(cmd),
+		waitForSceneOperationRender: (opId) => workerBridge.waitForSceneOperationRender(opId),
 		hydrateCommandPoints: async (cmdIds) => {
 			const missingIds = cmdIds.filter((cmdId) => {
 				const cmd = commandMapRef.get(cmdId);
@@ -502,6 +524,26 @@
 				}
 			});
 		},
+		computeEraseTargets: async (points, size, wholeObjects) => {
+			if (!canvasRef.value) return [];
+			const dpr = window.devicePixelRatio || 1;
+			return workerBridge.requestEraseTargets({
+				points,
+				size,
+				wholeObjects,
+				pageId: currentPageId.value,
+				width: canvasRef.value.width / dpr,
+				height: canvasRef.value.height / dpr,
+				commands: workerBridge.isOffscreenEnabled() ? undefined : toRaw(commands.value),
+			});
+		},
+		hitTestScene: (x, y) => workerBridge.isOffscreenEnabled()
+			? workerBridge.requestSceneHit(x, y)
+			: Promise.resolve(hitTestScene(x, y)),
+		querySceneElements: (rect) => workerBridge.isOffscreenEnabled()
+			? workerBridge.requestSceneQuery(rect)
+			: Promise.resolve(querySceneElements(rect)),
+		requestTextInput: (input) => textEditorRef.value?.open(input) ?? Promise.resolve(null),
 		send: roomCollabTransport.send,
 		pushCommand: roomCommandController.pushCommand,
 		renderCanvas,
@@ -515,7 +557,15 @@
 		remoteSelectionRects,
 		transformAnim,
 		transformingCmdIds,
+		previewTransform,
 		selectedCommandIds,
+		selectedSceneBounds: selectedSceneBounds as Ref<GroupBoxState | null>,
+		productPreview,
+		currentTool,
+		currentColor,
+		currentSize,
+		currentStrokePattern,
+		currentSticker,
 		commands,
 		commandMap: commandMapRef,
 		currentPageId,
@@ -526,7 +576,7 @@
 		requestFlatPoints: workerBridge.requestFlatPoints,
 	});
 
-	const canUndo = computed(() => currentCommandIndex.value > 0);
+	const canUndo = computed(() => currentCommandIndex.value >= 0);
 	const canRedo = computed(() => currentCommandIndex.value < commands.value.length - 1);
 	const session = createWhiteboardSession({
 		state: {
@@ -661,6 +711,8 @@
 			:on-close="roomPanelController.closeMemberList"
 		/>
 
+		<RoomTextEditor ref="textEditorRef" />
+
 		<!-- Rotate Hint -->
 		<div
 			class="hidden md:hidden portrait:flex fixed inset-0 z-100 bg-slate-900/95 text-white items-center justify-center flex-col p-8 text-center backdrop-blur-sm"
@@ -674,7 +726,7 @@
 			:visible="!isFullscreen"
 			:room-name="roomName"
 			:room-id="roomId"
-			:active-menu="activeMenu"
+			:more-open="headerMenuOpen"
 			:online-count="onlineCount"
 			:has-copied="hasCopied"
 			:on-toggle-more="roomPanelController.toggleMoreMenu"
@@ -685,7 +737,7 @@
 
 		<!-- Custom Cursor for Eraser -->
 		<div
-			v-show="currentTool === 'eraser' && showEraserCursor"
+			v-show="(currentTool === 'eraser' || currentTool === 'object-eraser') && showEraserCursor"
 			class="fixed pointer-events-none rounded-full border border-slate-500 bg-slate-400/20 z-50 transform -translate-x-1/2 -translate-y-1/2 transition-transform duration-75 ease-out"
 			:style="{
 				left: cursorX + 'px',
@@ -714,13 +766,13 @@
 				@pointerup="stopDrawing"
 				@pointercancel="stopDrawing"
 				@pointerenter="showEraserCursor = true"
-				@pointerleave="showEraserCursor = false"
+				@pointerleave="showEraserCursor = false; canvasCursor = 'default'"
 				class="absolute inset-0 w-full h-full touch-none z-5"
 				:class="{
-					'cursor-none': currentTool === 'eraser',
-					'cursor-crosshair': currentTool === 'pen',
-					'cursor-default': currentTool === 'cursor',
+					'cursor-none': currentTool === 'eraser' || currentTool === 'object-eraser',
+					'cursor-crosshair': currentTool !== 'cursor' && currentTool !== 'eraser' && currentTool !== 'object-eraser',
 				}"
+				:style="currentTool === 'cursor' ? { cursor: canvasCursor } : undefined"
 			></canvas>
 
 			<!-- UI Overlay Canvas (Top Layer: Cursors, Select Box) -->
@@ -735,12 +787,16 @@
 			:current-tool="currentTool"
 			:current-color="currentColor"
 			:current-size="currentSize"
+			:current-stroke-pattern="currentStrokePattern"
+			:current-sticker="currentSticker"
 			:is-fullscreen="isFullscreen"
 			:is-toolbar-collapsed="isToolbarCollapsed"
 			:toggle-fullscreen="roomHeaderController.toggleFullscreen"
 			:toggle-menu="roomToolController.toggleMenu"
 			:set-tool="roomEditorController.setTool"
 			:set-color="roomEditorController.setColor"
+			:set-stroke-pattern="roomToolController.setStrokePattern"
+			:set-sticker="roomToolController.setSticker"
 			:clear-canvas="roomCommandController.clearCanvas"
 			:undo="roomCommandController.undo"
 			:redo="roomCommandController.redo"

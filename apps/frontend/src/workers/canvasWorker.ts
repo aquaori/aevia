@@ -1,11 +1,14 @@
-import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
 import {
-	createStrokeBatch,
-	finishStroke,
-	paintStrokeSample,
-	type StrokeState,
-} from "../service/strokeRasterizer";
+	compareRenderOrder,
+	sceneOperationOrderKey,
+	type AabbBox,
+	type Command,
+	type FlatPoint,
+	type Point,
+	type SceneOperationEnvelopeV2,
+} from "@collaborative-whiteboard/shared";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
+import { SceneEngine } from "../scene/sceneEngine";
 
 interface Rect {
 	minX: number;
@@ -41,11 +44,6 @@ interface InitRenderBinaryChunkData {
 	buffer: ArrayBuffer;
 }
 
-interface DirtySegmentRange {
-	start: number;
-	end: number;
-}
-
 class DSU {
 	parent: number[];
 	constructor(n: number) {
@@ -69,24 +67,21 @@ let mainCtx: OffscreenCanvasRenderingContext2D | null = null;
 let viewport: WorkerViewport = { width: 0, height: 0, dpr: 1 };
 let currentPageId = 0;
 let currentTransformingIds = new Set<string>();
-const incrementalStates = new Map<string, StrokeState>();
 const activeStrokeIds = new Set<string>();
 const sceneCommands = new Map<string, Command>();
+const sceneEngine = new SceneEngine();
+let initRenderFinished = false;
+let initCanvasStarted = false;
+let pendingInitSceneCommands: Command[] = [];
+const liveSceneCommandsDuringInit = new Map<string, Command>();
 const INIT_RENDER_CHUNK_MAGIC = 0x49524348;
 const INIT_RENDER_CHUNK_VERSION = 1;
 const INIT_RENDER_CHUNK_HEADER_SIZE = 20;
 const INIT_RENDER_CHUNK_RECORD_SIZE = 22;
 
-const clonePoint = (point: Point): Point => ({
-	x: point.x,
-	y: point.y,
-	p: point.p,
-	lamport: point.lamport,
-});
-
-const cloneCommand = (cmd: Command): Command => ({
+const cloneCommandMetadata = (cmd: Command): Command => ({
 	...cmd,
-	points: cmd.points ? cmd.points.map(clonePoint) : [],
+	points: undefined,
 	box: { ...cmd.box },
 });
 
@@ -100,100 +95,8 @@ const configureContext = () => {
 	mainCtx.lineJoin = "round";
 };
 
-const flattenCommands = (commands: Command[], pageId: number, transformingCmdIds: string[]) => {
-	const transformSet = new Set(transformingCmdIds);
-	const points: FlatPoint[] = [];
-
-	commands.forEach((cmd) => {
-		if (transformSet.has(cmd.id)) return;
-		if (!cmd.points || cmd.pageId !== pageId) return;
-		cmd.points.forEach((pt) => {
-			points.push({
-				x: pt.x,
-				y: pt.y,
-				p: pt.p,
-				lamport: pt.lamport,
-				cmdId: cmd.id,
-				pageId: cmd.pageId,
-				userId: cmd.userId,
-				tool: cmd.tool ?? "pen",
-				color: cmd.color ?? "#000000",
-				size: cmd.size ?? 3,
-				isDeleted: cmd.isDeleted,
-			});
-		});
-	});
-
-	points.sort((a, b) => {
-		if (a.lamport !== b.lamport) return a.lamport - b.lamport;
-		return a.cmdId < b.cmdId ? -1 : 1;
-	});
-
-	return points;
-};
-
-const renderPointsToCanvas = (points: FlatPoint[]) => {
-	if (!offscreenCanvas || !mainCtx) return 0;
-	incrementalStates.clear();
-	mainCtx.save();
-	mainCtx.setTransform(1, 0, 0, 1, 0, 0);
-	mainCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
-	mainCtx.restore();
-
-	const remainingPoints = new Map<string, number>();
-	points.forEach((point) => {
-		if (point.pageId !== currentPageId || point.isDeleted) return;
-		remainingPoints.set(point.cmdId, (remainingPoints.get(point.cmdId) ?? 0) + 1);
-	});
-
-	// Full replay batches same-style geometry; the batch disables itself when the
-	// stream turns out to be interleaved (see createStrokeBatch).
-	const batch = createStrokeBatch(mainCtx as unknown as CanvasRenderingContext2D);
-	let renderedPointCount = 0;
-	points.forEach((point) => {
-		if (point.pageId !== currentPageId) return;
-		if (point.isDeleted) return;
-		let nextState = paintStrokeSample({
-			ctx: mainCtx as unknown as CanvasRenderingContext2D,
-			sample: point,
-			previousState: incrementalStates.get(point.cmdId) ?? null,
-			tool: point.tool,
-			color: point.color,
-			baseSize: point.size,
-			logicalWidth: viewport.width,
-			logicalHeight: viewport.height,
-			batch,
-		});
-		const remaining = (remainingPoints.get(point.cmdId) ?? 1) - 1;
-		remainingPoints.set(point.cmdId, remaining);
-		if (remaining === 0 && !activeStrokeIds.has(point.cmdId)) {
-			nextState =
-				finishStroke({
-					ctx: mainCtx as unknown as CanvasRenderingContext2D,
-					state: nextState,
-					tool: point.tool,
-					color: point.color,
-					baseSize: point.size,
-					logicalWidth: viewport.width,
-					logicalHeight: viewport.height,
-					batch,
-				}) ?? nextState;
-		}
-		if (nextState.finished) {
-			incrementalStates.delete(point.cmdId);
-		} else {
-			incrementalStates.set(point.cmdId, nextState);
-		}
-		renderedPointCount += 1;
-	});
-	batch.flush();
-
-	return renderedPointCount;
-};
-
 const clearCanvas = () => {
 	if (!offscreenCanvas || !mainCtx) return;
-	incrementalStates.clear();
 	activeStrokeIds.clear();
 	mainCtx.save();
 	mainCtx.setTransform(1, 0, 0, 1, 0, 0);
@@ -201,26 +104,24 @@ const clearCanvas = () => {
 	mainCtx.restore();
 };
 
+const ensureInitCanvasStarted = () => {
+	if (initCanvasStarted) return;
+	clearCanvas();
+	initCanvasStarted = true;
+};
+
 const appendFlatPointsToCanvas = (points: FlatPoint[]) => {
 	if (points.length === 0) return 0;
+	ensureInitCanvasStarted();
+	const refs: number[] = [];
 	points.forEach((point) => {
 		if (point.pageId !== currentPageId) return;
-		if (point.isDeleted) return;
 		appendSceneFlatPoint(point);
-		if (!mainCtx) return;
-		const nextState = paintStrokeSample({
-			ctx: mainCtx as unknown as CanvasRenderingContext2D,
-			sample: point,
-			previousState: incrementalStates.get(point.cmdId) ?? null,
-			tool: point.tool,
-			color: point.color,
-			baseSize: point.size,
-			logicalWidth: viewport.width,
-			logicalHeight: viewport.height,
-		});
-		incrementalStates.set(point.cmdId, nextState);
+		refs.push(...sceneEngine.ingestFlatPoint(point));
 	});
-	return points.length;
+	return mainCtx
+		? sceneEngine.renderAtomRefs(mainCtx, refs, viewport.width, viewport.height)
+		: 0;
 };
 
 const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint[] => {
@@ -230,6 +131,7 @@ const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint
 
 	const { pointCount } = header;
 	const commandDictionary = new Map<number, InitRenderChunkCommandDictionaryEntry>();
+	const dictionaryOffsets = new Map<number, number>();
 	for (const command of data.commands) {
 		commandDictionary.set(command.cmdIndex, command);
 	}
@@ -252,6 +154,8 @@ const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint
 		if (!commandMeta) {
 			continue;
 		}
+		const sourceOffset = dictionaryOffsets.get(cmdIndex) ?? 0;
+		dictionaryOffsets.set(cmdIndex, sourceOffset + 1);
 
 		points.push({
 			x,
@@ -259,11 +163,14 @@ const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint
 			p,
 			lamport,
 			cmdId: commandMeta.cmdId,
+			orderOpId: commandMeta.orderOpId,
+			pointIndex: (commandMeta.sourceStart ?? 0) + sourceOffset,
 			pageId: currentPageId,
 			userId: commandMeta.userId,
 			tool: commandMeta.tool,
 			color: commandMeta.color,
 			size: commandMeta.size,
+			strokePattern: commandMeta.strokePattern,
 			isDeleted: commandMeta.isDeleted,
 		});
 	}
@@ -344,18 +251,17 @@ const appendInitRenderBinaryChunkToCanvas = (data: InitRenderBinaryChunkData) =>
 	const view = new DataView(data.buffer);
 	const header = validateInitRenderBinaryChunk(data, view);
 	if (!header) return 0;
+	ensureInitCanvasStarted();
 
 	const commandDictionary: InitRenderChunkCommandDictionaryEntry[] = [];
+	const dictionaryOffsets: number[] = [];
 	for (const command of data.commands) {
 		commandDictionary[command.cmdIndex] = command;
 	}
 
-	let renderedPointCount = 0;
 	let offset = INIT_RENDER_CHUNK_HEADER_SIZE;
 	const sample: Point = { x: 0, y: 0, p: 0, lamport: 0 };
-	// One batch per chunk: flushed below, so buffered geometry stays bounded while
-	// incrementalStates keeps carrying stroke continuity across chunks.
-	const batch = createStrokeBatch(mainCtx as unknown as CanvasRenderingContext2D);
+	const refs: number[] = [];
 	for (let index = 0; index < header.pointCount; index += 1) {
 		sample.x = view.getFloat32(offset, false);
 		offset += 4;
@@ -369,62 +275,61 @@ const appendInitRenderBinaryChunkToCanvas = (data: InitRenderBinaryChunkData) =>
 		offset += 2;
 
 		const commandMeta = commandDictionary[cmdIndex];
-		if (!commandMeta || commandMeta.isDeleted) continue;
+		if (!commandMeta) continue;
+		const sourceOffset = dictionaryOffsets[cmdIndex] ?? 0;
+		dictionaryOffsets[cmdIndex] = sourceOffset + 1;
 		appendInitScenePoint(commandMeta, sample);
-
-		const nextState = paintStrokeSample({
-			ctx: mainCtx as unknown as CanvasRenderingContext2D,
-			sample,
-			previousState: incrementalStates.get(commandMeta.cmdId) ?? null,
+		refs.push(...sceneEngine.ingestFlatPoint({
+			...sample,
+			cmdId: commandMeta.cmdId,
+			orderOpId: commandMeta.orderOpId,
+			pointIndex: (commandMeta.sourceStart ?? 0) + sourceOffset,
+			pageId: currentPageId,
+			userId: commandMeta.userId,
 			tool: commandMeta.tool,
 			color: commandMeta.color,
-			baseSize: commandMeta.size,
-			logicalWidth: viewport.width,
-			logicalHeight: viewport.height,
-			batch,
-		});
-		incrementalStates.set(commandMeta.cmdId, nextState);
-		renderedPointCount += 1;
+			size: commandMeta.size,
+			strokePattern: commandMeta.strokePattern,
+			isDeleted: commandMeta.isDeleted,
+		}));
 	}
-	batch.flush();
 
-	return renderedPointCount;
+	return sceneEngine.renderAtomRefs(mainCtx, refs, viewport.width, viewport.height);
 };
 
 const renderFullScene = () => {
-	const points = flattenCommands(
-		Array.from(sceneCommands.values()),
-		currentPageId,
-		Array.from(currentTransformingIds)
+	if (!mainCtx) return 0;
+	return sceneEngine.renderFull(
+		mainCtx,
+		viewport.width,
+		viewport.height,
+		currentTransformingIds
 	);
-	renderPointsToCanvas(points);
-	return points.length;
 };
 
 const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[]) => {
 	sceneCommands.clear();
-	incrementalStates.clear();
 	activeStrokeIds.clear();
 	commands.forEach((cmd) => {
-		sceneCommands.set(cmd.id, cloneCommand(cmd));
+		sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 	});
 	currentPageId = pageId;
 	currentTransformingIds = new Set(transformingCmdIds);
+	sceneEngine.rebuildFromCommands(commands, pageId);
 };
 
 const appendInitScenePoint = (
 	commandMeta: InitRenderChunkCommandDictionaryEntry,
 	point: Point
 ) => {
-	let command = sceneCommands.get(commandMeta.cmdId);
-	if (!command) {
-		command = {
+	if (sceneCommands.has(commandMeta.cmdId)) return;
+	const command: Command = {
 			id: commandMeta.cmdId,
 			type: "path",
 			tool: commandMeta.tool,
 			color: commandMeta.color,
 			size: commandMeta.size,
-			points: [],
+			points: undefined,
 			timestamp: 0,
 			userId: commandMeta.userId,
 			roomId: "",
@@ -432,12 +337,8 @@ const appendInitScenePoint = (
 			isDeleted: commandMeta.isDeleted,
 			lamport: point.lamport,
 			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
-		};
-		sceneCommands.set(commandMeta.cmdId, command);
-	}
-	command.points ??= [];
-	command.points.push(clonePoint(point));
-	command.lamport = Math.max(command.lamport ?? 0, point.lamport);
+	};
+	sceneCommands.set(commandMeta.cmdId, command);
 };
 
 const appendSceneFlatPoint = (point: FlatPoint) => {
@@ -449,7 +350,7 @@ const appendSceneFlatPoint = (point: FlatPoint) => {
 			tool: point.tool,
 			color: point.color,
 			size: point.size,
-			points: [],
+			points: undefined,
 			timestamp: 0,
 			userId: point.userId,
 			roomId: "",
@@ -460,21 +361,13 @@ const appendSceneFlatPoint = (point: FlatPoint) => {
 		};
 		sceneCommands.set(point.cmdId, command);
 	}
-	command.points ??= [];
-	command.points.push(clonePoint(point));
 	command.lamport = Math.max(command.lamport ?? 0, point.lamport);
 };
 
-const upsertSceneCommand = (cmd: Command, points: Point[]) => {
+const upsertSceneCommand = (cmd: Command) => {
 	const existing = sceneCommands.get(cmd.id);
 	if (!existing) {
-		sceneCommands.set(
-			cmd.id,
-			cloneCommand({
-				...cmd,
-				points,
-			})
-		);
+		sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 		return sceneCommands.get(cmd.id)!;
 	}
 
@@ -486,246 +379,140 @@ const upsertSceneCommand = (cmd: Command, points: Point[]) => {
 	existing.isDeleted = cmd.isDeleted;
 	existing.lamport = cmd.lamport;
 	existing.box = { ...cmd.box };
-	if (!existing.points) {
-		existing.points = points.map(clonePoint);
-	} else if (points.length > 0) {
-		existing.points.push(...points.map(clonePoint));
-	}
 	return existing;
 };
 
 const renderIncrementalPoints = (cmd: Command, points: Point[]) => {
 	if (!mainCtx || cmd.pageId !== currentPageId || currentTransformingIds.has(cmd.id)) return 0;
-	const sceneCommand = upsertSceneCommand(cmd, points);
+	const sceneCommand = upsertSceneCommand(cmd);
 	activeStrokeIds.add(sceneCommand.id);
-	points.forEach((point) => {
-		const nextState = paintStrokeSample({
-			ctx: mainCtx as unknown as CanvasRenderingContext2D,
-			sample: point,
-			previousState: incrementalStates.get(sceneCommand.id) ?? null,
-			tool: sceneCommand.tool ?? "pen",
-			color: sceneCommand.color,
-			baseSize: sceneCommand.size ?? 3,
-			logicalWidth: viewport.width,
-			logicalHeight: viewport.height,
-		});
-		incrementalStates.set(sceneCommand.id, nextState);
-	});
-	return points.length;
+	const refs = sceneEngine.appendCommandPoints(sceneCommand, points);
+	return sceneEngine.renderAtomRefs(mainCtx, refs, viewport.width, viewport.height);
 };
 
 const finishIncrementalCommand = (cmdId: string) => {
-	const state = incrementalStates.get(cmdId);
-	const command = sceneCommands.get(cmdId);
-	if (state && command && mainCtx) {
-		finishStroke({
-			ctx: mainCtx as unknown as CanvasRenderingContext2D,
-			state,
-			tool: command.tool,
-			color: command.color,
-			baseSize: command.size ?? 3,
-			logicalWidth: viewport.width,
-			logicalHeight: viewport.height,
-		});
-	}
-	incrementalStates.delete(cmdId);
+	const refs = sceneEngine.finishElement(cmdId);
+	if (mainCtx) sceneEngine.renderAtomRefs(mainCtx, refs, viewport.width, viewport.height);
 	activeStrokeIds.delete(cmdId);
-};
-
-const pointIntersectsDirtyRect = (point: Pick<Point, "x" | "y">, dirtyRect: Rect, padding = 20) => {
-	const x = point.x * viewport.width;
-	const y = point.y * viewport.height;
-	return (
-		x >= dirtyRect.minX - padding &&
-		x <= dirtyRect.minX + dirtyRect.width + padding &&
-		y >= dirtyRect.minY - padding &&
-		y <= dirtyRect.minY + dirtyRect.height + padding
-	);
-};
-
-const segmentIntersectsDirtyRect = (from: Point, to: Point, dirtyRect: Rect, padding = 20) => {
-	const x1 = from.x * viewport.width;
-	const y1 = from.y * viewport.height;
-	const x2 = to.x * viewport.width;
-	const y2 = to.y * viewport.height;
-	const minX = Math.min(x1, x2) - padding;
-	const maxX = Math.max(x1, x2) + padding;
-	const minY = Math.min(y1, y2) - padding;
-	const maxY = Math.max(y1, y2) + padding;
-
-	return !(
-		maxX < dirtyRect.minX ||
-		minX > dirtyRect.minX + dirtyRect.width ||
-		maxY < dirtyRect.minY ||
-		minY > dirtyRect.minY + dirtyRect.height
-	);
-};
-
-const mergeSegmentRanges = (ranges: DirtySegmentRange[]) => {
-	if (ranges.length <= 1) return ranges;
-
-	ranges.sort((a, b) => a.start - b.start);
-	const merged: DirtySegmentRange[] = [{ ...ranges[0]! }];
-	for (let index = 1; index < ranges.length; index += 1) {
-		const current = ranges[index];
-		const previous = merged[merged.length - 1];
-		if (!current || !previous) continue;
-		if (current.start <= previous.end + 1) {
-			previous.end = Math.max(previous.end, current.end);
-			continue;
-		}
-		merged.push({ ...current });
-	}
-	return merged;
-};
-
-const collectDirtySegments = (points: Point[], dirtyRect: Rect, padding = 20) => {
-	if (points.length === 0) return [] as DirtySegmentRange[];
-
-	const ranges: DirtySegmentRange[] = [];
-	let activeStart: number | null = null;
-
-	for (let index = 0; index < points.length; index += 1) {
-		const current = points[index];
-		if (!current) continue;
-
-		const intersects =
-			(index === 0 && pointIntersectsDirtyRect(current, dirtyRect, padding)) ||
-			(index > 0 && segmentIntersectsDirtyRect(points[index - 1]!, current, dirtyRect, padding));
-
-		if (intersects) {
-			if (activeStart === null) {
-				activeStart = Math.max(0, index - 1);
-			}
-			continue;
-		}
-
-		if (activeStart !== null) {
-			ranges.push({
-				start: activeStart,
-				end: Math.min(points.length - 1, index),
-			});
-			activeStart = null;
-		}
-	}
-
-	if (activeStart !== null) {
-		ranges.push({
-			start: activeStart,
-			end: points.length - 1,
-		});
-	}
-
-	return mergeSegmentRanges(ranges);
-};
-
-const renderCommandRange = (command: Command, range: DirtySegmentRange) => {
-	if (!mainCtx || command.type !== "path" || !command.points?.length) return;
-
-	const baseSize = command.size ?? 3;
-	let previousState: StrokeState | null = null;
-	for (let index = 0; index <= range.end; index += 1) {
-		const point = command.points[index];
-		if (!point) continue;
-		previousState = paintStrokeSample({
-			ctx: mainCtx as unknown as CanvasRenderingContext2D,
-			sample: point,
-			previousState,
-			tool: command.tool,
-			color: command.color,
-			baseSize,
-			logicalWidth: viewport.width,
-			logicalHeight: viewport.height,
-		});
-	}
-	if (previousState && range.end === command.points.length - 1) {
-		finishStroke({
-			ctx: mainCtx as unknown as CanvasRenderingContext2D,
-			state: previousState,
-			tool: command.tool,
-			color: command.color,
-			baseSize,
-			logicalWidth: viewport.width,
-			logicalHeight: viewport.height,
-		});
-	}
-};
-
-const getDirtyCandidateCommands = (dirtyRect: Rect) => {
-	const intersectingCommands = Array.from(sceneCommands.values()).filter((command) => {
-		if (command.pageId !== currentPageId || command.isDeleted || command.type !== "path") return false;
-		const box = command.box;
-		const padding = 20;
-		const boxIntersects =
-			box &&
-			!(
-				box.maxX * viewport.width < dirtyRect.minX - padding ||
-				box.minX * viewport.width > dirtyRect.minX + dirtyRect.width + padding ||
-				box.maxY * viewport.height < dirtyRect.minY - padding ||
-				box.minY * viewport.height > dirtyRect.minY + dirtyRect.height + padding
-			);
-		if (boxIntersects) return true;
-		return command.points
-			? collectDirtySegments(command.points, dirtyRect, padding).length > 0
-			: false;
-	});
-
-	if (!dirtyRect.candidateCommandIds || dirtyRect.candidateCommandIds.length === 0) {
-		return intersectingCommands;
-	}
-
-	const commandMap = new Map<string, Command>();
-	intersectingCommands.forEach((command) => {
-		commandMap.set(command.id, command);
-	});
-	dirtyRect.candidateCommandIds.forEach((commandId) => {
-		const command = sceneCommands.get(commandId);
-		if (command) {
-			commandMap.set(command.id, command);
-		}
-	});
-
-	return Array.from(commandMap.values());
 };
 
 const renderDirtyRect = (dirtyRect: Rect, transformingCmdIds: string[]) => {
 	if (!mainCtx || !offscreenCanvas) return;
 	currentTransformingIds = new Set(transformingCmdIds);
-	const padding = 20;
-	const candidateCommands = getDirtyCandidateCommands(dirtyRect);
-
-	mainCtx.save();
-	mainCtx.beginPath();
-	mainCtx.clearRect(
-		dirtyRect.minX - padding,
-		dirtyRect.minY - padding,
-		dirtyRect.width + padding * 2,
-		dirtyRect.height + padding * 2
+	sceneEngine.renderDirty(
+		mainCtx,
+		dirtyRect,
+		viewport.width,
+		viewport.height,
+		currentTransformingIds
 	);
-	mainCtx.rect(
-		dirtyRect.minX - padding,
-		dirtyRect.minY - padding,
-		dirtyRect.width + padding * 2,
-		dirtyRect.height + padding * 2
-	);
-	mainCtx.clip();
+};
 
-	candidateCommands.forEach((command) => {
-		if (
-			command.pageId !== currentPageId ||
-			command.isDeleted ||
-			command.type !== "path" ||
-			!command.points?.length ||
-			currentTransformingIds.has(command.id)
-		) {
-			return;
+const renderDirtyRegions = (dirtyRects: Rect[], transformingCmdIds: string[]) => {
+	if (!mainCtx || !offscreenCanvas || dirtyRects.length === 0) return;
+	currentTransformingIds = new Set(transformingCmdIds);
+	sceneEngine.renderDirtyRegions(
+		mainCtx,
+		dirtyRects,
+		viewport.width,
+		viewport.height,
+		currentTransformingIds
+	);
+};
+
+const applyPendingInitSceneOperations = () => {
+	if (!initRenderFinished || (pendingInitSceneCommands.length === 0 && liveSceneCommandsDuringInit.size === 0)) return;
+	const merged = new Map<string, Command>();
+	for (const command of pendingInitSceneCommands) merged.set(command.id, command);
+	for (const command of liveSceneCommandsDuringInit.values()) merged.set(command.id, command);
+	const commands = Array.from(merged.values())
+		.filter((command) => command.sceneOperation && command.pageId === currentPageId)
+		.sort((left, right) => compareRenderOrder(
+			sceneOperationOrderKey(left.sceneOperation!),
+			sceneOperationOrderKey(right.sceneOperation!)
+		));
+	pendingInitSceneCommands = [];
+	liveSceneCommandsDuringInit.clear();
+	let needsFullRender = false;
+	for (const command of commands) {
+		const operation = command.sceneOperation!;
+		if (operation.kind === "element.create") {
+			const hydratedThrough = operation.payload.points?.length ?? 0;
+			if (
+				operation.payload.descriptor.elementKind !== "path" ||
+				!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)
+			) {
+				needsFullRender = true;
+			}
+		} else if (operation.kind === "element.append") {
+			const hydratedThrough = operation.payload.sourceStart + operation.payload.points.length;
+			if (!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) {
+				needsFullRender = true;
+			}
+		} else {
+			needsFullRender = true;
 		}
+		sceneCommands.set(command.id, cloneCommandMetadata(command));
+		sceneEngine.applyOperation(operation);
+	}
+	if (needsFullRender) renderFullScene();
+};
 
-		const ranges = collectDirtySegments(command.points, dirtyRect, padding);
-		ranges.forEach((range) => renderCommandRange(command, range));
-	});
+const operationElementIds = (operation: SceneOperationEnvelopeV2) => {
+	switch (operation.kind) {
+		case "element.transform":
+		case "element.erase":
+			return operation.payload.targets.map((target) => target.elementId);
+		case "element.delete":
+			return operation.payload.elementIds;
+		default:
+			return [operation.elementId];
+	}
+};
 
-	mainCtx.restore();
+const mergeBounds = (left: AabbBox | null, right: AabbBox | null): AabbBox | null => {
+	if (!left) return right ? { ...right } : null;
+	if (!right) return { ...left };
+	const minX = Math.min(left.minX, right.minX);
+	const minY = Math.min(left.minY, right.minY);
+	const maxX = Math.max(left.maxX, right.maxX);
+	const maxY = Math.max(left.maxY, right.maxY);
+	return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+};
+
+const elementBounds = (ids: ReadonlySet<string>) => {
+	let bounds: AabbBox | null = null;
+	for (const id of ids) bounds = mergeBounds(bounds, sceneEngine.getElementBounds(id));
+	return bounds;
+};
+
+const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
+	const historyImpact = operation.kind === "history.toggle"
+		? sceneEngine.getHistoryImpact(operation.payload.targetHistoryGroupId)
+		: null;
+	const ids = new Set(historyImpact?.elementIds ?? operationElementIds(operation));
+	const oldBounds = elementBounds(ids);
+	const firstNewRef = sceneEngine.atomCount;
+	sceneEngine.applyOperation(operation);
+	if (!mainCtx || operation.pageId !== currentPageId) return;
+	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
+		renderFullScene();
+		return;
+	}
+	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
+	const newBounds = addedBounds ?? elementBounds(ids);
+	const dirty = mergeBounds(oldBounds, newBounds);
+	if (!dirty) return;
+	const pixelBounds: Rect = {
+		minX: dirty.minX * viewport.width,
+		minY: dirty.minY * viewport.height,
+		maxX: dirty.maxX * viewport.width,
+		maxY: dirty.maxY * viewport.height,
+		width: dirty.width * viewport.width,
+		height: dirty.height * viewport.height,
+	};
+	const excludedIds = operation.kind === "element.transform" ? new Set<string>() : currentTransformingIds;
+	sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, excludedIds);
 };
 
 const isIntersect = (a: Rect, b: Rect): boolean =>
@@ -788,17 +575,15 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "flat-points") {
-		const points = flattenCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
+		const projection = new SceneEngine();
+		projection.rebuildFromCommands(data.commands as Command[], data.pageId);
+		const points = projection.exportFlatPoints(new Set(data.transformingCmdIds ?? []));
 		self.postMessage({ type: "flat-points-result", points, requestId: data.requestId });
 		return;
 	}
 
 	if (type === "flat-points-from-scene") {
-		const points = flattenCommands(
-			Array.from(sceneCommands.values()),
-			data.pageId,
-			data.transformingCmdIds
-		);
+		const points = sceneEngine.exportFlatPoints(new Set(data.transformingCmdIds ?? []));
 		self.postMessage({ type: "flat-points-result", points, requestId: data.requestId });
 		return;
 	}
@@ -815,7 +600,14 @@ self.onmessage = (event: MessageEvent) => {
 		}
 		sceneCommands.clear();
 		currentTransformingIds.clear();
-		clearCanvas();
+		sceneEngine.reset(currentPageId);
+		sceneEngine.beginBulkLoad();
+		initRenderFinished = false;
+		initCanvasStarted = false;
+		pendingInitSceneCommands = [];
+		for (const [id, command] of liveSceneCommandsDuringInit) {
+			if (command.pageId !== currentPageId) liveSceneCommandsDuringInit.delete(id);
+		}
 		return;
 	}
 
@@ -832,7 +624,10 @@ self.onmessage = (event: MessageEvent) => {
 		}
 		const points = decodeInitRenderBinaryChunk(data as InitRenderBinaryChunkData);
 		if (points.length === 0) return;
-		points.forEach((point) => appendSceneFlatPoint(point));
+		points.forEach((point) => {
+			appendSceneFlatPoint(point);
+			sceneEngine.ingestFlatPoint(point);
+		});
 		self.postMessage({
 			type: "init-render-points-decoded",
 			points,
@@ -843,7 +638,24 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "finish-init-stream") {
-		Array.from(incrementalStates.keys()).forEach(finishIncrementalCommand);
+		ensureInitCanvasStarted();
+		const tailRefs = sceneEngine.finishAllOpenStrokes();
+		if (mainCtx) sceneEngine.renderAtomRefs(mainCtx, tailRefs, viewport.width, viewport.height);
+		initRenderFinished = true;
+		sceneEngine.endBulkLoad();
+		// Reconcile single-point and translucent strokes after their streamed atoms
+		// have already provided first paint. This does not gate progressive display.
+		renderFullScene();
+		applyPendingInitSceneOperations();
+		return;
+	}
+
+	if (type === "set-init-scene-operations") {
+		if (typeof data.pageId === "number") currentPageId = data.pageId;
+		const merged = new Map(pendingInitSceneCommands.map((command) => [command.id, command]));
+		for (const command of (data.commands as Command[]) ?? []) merged.set(command.id, command);
+		pendingInitSceneCommands = Array.from(merged.values());
+		applyPendingInitSceneOperations();
 		return;
 	}
 
@@ -869,8 +681,13 @@ self.onmessage = (event: MessageEvent) => {
 		currentPageId = data.pageId as number;
 		const points = (data.points as FlatPoint[]) ?? [];
 		sceneCommands.clear();
-		points.forEach((point) => appendSceneFlatPoint(point));
-		renderPointsToCanvas(points);
+		sceneEngine.reset(currentPageId);
+		points.forEach((point) => {
+			appendSceneFlatPoint(point);
+			sceneEngine.ingestFlatPoint(point);
+		});
+		sceneEngine.finishAllOpenStrokes();
+		renderFullScene();
 		return;
 	}
 
@@ -883,6 +700,18 @@ self.onmessage = (event: MessageEvent) => {
 
 	if (type === "update-command-state") {
 		const cmd = data.cmd as Command;
+		if (cmd.type === "scene-op" && cmd.sceneOperation) {
+			if (!initRenderFinished) {
+				liveSceneCommandsDuringInit.set(cmd.id, cmd);
+				return;
+			}
+			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
+			renderSceneOperation(cmd.sceneOperation);
+			if (cmd.sceneOperation.kind === "element.transform") {
+				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId });
+			}
+			return;
+		}
 		const existing = sceneCommands.get(cmd.id);
 		if (existing) {
 			existing.type = cmd.type;
@@ -893,12 +722,10 @@ self.onmessage = (event: MessageEvent) => {
 			existing.isDeleted = cmd.isDeleted;
 			existing.lamport = cmd.lamport;
 			existing.box = { ...cmd.box };
-			if (cmd.points) {
-				existing.points = cmd.points.map(clonePoint);
-			}
 		} else {
-			sceneCommands.set(cmd.id, cloneCommand(cmd));
+			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 		}
+		sceneEngine.setLegacyCommandState(cmd);
 		return;
 	}
 
@@ -906,37 +733,67 @@ self.onmessage = (event: MessageEvent) => {
 		const cmdId = typeof data.cmdId === "string" ? data.cmdId : "";
 		if (cmdId) {
 			sceneCommands.delete(cmdId);
-			incrementalStates.delete(cmdId);
+			sceneEngine.removeElement(cmdId);
 			activeStrokeIds.delete(cmdId);
 		}
-		return;
-	}
-
-	if (type === "translate-command-points") {
-		const cmdIds = Array.isArray(data.cmdIds) ? (data.cmdIds as string[]) : [];
-		const dx = Number(data.dx ?? 0);
-		const dy = Number(data.dy ?? 0);
-		cmdIds.forEach((cmdId) => {
-			const command = sceneCommands.get(cmdId);
-			command?.points?.forEach((point) => {
-				point.x += dx;
-				point.y += dy;
-			});
-		});
 		return;
 	}
 
 	if (type === "get-command-points") {
 		const requestId = typeof data.requestId === "string" ? data.requestId : "";
 		const cmdIds = Array.isArray(data.cmdIds) ? (data.cmdIds as string[]) : [];
-		const commands = cmdIds.map((cmdId) => {
-			const command = sceneCommands.get(cmdId);
-			return {
-				cmdId,
-				points: command?.points ? command.points.map(clonePoint) : [],
-			};
-		});
+		const commands = cmdIds.map((cmdId) => ({
+			cmdId,
+			points: sceneEngine.getElementPoints(cmdId),
+		}));
 		self.postMessage({ type: "command-points-result", requestId, commands });
+		return;
+	}
+
+	if (type === "render-dirty-regions") {
+		if (data.pageId === currentPageId) {
+			renderDirtyRegions((data.rects as Rect[]) ?? [], data.transformingCmdIds as string[]);
+		}
+		return;
+	}
+
+	if (type === "compute-erase-targets") {
+		const projection = Array.isArray(data.commands) ? new SceneEngine() : sceneEngine;
+		if (projection !== sceneEngine) {
+			projection.rebuildFromCommands(data.commands as Command[], Number(data.pageId ?? currentPageId));
+		}
+		const targets = projection.computeEraseTargets(
+			(data.points as Point[]) ?? [],
+			Number(data.size ?? 15),
+			Number(data.width ?? viewport.width),
+			Number(data.height ?? viewport.height),
+			data.wholeObjects === true
+		);
+		self.postMessage({ type: "erase-targets-result", requestId: data.requestId, targets });
+		return;
+	}
+
+	if (type === "scene-hit-test") {
+		const elementId = sceneEngine.hitTestTopmost(
+			Number(data.x ?? 0),
+			Number(data.y ?? 0),
+			viewport.width,
+			viewport.height
+		);
+		self.postMessage({
+			type: "scene-hit-result",
+			requestId: data.requestId,
+			elementId,
+			bounds: elementId ? sceneEngine.getElementBounds(elementId) : null,
+		});
+		return;
+	}
+
+	if (type === "scene-query-elements") {
+		const rect = data.rect as Rect;
+		const elementIds = sceneEngine.queryElements(rect, viewport.width, viewport.height);
+		const bounds = elementBounds(new Set(elementIds));
+		self.postMessage({ type: "scene-query-result", requestId: data.requestId, elementIds, bounds });
 		return;
 	}
 
@@ -954,9 +811,13 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "dispose") {
-		incrementalStates.clear();
 		activeStrokeIds.clear();
 		sceneCommands.clear();
+		sceneEngine.reset(0);
+		pendingInitSceneCommands = [];
+		liveSceneCommandsDuringInit.clear();
+		initRenderFinished = false;
+		initCanvasStarted = false;
 		currentTransformingIds.clear();
 		offscreenCanvas = null;
 		mainCtx = null;

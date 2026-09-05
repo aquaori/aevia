@@ -1,7 +1,20 @@
 // File role: renders overlay canvas content such as selections, cursors, previews, and transform visuals.
 import { toRaw, watch, type Ref, type ComponentPublicInstance } from "vue";
-import { uiCanvasRef, uiCtx, renderIncrementPoint, renderPageContentFromPoints } from "./canvas";
-import type { Command, FlatPoint, RemoteCursor, aabbBox } from "@collaborative-whiteboard/shared";
+import { uiCanvasRef, uiCtx, renderPageContentFromPoints } from "./canvas";
+import { SceneEngine } from "../scene/sceneEngine";
+import type {
+	AffineMatrix,
+	Command,
+	EditorTool,
+	FlatPoint,
+	RemoteCursor,
+	StrokePattern,
+	aabbBox,
+} from "@collaborative-whiteboard/shared";
+import { IDENTITY_MATRIX } from "@collaborative-whiteboard/shared";
+import { drawPrimitive } from "../scene/primitiveRenderer";
+import type { BitmapAtom, GlyphAtom, ShapeAtom } from "../scene/sceneTypes";
+import type { ProductPreviewState } from "../states/roomInteractionState";
 
 interface TransformAnimState {
 	progress: number;
@@ -10,12 +23,20 @@ interface TransformAnimState {
 }
 
 interface RoomCanvasOverlayOptions {
-	interactionMode: Ref<"none" | "box-selecting" | "dragging" | "resizing">;
+	interactionMode: Ref<"none" | "box-selecting" | "dragging" | "resizing" | "rotating">;
 	selectionRect: Ref<{ x: number; y: number; w: number; h: number } | null>;
 	remoteSelectionRects: Ref<Map<string, { x: number; y: number; w: number; h: number }>>;
 	transformAnim: Ref<TransformAnimState | null>;
 	transformingCmdIds: Ref<Set<string>>;
+	previewTransform: Ref<AffineMatrix | null>;
 	selectedCommandIds: Ref<Set<string>>;
+	selectedSceneBounds: Ref<aabbBox | null>;
+	productPreview: Ref<ProductPreviewState | null>;
+	currentTool: Ref<EditorTool>;
+	currentColor: Ref<string>;
+	currentSize: Ref<number>;
+	currentStrokePattern: Ref<StrokePattern>;
+	currentSticker: Ref<string>;
 	commands: Ref<Command[]>;
 	commandMap: Map<string, Command>;
 	currentPageId: Ref<number>;
@@ -40,6 +61,41 @@ interface RoomCanvasOverlayOptions {
 
 const CURSOR_LABEL_FONT = "500 12px 'Segoe UI', sans-serif";
 
+const previewBox = (
+	preview: ProductPreviewState,
+	width: number,
+	height: number
+): aabbBox => {
+	let minX = Math.min(preview.start.x, preview.end.x);
+	let minY = Math.min(preview.start.y, preview.end.y);
+	let maxX = Math.max(preview.start.x, preview.end.x);
+	let maxY = Math.max(preview.start.y, preview.end.y);
+	if (preview.tool === "sticker" && maxX - minX < 0.002 && maxY - minY < 0.002) {
+		minX = preview.end.x - 32 / Math.max(1, width);
+		maxX = preview.end.x + 32 / Math.max(1, width);
+		minY = preview.end.y - 32 / Math.max(1, height);
+		maxY = preview.end.y + 32 / Math.max(1, height);
+	}
+	return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+};
+
+const transformBox = (box: aabbBox, matrix: AffineMatrix): aabbBox => {
+	const points = [
+		[box.minX, box.minY],
+		[box.maxX, box.minY],
+		[box.maxX, box.maxY],
+		[box.minX, box.maxY],
+	].map(([x, y]) => ({
+		x: matrix[0] * x! + matrix[2] * y! + matrix[4],
+		y: matrix[1] * x! + matrix[3] * y! + matrix[5],
+	}));
+	const minX = Math.min(...points.map((point) => point.x));
+	const minY = Math.min(...points.map((point) => point.y));
+	const maxX = Math.max(...points.map((point) => point.x));
+	const maxY = Math.max(...points.map((point) => point.y));
+	return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+};
+
 export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	let renderRafId: number | null = null;
 	let animationRafId: number | null = null;
@@ -47,6 +103,116 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	let stopWatches: Array<() => void> = [];
 	let wasVisible = false;
 	const cursorLabelWidthCache = new Map<string, number>();
+	const transformPreviewEngine = new SceneEngine();
+	let transformPreviewSignature = "";
+
+	const drawProductPreview = (width: number, height: number) => {
+		const preview = options.productPreview.value;
+		const context = uiCtx.value;
+		if (!preview || !context) return;
+		if (preview.tool === "eraser" || preview.tool === "object-eraser") {
+			const points = preview.points.length > 0 ? preview.points : [preview.start, preview.end];
+			context.save();
+			context.strokeStyle = "rgba(255, 255, 255, 0.98)";
+			context.lineWidth = Math.max(2, options.currentSize.value);
+			context.lineCap = "round";
+			context.lineJoin = "round";
+			context.setLineDash([]);
+			context.beginPath();
+			points.forEach((point, index) => {
+				if (index === 0) context.moveTo(point.x * width, point.y * height);
+				else context.lineTo(point.x * width, point.y * height);
+			});
+			context.stroke();
+			context.restore();
+			return;
+		}
+
+		const box = previewBox(preview, width, height);
+		const style = {
+			color: options.currentColor.value,
+			size: options.currentSize.value,
+			strokePattern: options.currentStrokePattern.value,
+			opacity: 0.72,
+		};
+		if (["line", "arrow", "rectangle", "rounded-rectangle", "ellipse"].includes(preview.tool)) {
+			const atom: ShapeAtom = {
+				ref: -1, atomId: "preview:shape", elementId: "preview", elementRevision: 0, pageId: options.currentPageId.value,
+				order: { lamport: 0, opId: "preview", sourceIndex: 0, subIndex: 0 }, recipeId: "shape", primitive: "shape",
+				toolId: preview.tool, style, bounds: box, box, shapeKind: preview.tool as ShapeAtom["shapeKind"],
+				shapeStart: preview.start, shapeEnd: preview.end,
+			};
+			drawPrimitive(context, atom, IDENTITY_MATRIX, width, height);
+			return;
+		}
+
+		if (preview.tool === "sticker") {
+			const atom: BitmapAtom = {
+				ref: -1, atomId: "preview:sticker", elementId: "preview", elementRevision: 0, pageId: options.currentPageId.value,
+				order: { lamport: 0, opId: "preview", sourceIndex: 0, subIndex: 0 }, recipeId: "bitmap", primitive: "bitmap",
+				toolId: "sticker", style, bounds: box, box, value: options.currentSticker.value,
+			};
+			drawPrimitive(context, atom, IDENTITY_MATRIX, width, height);
+			return;
+		}
+
+		const textBox = box.width > 0.002 || box.height > 0.002
+			? box
+			: {
+				minX: preview.start.x,
+				minY: preview.start.y,
+				maxX: Math.min(1, preview.start.x + (preview.tool === "sticky" ? 0.22 : 0.32)),
+				maxY: Math.min(1, preview.start.y + (preview.tool === "sticky" ? 0.22 : 0.12)),
+				width: preview.tool === "sticky" ? 0.22 : 0.32,
+				height: preview.tool === "sticky" ? 0.22 : 0.12,
+			};
+		const background: ShapeAtom = {
+			ref: -1, atomId: "preview:text-box", elementId: "preview", elementRevision: 0, pageId: options.currentPageId.value,
+			order: { lamport: 0, opId: "preview", sourceIndex: 0, subIndex: 0 }, recipeId: "shape", primitive: "shape",
+			toolId: preview.tool, style: {
+				...style,
+				fillColor: preview.tool === "sticky" ? "#fef3c7" : undefined,
+			}, bounds: textBox, box: textBox, shapeKind: "rounded-rectangle",
+		};
+		drawPrimitive(context, background, IDENTITY_MATRIX, width, height);
+		const label: GlyphAtom = {
+			ref: -1, atomId: "preview:text-label", elementId: "preview", elementRevision: 0, pageId: options.currentPageId.value,
+			order: { lamport: 0, opId: "preview", sourceIndex: 1, subIndex: 0 }, recipeId: "glyph", primitive: "glyph",
+			toolId: preview.tool, style: { ...style, fontSize: 16 }, bounds: textBox,
+			grapheme: preview.tool === "sticky" ? "便签" : "文字", x: textBox.minX + 0.008, y: textBox.minY + 0.008, maxWidth: textBox.width - 0.016,
+		};
+		drawPrimitive(context, label, IDENTITY_MATRIX, width, height);
+	};
+
+	const operationTargetsSelectedElement = (command: Command, selected: ReadonlySet<string>) => {
+		const operation = command.sceneOperation;
+		if (!operation) return false;
+		if (operation.kind === "element.transform" || operation.kind === "element.erase") {
+			return operation.payload.targets.some((target) => selected.has(target.elementId));
+		}
+		if (operation.kind === "element.delete") {
+			return operation.payload.elementIds.some((elementId) => selected.has(elementId));
+		}
+		return selected.has(operation.elementId);
+	};
+
+	const ensureTransformPreviewScene = (selected: ReadonlySet<string>) => {
+		const historyGroups = new Set<string>();
+		const relevant = options.commands.value.filter((command) => {
+			if (command.type === "path") return selected.has(command.id);
+			if (!operationTargetsSelectedElement(command, selected)) return false;
+			if (command.sceneOperation?.kind !== "history.toggle") historyGroups.add(command.sceneOperation?.historyGroupId ?? "");
+			return command.sceneOperation?.kind !== "history.toggle";
+		});
+		for (const command of options.commands.value) {
+			const operation = command.sceneOperation;
+			if (operation?.kind === "history.toggle" && historyGroups.has(operation.payload.targetHistoryGroupId)) relevant.push(command);
+		}
+		const signature = `${options.currentPageId.value}|${Array.from(selected).sort().join(",")}|${relevant.map((command) => `${command.id}:${command.isDeleted ? 1 : 0}`).join(",")}`;
+		if (signature === transformPreviewSignature) return;
+		transformPreviewSignature = signature;
+		transformPreviewEngine.rebuildFromCommands(relevant, options.currentPageId.value);
+	};
 
 	const hasVisibleOverlay = (now: number) => {
 		const hasRemoteCursor = Array.from(options.remoteCursors.value.values()).some(
@@ -59,6 +225,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 		return (
 			hasRemoteCursor ||
 			Boolean(options.selectionRect.value) ||
+			Boolean(options.productPreview.value) ||
 			options.remoteSelectionRects.value.size > 0 ||
 			options.transformingCmdIds.value.size > 0 ||
 			options.selectedCommandIds.value.size > 0 ||
@@ -124,6 +291,8 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			return;
 		}
 
+		drawProductPreview(width, height);
+
 		if (options.interactionMode.value === "box-selecting" && options.selectionRect.value) {
 			const r = options.selectionRect.value;
 			const rx = r.x * width;
@@ -184,6 +353,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 
 		if (options.transformingCmdIds.value.size > 0) {
 			shouldAnimate = true;
+			ensureTransformPreviewScene(options.transformingCmdIds.value);
 			uiCtx.value.save();
 
 			if (options.transformAnim.value) {
@@ -201,21 +371,26 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 				uiCtx.value.shadowOffsetY = 6;
 			}
 
-			options.transformingCmdIds.value.forEach((cmdId) => {
-				const cmd = options.commandMap.get(cmdId);
-				if (!cmd?.points?.length) return;
-				renderIncrementPoint(cmd, cmd.points, uiCtx.value!, width, height, true);
-			});
+			transformPreviewEngine.renderElements(
+				uiCtx.value,
+				options.transformingCmdIds.value,
+				options.previewTransform.value,
+				width,
+				height
+			);
 
 			uiCtx.value.restore();
 		}
 
 		if (options.selectedCommandIds.value.size > 0) {
-			const groupBox = options.getGroupBoundingBox(
+			const sourceGroupBox = options.selectedSceneBounds.value ?? options.getGroupBoundingBox(
 				options.selectedCommandIds.value,
 				options.commands.value,
 				options.currentPageId.value
 			);
+			const groupBox = sourceGroupBox && options.previewTransform.value
+				? transformBox(sourceGroupBox, options.previewTransform.value)
+				: sourceGroupBox;
 
 			if (groupBox) {
 				const bx = groupBox.minX * width;
@@ -235,19 +410,36 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 				uiCtx.value.strokeStyle = "#3b82f6";
 				uiCtx.value.lineWidth = 1.5;
 
-				const corners = [
+				const handles = [
 					{ x: bx - padding, y: by - padding },
+					{ x: bx + bw / 2, y: by - padding },
 					{ x: bx + bw + padding, y: by - padding },
+					{ x: bx + bw + padding, y: by + bh / 2 },
 					{ x: bx + bw + padding, y: by + bh + padding },
+					{ x: bx + bw / 2, y: by + bh + padding },
 					{ x: bx - padding, y: by + bh + padding },
+					{ x: bx - padding, y: by + bh / 2 },
 				];
 
-				corners.forEach((point) => {
+				const rotateHandle = { x: bx + bw / 2, y: by - padding - 28 };
+				uiCtx.value.beginPath();
+				uiCtx.value.moveTo(bx + bw / 2, by - padding);
+				uiCtx.value.lineTo(rotateHandle.x, rotateHandle.y);
+				uiCtx.value.stroke();
+				handles.forEach((point) => {
 					uiCtx.value!.beginPath();
-					uiCtx.value!.rect(point.x - 4, point.y - 4, 8, 8);
+					uiCtx.value!.rect(point.x - 4.5, point.y - 4.5, 9, 9);
 					uiCtx.value!.fill();
 					uiCtx.value!.stroke();
 				});
+				uiCtx.value.beginPath();
+				uiCtx.value.arc(rotateHandle.x, rotateHandle.y, 6, 0, Math.PI * 2);
+				uiCtx.value.fill();
+				uiCtx.value.stroke();
+				uiCtx.value.beginPath();
+				uiCtx.value.arc(rotateHandle.x, rotateHandle.y, 2, 0, Math.PI * 2);
+				uiCtx.value.fillStyle = "#3b82f6";
+				uiCtx.value.fill();
 
 				uiCtx.value.restore();
 			}
@@ -336,6 +528,11 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	const startLoop = () => {
 		stopWatches = [
 			watch(
+				() => options.productPreview.value,
+				() => scheduleRender(),
+				{ deep: true }
+			),
+			watch(
 				() => options.interactionMode.value,
 				() => scheduleRender()
 			),
@@ -379,7 +576,24 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 				{ deep: true }
 			),
 			watch(
-				() => Array.from(options.selectedCommandIds.value),
+				() =>
+					Array.from(options.selectedCommandIds.value).map((cmdId) => {
+						const cmd = options.commandMap.get(cmdId);
+						return [
+							cmdId,
+							cmd?.box?.minX,
+							cmd?.box?.minY,
+							cmd?.box?.maxX,
+							cmd?.box?.maxY,
+							cmd?.box?.width,
+							cmd?.box?.height,
+						];
+					}),
+				() => scheduleRender(),
+				{ deep: true }
+			),
+			watch(
+				() => options.previewTransform.value,
 				() => scheduleRender(),
 				{ deep: true }
 			),

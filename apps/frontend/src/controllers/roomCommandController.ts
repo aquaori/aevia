@@ -5,10 +5,7 @@ import type { Command } from "@collaborative-whiteboard/shared";
 import { useRoomSessionEmitHook } from "../service/roomSessionContext";
 
 interface LocalCommandServiceLike {
-	pushCommand: (
-		cmdPartial: Partial<Command>,
-		type?: "normal" | "start" | "update" | "stop"
-	) => { ok: boolean; error?: string; command?: Command };
+	pushCommand: (cmdPartial: Partial<Command>) => { ok: boolean; error?: string; command?: Command };
 	undo: () => { ok: boolean; error?: string; command?: Command };
 	redo: () => { ok: boolean; error?: string; command?: Command };
 	clearCanvas: () => { ok: boolean; error?: string; notice?: string; command?: Command };
@@ -21,22 +18,17 @@ interface RoomCommandControllerOptions {
 
 export const createRoomCommandController = (options: RoomCommandControllerOptions) => {
 	const emitHook = useRoomSessionEmitHook();
-	const pushCommand = (
-		cmdPartial: Partial<Command>,
-		type: "normal" | "start" | "update" | "stop" = "normal"
-	) => {
-		if (type !== "update") {
-			emitHook("command:before-apply", {
-				command: cmdPartial as Command,
-				source: "local",
-			});
-		}
-		const result = options.localCommandService.pushCommand(cmdPartial, type);
+	const pushCommand = (cmdPartial: Partial<Command>) => {
+		emitHook("command:before-apply", {
+			command: cmdPartial as Command,
+			source: "local",
+		});
+		const result = options.localCommandService.pushCommand(cmdPartial);
 		if (!result.ok && result.error) {
 			toast.error(result.error);
 			return result;
 		}
-		if (result.command && type !== "update") {
+		if (result.command) {
 			emitHook("command:applied", {
 				command: result.command,
 				source: "local",

@@ -27,7 +27,7 @@
     "test:bench": "vitest bench --project micro-bench --outputJson=tests/reports/vitest/bench.json",
     "test:e2e": "npm run test:e2e --workspace @collaborative-whiteboard/frontend",
     "test:e2e:smoke": "npm run test:e2e:smoke:ci --workspace @collaborative-whiteboard/frontend",
-    "test:benchmark": "npm run benchmark:external:ci --workspace @collaborative-whiteboard/frontend",
+    "test:benchmark": "tsx tests/run-system.ts --profile=custom --yes --build=false --unit=false --integration=false --browser=false --smoke=false --benchmark=true --resilience=false --boundary=false --report=false --matrix=true",
     "benchmark:backend": "node scripts/benchmark-backend.mjs",
     "test:report": "tsx tests/report/aggregate.ts",
     "test:all:local": "tsx tests/run-system.ts --profile=standard --yes",

@@ -10,6 +10,11 @@ func (c *wsClient) validateIncomingBinary(typ string, data map[string]any) bool 
 	case "cmd-update", "cmd-stop":
 		return decodedPointCount(data["points"]) <= c.maxPointsPerUpdate()
 	case "cmd-start", "push-cmd":
+		if cmd, ok := data["cmd"].(map[string]any); ok {
+			if scene, ok := cmd["sceneOperation"].(map[string]any); ok {
+				return c.scenePayloadWithinLimits(scene)
+			}
+		}
 		return decodedPointCount(data["points"]) <= c.maxPointsPerCommand()
 	default:
 		return true
@@ -40,7 +45,39 @@ func (c *wsClient) validateIncoming(typ string, data map[string]any) bool {
 		if !ok {
 			return true
 		}
+		if scene, ok := cmd["sceneOperation"].(map[string]any); ok {
+			return c.scenePayloadWithinLimits(scene)
+		}
 		return len(pointsFromIncoming(cmd["points"])) <= c.maxPointsPerCommand()
+	default:
+		return true
+	}
+}
+
+func (c *wsClient) scenePayloadWithinLimits(operation map[string]any) bool {
+	payload, _ := operation["payload"].(map[string]any)
+	if payload == nil {
+		return false
+	}
+	count := func(value any) int {
+		switch values := value.(type) {
+		case []any:
+			return len(values)
+		case []domain.Point:
+			return len(values)
+		default:
+			return 0
+		}
+	}
+	switch stringValue(operation["kind"]) {
+	case "element.create", "element.append":
+		return count(payload["points"]) <= c.maxPointsPerCommand()
+	case "element.transform", "element.erase":
+		return count(payload["targets"]) <= c.maxBatchCommands()
+	case "element.delete":
+		return count(payload["elementIds"]) <= c.maxBatchCommands()
+	case "text.patch":
+		return count(payload["patches"]) <= c.maxBatchCommands()
 	default:
 		return true
 	}

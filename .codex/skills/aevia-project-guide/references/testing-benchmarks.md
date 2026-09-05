@@ -7,13 +7,16 @@ Read this before modifying tests, benchmark scripts, reports, baselines, budgets
 Root:
 
 - `vitest.config.ts`: Vitest project definitions.
+- `tests/run-system.ts`: interactive profile runner; reads Vitest JSON reports on failure and starts one isolated frontend/backend pair before external steps. The direct external runner still expects caller-provided services.
 - `tests/report/aggregate.ts`: aggregates Vitest and external reports.
 - `tests/reports/`: generated report outputs.
 
 Frontend:
 
-- `apps/frontend/tests/bench/render-core.bench.ts`: Vitest micro benchmark.
-- `apps/frontend/tests/browser/room-pagination.browser.spec.ts`: browser spec.
+- `apps/frontend/tests/bench/render-core.bench.ts`: existing Vitest micro benchmark.
+- `apps/frontend/tests/bench/dirty-replay.bench.ts`: 10k/100k fixed-region, long-stroke, and dense-hotspot SceneEngine queries.
+- `apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts`: real Canvas byte comparison between dirty and full replay.
+- `apps/frontend/tests/browser/room-pagination.browser.spec.ts`: pagination browser spec.
 - `apps/frontend/tests/e2e/README.md`: notes that the E2E files are AI-generated and test-only.
 - `apps/frontend/tests/e2e/external/`: current external E2E and benchmark harness.
 
@@ -89,6 +92,12 @@ cmd /c npm run test:benchmark
 cmd /c npm run test:report
 ```
 
+The root `test:benchmark` command is self-contained and routes through `tests/run-system.ts`, so it owns an isolated frontend/backend pair. Workspace-level `benchmark:external:*` commands intentionally remain raw runners for callers that already provide `VITE_FRONTEND_URL`, `VITE_API_URL`, and `VITE_WS_URL`. Root benchmark CLI overrides such as `--matrix=false --runs=1 --warmup=0 --scales=1000` are forwarded to the external runner.
+
+`vitest.config.ts` canonicalizes `process.cwd()` with `realpathSync`. Keep this when changing the config: the common Windows workspace path under `Desktop\\code` is a directory junction to `D:\\code`, and mixing the junction path with Vite's real path produces `/@fs/D:/...` module-not-found failures when `npm run test` starts from the C-drive spelling.
+
+Root `npm run test` allocates local ports, injects `VITE_FRONTEND_URL`/`VITE_API_URL`/`VITE_WS_URL`, and uses a per-run SQLite file for external suites. Override the automatic ports with `AEVIA_TEST_FRONTEND_PORT` and `AEVIA_TEST_BACKEND_PORT` only when a fixed port is required. It stops only the services it started and removes that run's database on completion or interruption.
+
 Frontend external harness:
 
 ```powershell
@@ -118,6 +127,8 @@ Run direct runner commands from `apps/frontend`, because `config.ts` builds path
 - For API/WebSocket synthetic users, inspect `protocol-driver.ts`.
 - For real UI pointer behavior, inspect `ui-driver.ts`.
 - Keep report output changes aligned with `tests/report/aggregate.ts` if root summary generation consumes them.
+- Protocol-driver V2 commands must use the trusted `userId` received in `init-meta`, not a locally invented join-response fallback, or strict gateway validation will reject them.
+- Scene correctness lives primarily in `src/scene/sceneEngine.spec.ts`: arrival-order convergence, point/glyph interleaving, transform and erase history, page clear, RGA siblings, exact hit testing, and grid locality.
 
 ## Benchmark Database Hygiene
 

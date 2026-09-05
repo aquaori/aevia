@@ -133,16 +133,6 @@ export const createCollabMessageDispatcher = (options: CollabMessageDispatcherOp
 			return;
 		}
 
-		if (msg.type === "cmd-batch-move") {
-			commandHandlers.handleBatchMove(msg);
-			return;
-		}
-
-		if (msg.type === "cmd-batch-update" || msg.type === "cmd-batch-stop") {
-			commandHandlers.handleBatchUpdate(msg);
-			return;
-		}
-
 		if (msg.type === "cmd-page-add") {
 			commandHandlers.handlePageAdd(msg);
 			return;

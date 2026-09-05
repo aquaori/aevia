@@ -6,6 +6,8 @@ Read this before changing command shape, shared types, message semantics, binary
 
 - `packages/shared/src/types/collab.ts`: canonical shared collaboration domain types.
 - `packages/shared/src/protocol/collabProtocol.ts`: canonical protocol/page normalization helpers.
+- `packages/shared/src/types/scene.ts`: `SceneOperationEnvelopeV2`, public recipes, tools, transforms, erase targets, text patches, and render keys.
+- `packages/shared/src/protocol/sceneProtocol.ts`: schema constants, supported recipes, and deterministic render-order comparison.
 - `packages/shared/src/index.ts`: exports.
 
 The shared package is ESM-only. The committed CommonJS bridge went away with
@@ -21,6 +23,7 @@ Main concepts:
 - `RemoteCursor`: collaborator cursor.
 - `AabbBox`: command bounds.
 - `QueuePoint`: dirty-point queue logic.
+- `SceneOperationEnvelopeV2`: immutable product operation; all new board writes use `Command.type = "scene-op"` and `schemaVersion = 2`.
 
 Important command fields include:
 
@@ -39,6 +42,16 @@ comparison inline:
 
 Never use `localeCompare` or `toLocaleLowerCase` here — both are locale-sensitive
 and would let two clients order the same pair differently.
+
+Scene atoms use `(lamport, opId byte order, sourceIndex, subIndex)`. Use `compareRenderOrder`/`sceneOperationOrderKey`; do not derive a tool-specific z-index. Points, glyphs, shapes, and plugin recipes share this order.
+
+## V2 Mutation Rules
+
+- New writes are `element.create`, `element.append`, `element.transform`, `element.erase`, `element.delete`, `element.style`, `text.patch`, `history.toggle`, or `page.clear`.
+- Transform, erase, delete, clear, undo, and redo append operations; they never replace stored commands or points.
+- The Go gateway requires matching command/operation IDs, identity, room/page, Lamport value, recipe capability, numeric ranges, and `schemaVersion: 2`.
+- V1 path commands remain readable through the SceneEngine adapter. V1 mutation messages are rejected with `UPGRADE_REQUIRED`.
+- A protocol-only client must take its trusted `userId` from WebSocket `init-meta`; `/join-room` does not expose the token's user ID.
 
 ## Coupling Rules
 

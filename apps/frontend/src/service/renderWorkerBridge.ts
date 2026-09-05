@@ -1,5 +1,5 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
-import type { Command, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
+import type { Command, EraseTarget, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
 import type {
 	InitRenderChunkCommandDictionaryEntry,
 	InitRenderChunkMetaPayload,
@@ -69,16 +69,21 @@ const clonePoint = (point: Point): Point => ({
 	lamport: point.lamport,
 });
 
+const cloneSceneOperation = (operation: Command["sceneOperation"]) =>
+	operation ? JSON.parse(JSON.stringify(operation)) as NonNullable<Command["sceneOperation"]> : undefined;
+
 const cloneCommand = (cmd: Command): Command => ({
 	...cmd,
 	points: cmd.points ? cmd.points.map(clonePoint) : [],
 	box: { ...cmd.box },
+	sceneOperation: cloneSceneOperation(cmd.sceneOperation),
 });
 
 export const cloneCommandForStateSync = (cmd: Command): Command => {
 	const cloned: Command = {
 		...cmd,
 		box: { ...cmd.box },
+		sceneOperation: cloneSceneOperation(cmd.sceneOperation),
 	};
 	if (cmd.points) {
 		cloned.points = cmd.points.map(clonePoint);
@@ -108,6 +113,11 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	let streamedInitPoints: FlatPoint[] = [];
 	const pendingRequests = new Map<string, (points: FlatPoint[]) => void>();
 	const pendingCommandPointRequests = new Map<string, (result: CommandPointsResult[]) => void>();
+	const pendingEraseTargetRequests = new Map<string, (result: EraseTarget[]) => void>();
+	const pendingSceneHitRequests = new Map<string, (result: { elementId: string | null; bounds: aabbBox | null }) => void>();
+	const pendingSceneQueryRequests = new Map<string, (result: { elementIds: string[]; bounds: aabbBox | null }) => void>();
+	const pendingSceneOperationRenders = new Map<string, () => void>();
+	const renderedSceneOperations = new Set<string>();
 	const pendingIncrements = new Map<string, PendingIncrement>();
 
 	const cancelPendingMainCanvasRequest = () => {
@@ -148,12 +158,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		}
 
 		worker.postMessage({
-			type: "flat-points-from-scene",
-			data: {
-				pageId: payload.pageId,
-				transformingCmdIds: [...payload.transformingCmdIds],
-				requestId: payload.requestId,
-			},
+			type: "flat-points",
+			data,
 		});
 	};
 
@@ -223,7 +229,15 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		});
 
 		worker.onmessage = (event) => {
-			const { type, points, rects, requestId, commands } = event.data;
+			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
+
+			if (type === "scene-operation-rendered") {
+				const callback = typeof opId === "string" ? pendingSceneOperationRenders.get(opId) : undefined;
+				if (typeof opId === "string") pendingSceneOperationRenders.delete(opId);
+				if (callback) callback();
+				else if (typeof opId === "string") renderedSceneOperations.add(opId);
+				return;
+			}
 
 			if (type === "flat-points-result") {
 				if (requestId && pendingRequests.has(requestId)) {
@@ -248,6 +262,27 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 					pendingCommandPointRequests.delete(requestId);
 					callback?.((commands as CommandPointsResult[]) ?? []);
 				}
+				return;
+			}
+
+			if (type === "erase-targets-result") {
+				const callback = requestId ? pendingEraseTargetRequests.get(requestId) : undefined;
+				if (requestId) pendingEraseTargetRequests.delete(requestId);
+				callback?.((targets as EraseTarget[]) ?? []);
+				return;
+			}
+
+			if (type === "scene-hit-result") {
+				const callback = requestId ? pendingSceneHitRequests.get(requestId) : undefined;
+				if (requestId) pendingSceneHitRequests.delete(requestId);
+				callback?.({ elementId: elementId ?? null, bounds: bounds ?? null });
+				return;
+			}
+
+			if (type === "scene-query-result") {
+				const callback = requestId ? pendingSceneQueryRequests.get(requestId) : undefined;
+				if (requestId) pendingSceneQueryRequests.delete(requestId);
+				callback?.({ elementIds: Array.isArray(elementIds) ? elementIds : [], bounds: bounds ?? null });
 				return;
 			}
 
@@ -326,7 +361,6 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			});
 			return;
 		}
-		options.onMainPoints([]);
 	};
 
 	const appendInitRenderChunk = (points: FlatPoint[]) => {
@@ -434,6 +468,19 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		queueIncrementalCommand(cmd, [point], pageId, source);
 	};
 
+	const setInitSceneOperations = (commands: Command[], pageId: number) => {
+		if (!worker || !offscreenEnabled) return;
+		worker.postMessage({
+			type: "set-init-scene-operations",
+			data: {
+				pageId,
+				commands: commands
+					.filter((command) => command.type === "scene-op" && command.pageId === pageId)
+					.map(cloneCommand),
+			},
+		});
+	};
+
 	const finishCommandStroke = (cmdId: string) => {
 		if (!worker || !offscreenEnabled || !cmdId) return;
 		if (pendingIncrements.has(cmdId)) {
@@ -471,6 +518,37 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		});
 	};
 
+	const waitForSceneOperationRender = (opId: string, timeoutMs = 800) => new Promise<void>((resolve) => {
+		if (!worker || !offscreenEnabled || renderedSceneOperations.delete(opId)) {
+			resolve();
+			return;
+		}
+		const timer = window.setTimeout(() => {
+			pendingSceneOperationRenders.delete(opId);
+			resolve();
+		}, timeoutMs);
+		pendingSceneOperationRenders.set(opId, () => {
+			window.clearTimeout(timer);
+			resolve();
+		});
+	});
+
+	const renderDirtyRects = (
+		rects: DirtyRectRequest[],
+		pageId: number,
+		transformingCmdIds: string[] = []
+	) => {
+		if (!worker || !offscreenEnabled || rects.length === 0) return;
+		worker.postMessage({
+			type: "render-dirty-regions",
+			data: {
+				rects: rects.map(cloneRect),
+				pageId,
+				transformingCmdIds: [...transformingCmdIds],
+			},
+		});
+	};
+
 	const requestCommandPoints = (cmdIds: string[]) =>
 		new Promise<CommandPointsResult[]>((resolve) => {
 			if (!worker || cmdIds.length === 0) {
@@ -488,23 +566,58 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			});
 		});
 
+	const requestEraseTargets = (payload: {
+		points: Point[];
+		size: number;
+		wholeObjects: boolean;
+		pageId: number;
+		width: number;
+		height: number;
+		commands?: Command[];
+	}) => new Promise<EraseTarget[]>((resolve) => {
+		if (!worker || payload.points.length === 0) {
+			resolve([]);
+			return;
+		}
+		const requestId = `erase-targets:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+		pendingEraseTargetRequests.set(requestId, resolve);
+		worker.postMessage({
+			type: "compute-erase-targets",
+			data: {
+				...payload,
+				commands: payload.commands?.map(cloneCommand),
+				requestId,
+			},
+		});
+	});
+
+	const requestSceneHit = (x: number, y: number) =>
+		new Promise<{ elementId: string | null; bounds: aabbBox | null }>((resolve) => {
+			if (!worker || !offscreenEnabled) {
+				resolve({ elementId: null, bounds: null });
+				return;
+			}
+			const requestId = `scene-hit:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+			pendingSceneHitRequests.set(requestId, resolve);
+			worker.postMessage({ type: "scene-hit-test", data: { x, y, requestId } });
+		});
+
+	const requestSceneQuery = (rect: aabbBox) =>
+		new Promise<{ elementIds: string[]; bounds: aabbBox | null }>((resolve) => {
+			if (!worker || !offscreenEnabled) {
+				resolve({ elementIds: [], bounds: null });
+				return;
+			}
+			const requestId = `scene-query:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+			pendingSceneQueryRequests.set(requestId, resolve);
+			worker.postMessage({ type: "scene-query-elements", data: { rect: cloneRect(rect), requestId } });
+		});
+
 	const removeCommandState = (cmdId: string) => {
 		if (!worker || !offscreenEnabled) return;
 		worker.postMessage({
 			type: "remove-command-state",
 			data: { cmdId },
-		});
-	};
-
-	const translateCommandPoints = (cmdIds: string[], dx: number, dy: number) => {
-		if (!worker || !offscreenEnabled || cmdIds.length === 0) return;
-		worker.postMessage({
-			type: "translate-command-points",
-			data: {
-				cmdIds: [...cmdIds],
-				dx,
-				dy,
-			},
 		});
 	};
 
@@ -532,6 +645,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const dispose = () => {
 		pendingRequests.clear();
 		pendingCommandPointRequests.clear();
+		pendingEraseTargetRequests.clear();
+		pendingSceneHitRequests.clear();
+		pendingSceneQueryRequests.clear();
+		for (const callback of pendingSceneOperationRenders.values()) callback();
+		pendingSceneOperationRenders.clear();
+		renderedSceneOperations.clear();
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();
 		worker?.postMessage({ type: "dispose" });
@@ -549,21 +668,26 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		isOffscreenEnabled: () => offscreenEnabled,
 		requestFlatPoints,
 		requestCommandPoints,
+		requestEraseTargets,
+		requestSceneHit,
+		requestSceneQuery,
 		requestMergeDirtyRects,
 		renderMainCanvas,
 		beginInitRenderStream,
 		appendInitRenderChunk,
 		appendInitRenderBinaryChunk,
 		finishInitRenderStream,
+		setInitSceneOperations,
 		syncWorkerScene,
 		renderSceneFromFlatPoints,
 		renderIncrementalCommand,
 		renderSinglePointCommand,
 		finishCommandStroke,
 		renderDirtyRect,
+		renderDirtyRects,
 		syncCommandState,
+		waitForSceneOperationRender,
 		removeCommandState,
-		translateCommandPoints,
 		rerenderScene,
 	};
 };

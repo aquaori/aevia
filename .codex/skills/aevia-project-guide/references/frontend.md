@@ -42,6 +42,15 @@ Important: do not bypass `commandStore` for command ordering/folding behavior.
 
 ## Rendering
 
+Canonical scene core:
+
+- `scene/sceneEngine.ts`: immutable-operation folding, incremental primitive compilation, history, clear, transforms, erasure, hit testing, ordering, spatial queries, and rendering.
+- `scene/renderOrderIndex.ts`: block-ordered atom references used by full replay.
+- `scene/spatialGridIndex.ts`: 32×32 coarse grid over bounded geometry chunks.
+- `scene/dirtyRegionSet.ts`: up to eight disjoint regions, full-render thresholds, and enter/exit hysteresis.
+- `scene/primitiveRenderer.ts`: the only Canvas2D recipe executor for stroke, shape, glyph, and bitmap atoms.
+- `scene/toolRegistry.ts`: declarative built-in tools and their public primitive mappings.
+
 Preferred worker path:
 
 - `service/renderWorkerBridge.ts`
@@ -57,9 +66,17 @@ Main-thread/fallback and scheduling:
 - `service/dirtyRenderQueue.ts`
 - `service/commandDirtyRect.ts`
 
-When changing rendering, keep worker and fallback paths coherent. Dirty-rect changes should usually inspect `commandDirtyRect.ts`, `dirtyRenderQueue.ts`, `canvasWorker.ts`, and `dirtyRedraw.ts` together.
+Worker and fallback paths both use `SceneEngine`; do not add a second tool-specific renderer or command scan. Dirty-rect changes should usually inspect `sceneEngine.ts`, `spatialGridIndex.ts`, `dirtyRegionSet.ts`, `dirtyRenderQueue.ts`, `canvasWorker.ts`, and `canvas.ts` together.
 
-Stroke rendering uses midpoint-based quadratic segments with state carried across incremental batches. Every live `cmdId` must be finalized on `cmd-stop` so the pending tail is committed; keep `strokeRasterizer.ts`, `canvas.ts`, `canvasWorker.ts`, `renderWorkerBridge.ts`, pointer stop handling, and remote command-stop handling aligned.
+New drawing writes are immutable `element.create`/`element.append` scene operations. Stroke rendering compiles midpoint-based quadratic atoms once as points enter the scene, and `isComplete` commits the stable tail atom. `cmd-start/update/stop` remains only in V1 read/rejection compatibility code and must not be used for a new write path.
+
+Selection transforms are preview matrices until pointer-up, then one multi-target `element.transform` is appended. Erasure stores explicit quantized atom intervals (or whole-object targets); neither feature may rewrite historical point arrays. Undo/redo appends `history.toggle`.
+
+The worker must not mirror complete point geometry in `sceneCommands`; SceneEngine owns compiled geometry and point hydration. Init command streams carry V2 operations because the backend render-point stream contains only legacy path points. Live commands arriving before init commands complete are merged into the snapshot rather than overwritten.
+
+Init and page-resync render chunks are painted progressively as soon as each clear-watermark-filtered chunk is ingested. `canvasWorker.ts` clears the previous pixels only when the first valid chunk is ready, draws newly compiled atom refs in stream order, and finalizes stroke tails at render-stream completion; V2 command chunks then fold progressively into the same SceneEngine. Do not delay first paint until both streams finish. Forced current-page resync sends an empty `clientLoadedPageIds` window so the backend actually returns authoritative commands instead of a flat-only cache delta.
+
+`RoomTextEditor.vue` keeps font controls local while editing. `roomPointerController.ts` appends at most one immutable `element.style` operation when the editor is confirmed; toolbar clicks must not emit one network operation per click. Rejected scene pushes with a returned `cmdId` are rolled back locally and rebuild the Worker scene rather than forcing an unscoped page replay.
 
 Raw pointer input is normalized by `strokeInputSampler.ts`: coalesced browser events are resampled at a fixed spatial interval, speed and pressure are filtered by elapsed time, and each animation-frame batch is simplified with pressure-aware error bounds. `roomPointerController.ts` must use the same resulting points for local rendering and transport; renderers must consume stored pressure without deriving a second velocity factor from point distance. Backpressure changes simplification tolerance through `collabPressurePolicy.ts`, not the base sampling interval.
 
@@ -67,7 +84,7 @@ Mouse stroke start is deferred until two normalized movement samples are availab
 
 Mouse speed simulation uses idle-aware asymmetric damping: accelerating/thinning responds faster than decelerating/thickening, and a long pause must not be included as movement time or filter elapsed time when drawing resumes. Width growth is also capped below width shrink per normalized sample. Keep pen pressure on its separate physical-pressure path.
 
-During a local stroke, `pointerHotState.currentPathPoints` and the inserted command must share the authoritative point buffer until stop; otherwise worker state sync can replace complete incremental geometry with only the start point. On OffscreenCanvas stop, clear main-thread points before metadata sync and preserve `points: undefined` across cloning so it means “do not replace worker geometry”; flush pending increments before finalizing the worker stroke.
+For legacy V1 hydration, preserve `points: undefined` across worker metadata cloning so it means “do not replace SceneEngine geometry”. New V2 commands keep geometry in their immutable operation payload and do not use the old incremental-command mutation path.
 
 ## UI Components
 

@@ -9,16 +9,29 @@ import (
 const pointBlockSize = 2000
 
 type PagePointIndex struct {
-	version  int
-	pages    map[int]*pagePointBlocks
-	locators map[string]commandPointLocator
+	version         int
+	pages           map[int]*pagePointBlocks
+	locators        map[string]commandPointLocator
+	scenePathStyles map[string]scenePathStyle
 }
 
 type commandPointLocator struct {
-	pageID   int
-	points   int
-	deleted  bool
-	lastTool string
+	pageID      int
+	points      int
+	deleted     bool
+	lastTool    string
+	pointCmdID  string
+	immutableV2 bool
+	createOrder sceneOrderKey
+}
+
+type scenePathStyle struct {
+	pageID        int
+	tool          string
+	color         string
+	size          float64
+	strokePattern string
+	createOrder   sceneOrderKey
 }
 
 type pagePointBlocks struct {
@@ -27,8 +40,21 @@ type pagePointBlocks struct {
 
 func NewPagePointIndex(commands []domain.Command) *PagePointIndex {
 	idx := &PagePointIndex{
-		pages:    make(map[int]*pagePointBlocks),
-		locators: make(map[string]commandPointLocator),
+		pages:           make(map[int]*pagePointBlocks),
+		locators:        make(map[string]commandPointLocator),
+		scenePathStyles: make(map[string]scenePathStyle),
+	}
+	// Persisted commands are held in a map by the room state and therefore have
+	// no reliable iteration order. Collect create metadata first so an append can
+	// be projected even when it happens to be visited before its create command.
+	for _, cmd := range commands {
+		fragment, ok := domain.ScenePathFragmentFromCommand(cmd)
+		if ok && fragment.IsCreate {
+			idx.scenePathStyles[fragment.ElementID] = scenePathStyle{
+				pageID: fragment.PageID, tool: fragment.Tool, color: fragment.Color, size: fragment.Size, strokePattern: fragment.StrokePattern,
+				createOrder: sceneOrderKey{Lamport: fragment.Lamport, OpID: fragment.OperationID},
+			}
+		}
 	}
 	for _, cmd := range commands {
 		idx.Upsert(cmd)
@@ -43,6 +69,10 @@ func (i *PagePointIndex) Version() int {
 func (i *PagePointIndex) Upsert(cmd domain.Command) {
 	cmdID := cmd.ID()
 	if cmdID == "" {
+		return
+	}
+	if fragment, ok := domain.ScenePathFragmentFromCommand(cmd); ok {
+		i.upsertScenePathFragment(cmdID, fragment)
 		return
 	}
 	points := cmd.Points()
@@ -61,7 +91,7 @@ func (i *PagePointIndex) Upsert(cmd domain.Command) {
 	i.Remove(cmdID)
 	flatPoints := domain.FlattenCommand(cmd)
 	if len(flatPoints) == 0 {
-		i.locators[cmdID] = commandPointLocator{pageID: pageID, points: len(points), deleted: deleted, lastTool: tool}
+		i.locators[cmdID] = commandPointLocator{pageID: pageID, points: len(points), deleted: deleted, lastTool: tool, pointCmdID: cmdID}
 		return
 	}
 	pointsByPage := make(map[int][]domain.FlatPoint)
@@ -72,8 +102,45 @@ func (i *PagePointIndex) Upsert(cmd domain.Command) {
 		page := i.ensurePage(pageID)
 		page.insertMany(pagePoints)
 	}
-	i.locators[cmdID] = commandPointLocator{pageID: pageID, points: len(points), deleted: deleted, lastTool: tool}
+	i.locators[cmdID] = commandPointLocator{
+		pageID: pageID, points: len(points), deleted: deleted, lastTool: tool, pointCmdID: cmdID,
+		createOrder: sceneOrderKey{Lamport: flatPoints[0].Lamport, OpID: cmdID},
+	}
 	i.version++
+}
+
+func (i *PagePointIndex) upsertScenePathFragment(cmdID string, fragment domain.ScenePathFragment) {
+	if locator, exists := i.locators[cmdID]; exists && locator.immutableV2 {
+		return
+	}
+	if fragment.IsCreate {
+		i.scenePathStyles[fragment.ElementID] = scenePathStyle{
+			pageID: fragment.PageID, tool: fragment.Tool, color: fragment.Color, size: fragment.Size, strokePattern: fragment.StrokePattern,
+			createOrder: sceneOrderKey{Lamport: fragment.Lamport, OpID: fragment.OperationID},
+		}
+	}
+	style, ok := i.scenePathStyles[fragment.ElementID]
+	if !ok || style.pageID != fragment.PageID {
+		return
+	}
+	flatPoints := make([]domain.FlatPoint, 0, len(fragment.Points))
+	for index, point := range fragment.Points {
+		flatPoints = append(flatPoints, domain.FlatPoint{
+			X: point.X, Y: point.Y, P: point.P, Lamport: point.Lamport,
+			CmdID: fragment.ElementID, OrderOpID: fragment.OperationID,
+			PageID: fragment.PageID, UserID: fragment.UserID,
+			Tool: style.tool, Color: style.color, Size: style.size, StrokePattern: style.strokePattern,
+			PointIndex: fragment.SourceStart + index,
+		})
+	}
+	if len(flatPoints) > 0 {
+		i.ensurePage(fragment.PageID).insertMany(flatPoints)
+		i.version++
+	}
+	i.locators[cmdID] = commandPointLocator{
+		pageID: fragment.PageID, points: len(fragment.Points), lastTool: style.tool,
+		pointCmdID: fragment.ElementID, immutableV2: true, createOrder: style.createOrder,
+	}
 }
 
 func canAppendIndexPoints(locator commandPointLocator, pageID, pointCount int, deleted bool, tool string) bool {
@@ -86,6 +153,7 @@ func canAppendIndexPoints(locator commandPointLocator, pageID, pointCount int, d
 
 func (i *PagePointIndex) appendCommandPoints(cmd domain.Command, startIndex int) {
 	cmdID := cmd.ID()
+	createOrder := i.locators[cmdID].createOrder
 	points := cmd.Points()
 	if startIndex >= len(points) {
 		return
@@ -93,20 +161,23 @@ func (i *PagePointIndex) appendCommandPoints(cmd domain.Command, startIndex int)
 	flatPoints := domain.FlattenCommandRange(cmd, startIndex)
 	if len(flatPoints) == 0 {
 		i.locators[cmdID] = commandPointLocator{
-			pageID:   domain.IntDefault(cmd.Get("pageId"), 0),
-			points:   len(points),
-			deleted:  cmd.IsDeleted(),
-			lastTool: domain.StringDefault(cmd.Get("tool"), "pen"),
+			pageID:      domain.IntDefault(cmd.Get("pageId"), 0),
+			points:      len(points),
+			deleted:     cmd.IsDeleted(),
+			lastTool:    domain.StringDefault(cmd.Get("tool"), "pen"),
+			createOrder: createOrder,
 		}
 		return
 	}
 	pageID := flatPoints[0].PageID
 	i.ensurePage(pageID).insertMany(flatPoints)
 	i.locators[cmdID] = commandPointLocator{
-		pageID:   pageID,
-		points:   len(points),
-		deleted:  cmd.IsDeleted(),
-		lastTool: domain.StringDefault(cmd.Get("tool"), "pen"),
+		pageID:      pageID,
+		points:      len(points),
+		deleted:     cmd.IsDeleted(),
+		lastTool:    domain.StringDefault(cmd.Get("tool"), "pen"),
+		pointCmdID:  cmdID,
+		createOrder: createOrder,
 	}
 	i.version++
 }
@@ -115,7 +186,11 @@ func (i *PagePointIndex) Remove(cmdID string) {
 	changed := false
 	if locator, ok := i.locators[cmdID]; ok {
 		if page := i.pages[locator.pageID]; page != nil {
-			if page.removeCommand(cmdID) {
+			pointCmdID := locator.pointCmdID
+			if pointCmdID == "" {
+				pointCmdID = cmdID
+			}
+			if page.removeCommand(pointCmdID) {
 				changed = true
 			}
 			if page.empty() {
@@ -149,6 +224,11 @@ func (i *PagePointIndex) ClearPage(pageID int) {
 				delete(i.locators, cmdID)
 			}
 		}
+		for elementID, style := range i.scenePathStyles {
+			if style.pageID == pageID {
+				delete(i.scenePathStyles, elementID)
+			}
+		}
 		i.version++
 	}
 }
@@ -157,6 +237,7 @@ func (i *PagePointIndex) ClearAll() {
 	if len(i.pages) > 0 {
 		i.pages = make(map[int]*pagePointBlocks)
 		i.locators = make(map[string]commandPointLocator)
+		i.scenePathStyles = make(map[string]scenePathStyle)
 		i.version++
 	}
 }
@@ -184,6 +265,55 @@ func (i *PagePointIndex) PagePoints(pageIDs []int) []domain.FlatPoint {
 		domain.SortFlatPoints(out)
 	}
 	return out
+}
+
+func (i *PagePointIndex) VisiblePagePoints(pageIDs []int, clearBefore map[int]sceneOrderKey) []domain.FlatPoint {
+	points := i.PagePoints(pageIDs)
+	if len(points) == 0 || len(clearBefore) == 0 {
+		return points
+	}
+	out := points[:0]
+	for _, point := range points {
+		if !i.pointVisibleAfterClear(point, clearBefore) {
+			continue
+		}
+		out = append(out, point)
+	}
+	return out
+}
+
+func (i *PagePointIndex) pointVisibleAfterClear(point domain.FlatPoint, clearBefore map[int]sceneOrderKey) bool {
+	watermark, hasWatermark := clearBefore[point.PageID]
+	if !hasWatermark {
+		return true
+	}
+	if style, ok := i.scenePathStyles[point.CmdID]; ok {
+		return compareSceneOrder(style.createOrder, watermark) > 0
+	}
+	if locator, ok := i.locators[point.CmdID]; ok && locator.createOrder.OpID != "" {
+		return compareSceneOrder(locator.createOrder, watermark) > 0
+	}
+	return compareSceneOrder(sceneOrderKey{
+		Lamport: point.Lamport, OpID: point.CmdID, SourceIndex: point.PointIndex,
+	}, watermark) > 0
+}
+
+func (i *PagePointIndex) VisiblePagePointCount(pageIDs []int, clearBefore map[int]sceneOrderKey) int {
+	count := 0
+	for _, pageID := range pageIDs {
+		page := i.pages[pageID]
+		if page == nil {
+			continue
+		}
+		for _, block := range page.blocks {
+			for _, point := range block {
+				if i.pointVisibleAfterClear(point, clearBefore) {
+					count++
+				}
+			}
+		}
+	}
+	return count
 }
 
 func (i *PagePointIndex) PagePointCount(pageIDs []int) int {
@@ -230,6 +360,60 @@ func (i *PagePointIndex) ForEachPagePointChunk(pageIDs []int, chunkSize int, vis
 	}
 	for _, block := range page.blocks {
 		for _, point := range block {
+			buffer = append(buffer, point)
+			if len(buffer) >= chunkSize {
+				emit()
+			}
+		}
+	}
+	emit()
+}
+
+func (i *PagePointIndex) ForEachVisiblePagePointChunk(
+	pageIDs []int,
+	clearBefore map[int]sceneOrderKey,
+	totalPoints int,
+	chunkSize int,
+	visit func(RenderChunk),
+) {
+	if totalPoints <= 0 {
+		return
+	}
+	if chunkSize <= 0 {
+		chunkSize = pointBlockSize
+	}
+	if len(pageIDs) != 1 {
+		for _, chunk := range chunkFlatPoints(i.VisiblePagePoints(pageIDs, clearBefore), chunkSize) {
+			visit(chunk)
+		}
+		return
+	}
+	page := i.pages[pageIDs[0]]
+	if page == nil {
+		return
+	}
+	totalChunks := (totalPoints + chunkSize - 1) / chunkSize
+	chunkIndex := 0
+	buffer := make([]domain.FlatPoint, 0, chunkSize)
+	emit := func() {
+		if len(buffer) == 0 {
+			return
+		}
+		visit(RenderChunk{
+			ChunkIndex:   chunkIndex,
+			IsLast:       chunkIndex == totalChunks-1,
+			Points:       buffer,
+			LamportStart: buffer[0].Lamport,
+			LamportEnd:   buffer[len(buffer)-1].Lamport,
+		})
+		chunkIndex++
+		buffer = make([]domain.FlatPoint, 0, chunkSize)
+	}
+	for _, block := range page.blocks {
+		for _, point := range block {
+			if !i.pointVisibleAfterClear(point, clearBefore) {
+				continue
+			}
 			buffer = append(buffer, point)
 			if len(buffer) >= chunkSize {
 				emit()

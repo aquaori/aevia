@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ref } from "vue";
+import { createPinia, setActivePinia } from "pinia";
 import type { Command } from "@collaborative-whiteboard/shared";
 import { canvasRef } from "./canvas";
 import { createLocalCommandService } from "./localCommandService";
@@ -27,6 +28,7 @@ const createService = (command: Command) => {
 	const syncCommandState = vi.fn();
 	const commands = ref([command]);
 	const currentCommandIndex = ref(0);
+	const send = vi.fn(() => true);
 
 	const service = createLocalCommandService({
 		commands,
@@ -37,25 +39,25 @@ const createService = (command: Command) => {
 		username: ref("user-1"),
 		currentTool: ref<"pen" | "eraser" | "cursor">("pen"),
 		insertCommand: (item) => commands.value.push(item),
-		clearClearedCommands: () => false,
-		pruneDeletedCommandsAfterPointer: () => [],
 		renderCanvas,
 		requestDirtyRender,
 		syncCommandState,
+		isOffscreenMainCanvas: () => true,
 		requestSceneRefresh,
 		setTool: vi.fn(),
-		send: () => true,
+		send,
 	});
 
-	return { service, requestDirtyRender, requestSceneRefresh, renderCanvas, syncCommandState };
+	return { service, requestDirtyRender, requestSceneRefresh, renderCanvas, syncCommandState, send };
 };
 
 describe("local command history rendering", () => {
+	beforeEach(() => setActivePinia(createPinia()));
 	afterEach(() => {
 		canvasRef.value = null;
 	});
 
-	it("uses dirty rendering for undo and redo when the command has bounds", () => {
+	it("represents legacy undo and redo as immutable scene operations", () => {
 		const canvas = document.createElement("canvas");
 		canvas.width = 1000;
 		canvas.height = 500;
@@ -67,13 +69,16 @@ describe("local command history rendering", () => {
 		expect(state.service.undo().ok).toBe(true);
 		expect(state.service.redo().ok).toBe(true);
 
-		expect(state.requestDirtyRender).toHaveBeenCalledTimes(2);
+		expect(state.requestDirtyRender).not.toHaveBeenCalled();
 		expect(state.requestSceneRefresh).not.toHaveBeenCalled();
 		expect(state.renderCanvas).not.toHaveBeenCalled();
 		expect(state.syncCommandState).toHaveBeenCalledTimes(2);
+		expect(state.syncCommandState.mock.calls[0]?.[0].sceneOperation?.kind).toBe("element.delete");
+		expect(state.syncCommandState.mock.calls[1]?.[0].sceneOperation?.kind).toBe("history.toggle");
+		expect(state.send.mock.calls.every(([type]) => type === "push-cmd")).toBe(true);
 	});
 
-	it("falls back to a scene refresh when command bounds are unavailable", () => {
+	it("does not depend on legacy command bounds", () => {
 		canvasRef.value = document.createElement("canvas");
 		const state = createService(
 			createCommand({ minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 })
@@ -82,7 +87,16 @@ describe("local command history rendering", () => {
 		expect(state.service.undo().ok).toBe(true);
 
 		expect(state.requestDirtyRender).not.toHaveBeenCalled();
-		expect(state.requestSceneRefresh).toHaveBeenCalledOnce();
+		expect(state.requestSceneRefresh).not.toHaveBeenCalled();
 		expect(state.renderCanvas).not.toHaveBeenCalled();
+	});
+
+	it("rejects every legacy write path before transport", () => {
+		const state = createService(
+			createCommand({ minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 })
+		);
+
+		expect(state.service.pushCommand({ type: "path" }).ok).toBe(false);
+		expect(state.send).not.toHaveBeenCalled();
 	});
 });

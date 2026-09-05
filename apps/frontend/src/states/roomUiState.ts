@@ -3,6 +3,7 @@ import { ref, watch } from "vue";
 
 export const createRoomUiState = () => {
 	const activeMenu = ref<"pen" | "eraser" | "color" | "more" | null>(null);
+	const headerMenuOpen = ref(false);
 	const showShortcuts = ref(false);
 	const isFullscreen = ref(false);
 	const hasCopied = ref(false);
@@ -18,6 +19,7 @@ export const createRoomUiState = () => {
 
 	return {
 		activeMenu,
+		headerMenuOpen,
 		showShortcuts,
 		isFullscreen,
 		hasCopied,

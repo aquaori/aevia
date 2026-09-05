@@ -1,9 +1,20 @@
 // File role: mutable interaction state for drawing, selection, dragging, resizing, and transform previews.
 import { ref } from "vue";
-import type { Point } from "@collaborative-whiteboard/shared";
+import type { AffineMatrix, EditorTool, Point } from "@collaborative-whiteboard/shared";
 
-export type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing";
-export type HandleType = "tl" | "tr" | "bl" | "br" | "body" | null;
+export type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing" | "rotating";
+export type HandleType =
+	| "tl"
+	| "tm"
+	| "tr"
+	| "mr"
+	| "br"
+	| "bm"
+	| "bl"
+	| "ml"
+	| "rotate"
+	| "body"
+	| null;
 
 export interface GroupBoxState {
 	minX: number;
@@ -26,6 +37,13 @@ export interface PointerHotState {
 	lastSentPos: { x: number; y: number };
 }
 
+export interface ProductPreviewState {
+	tool: EditorTool;
+	start: { x: number; y: number };
+	end: { x: number; y: number };
+	points: Array<{ x: number; y: number }>;
+}
+
 export const createRoomInteractionState = () => {
 	const cursorX = ref(0);
 	const cursorY = ref(0);
@@ -43,7 +61,11 @@ export const createRoomInteractionState = () => {
 	const interactionMode = ref<InteractionMode>("none");
 	const activeTransformHandle = ref<HandleType>(null);
 	const initialCmdsState = ref<Map<string, Point[]>>(new Map());
+	const previewTransform = ref<AffineMatrix | null>(null);
 	const initialGroupBox = ref<GroupBoxState | null>(null);
+	const selectedSceneBounds = ref<GroupBoxState | null>(null);
+	const productPreview = ref<ProductPreviewState | null>(null);
+	const canvasCursor = ref("default");
 	const lastX = ref(0);
 	const lastY = ref(0);
 	const lastWidth = ref(0);
@@ -68,7 +90,11 @@ export const createRoomInteractionState = () => {
 		interactionMode,
 		activeTransformHandle,
 		initialCmdsState,
+		previewTransform,
 		initialGroupBox,
+		selectedSceneBounds,
+		productPreview,
+		canvasCursor,
 		lastX,
 		lastY,
 		lastWidth,

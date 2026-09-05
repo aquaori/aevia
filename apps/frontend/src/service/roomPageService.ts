@@ -1,5 +1,6 @@
 // File role: page navigation orchestration driven by backend page-window responses.
 import type { Ref } from "vue";
+import type { EditorTool } from "@collaborative-whiteboard/shared";
 import { useRoomSessionEmitHook } from "./roomSessionContext";
 
 interface RoomPageServiceOptions {
@@ -10,8 +11,8 @@ interface RoomPageServiceOptions {
 	userId: Ref<string>;
 	closeOverview: () => void;
 	renderCanvas: () => void;
-	setTool: (tool: "pen" | "eraser" | "cursor") => void;
-	currentTool: Ref<"pen" | "eraser" | "cursor">;
+	setTool: (tool: EditorTool) => void;
+	currentTool: Ref<EditorTool>;
 	send: (type: string, data: unknown) => boolean;
 }
 
@@ -52,10 +53,10 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 		}
 	};
 
-	const requestPageChange = (index: number) => {
+	const requestPageChange = (index: number, forceReload = false) => {
 		if (index < 0) return false;
 		const previousPageId = options.currentPageId.value;
-		const clientLoadedPageIds = [...options.loadedPageIds.value];
+		const clientLoadedPageIds = forceReload ? [] : [...options.loadedPageIds.value];
 		const requestId = ++nextPageChangeRequestId;
 		activePageChangeRequestId = requestId;
 		activePageChangeTargetId = index;
@@ -91,7 +92,7 @@ export const createRoomPageService = (options: RoomPageServiceOptions) => {
 
 	const goToPage = (index: number) => requestPageChange(index);
 
-	const requestCurrentPageResync = () => requestPageChange(options.currentPageId.value);
+	const requestCurrentPageResync = () => requestPageChange(options.currentPageId.value, true);
 
 	const prevPage = () =>
 		options.currentPageId.value <= 0 ? false : requestPageChange(options.currentPageId.value - 1);

@@ -52,10 +52,10 @@ func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPa
 	startedAt := time.Now()
 	profile := os.Getenv("INIT_PROFILE") == "1"
 	pointsStartedAt := time.Now()
-	points := state.Index.PagePoints(renderPageIDs)
+	points := state.Index.VisiblePagePoints(renderPageIDs, state.ClearBefore)
 	pointsDuration := time.Since(pointsStartedAt)
 	commandsStartedAt := time.Now()
-	commands := commandsForPages(state.Commands, commandPageIDs)
+	commands := commandsForPages(state.Commands, commandPageIDs, state.ClearBefore)
 	commandsDuration := time.Since(commandsStartedAt)
 	renderChunksStartedAt := time.Now()
 	renderChunks := chunkFlatPoints(points, b.cfg.InitFlatPointChunkSize)
@@ -63,6 +63,7 @@ func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPa
 	commandChunksStartedAt := time.Now()
 	commandChunks := chunkCommands(commands, b.cfg.InitCommandChunkSize)
 	commandChunksDuration := time.Since(commandChunksStartedAt)
+	meta["maxLamport"] = maxCommandLamport(state.Commands)
 	meta["chunkSummary"] = map[string]any{
 		"renderChunks":  len(renderChunks),
 		"commandChunks": len(commandChunks),
@@ -91,7 +92,25 @@ func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPa
 	}
 }
 
-func commandsForPages(commands map[string]domain.Command, pageIDs []int) []domain.Command {
+func maxCommandLamport(commands map[string]domain.Command) float64 {
+	maxLamport := 0.0
+	for _, cmd := range commands {
+		lamport := domain.FloatDefault(cmd.Get("lamport"), 0)
+		if operation := sceneOperation(cmd); operation != nil {
+			lamport = domain.FloatDefault(operation["lamport"], lamport)
+		}
+		if lamport > maxLamport {
+			maxLamport = lamport
+		}
+	}
+	return maxLamport
+}
+
+func commandsForPages(
+	commands map[string]domain.Command,
+	pageIDs []int,
+	clearBefore map[int]sceneOrderKey,
+) []domain.Command {
 	allowed := make(map[int]bool, len(pageIDs))
 	for _, pageID := range pageIDs {
 		allowed[pageID] = true
@@ -102,9 +121,38 @@ func commandsForPages(commands map[string]domain.Command, pageIDs []int) []domai
 		if !ok || !allowed[pageID] {
 			continue
 		}
+		if !commandVisibleAfterClear(cmd, clearBefore) {
+			continue
+		}
 		out = append(out, cmd.Snapshot())
 	}
+	domain.SortCommands(out)
 	return out
+}
+
+func commandVisibleAfterClear(cmd domain.Command, clearBefore map[int]sceneOrderKey) bool {
+	pageID, ok := cmd.PageID()
+	if !ok {
+		return false
+	}
+	watermark, hasWatermark := clearBefore[pageID]
+	if !hasWatermark {
+		return true
+	}
+	comparison := compareSceneOrder(commandSceneOrder(cmd), watermark)
+	return comparison > 0 || (comparison == 0 && sceneOperationKind(cmd) == "page.clear")
+}
+
+func commandSceneOrder(cmd domain.Command) sceneOrderKey {
+	operation := sceneOperation(cmd)
+	opID := domain.String(operation["opId"])
+	if opID == "" {
+		opID = cmd.ID()
+	}
+	return sceneOrderKey{
+		Lamport: domain.FloatDefault(operation["lamport"], domain.FloatDefault(cmd.Get("lamport"), 0)),
+		OpID:    opID,
+	}
 }
 
 func chunkFlatPoints(points []domain.FlatPoint, chunkSize int) []RenderChunk {

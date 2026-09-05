@@ -27,16 +27,16 @@ func (a *Actor) persistCommand(client ClientInfo, opType string, cmd domain.Comm
 	if !a.ensureWritable(client, opType) {
 		return false
 	}
-	roomSeq := a.state.NextRoomSeq()
+	roomSeq := a.state.RoomSeq + 1
 	cmd.Set("roomSeq", roomSeq)
-	a.state.UpsertCommand(cmd)
-
 	err := a.store.SaveCommandAtSeq(a.roomID, cmd, roomSeq, options.Barrier)
 	if err != nil {
 		a.enterReadOnly("persist command failed", err)
 		a.reject(client, opType, "DB_WRITE_FAILED", "Server failed to persist the command.", cmd.ID())
 		return false
 	}
+	a.state.RoomSeq = roomSeq
+	a.state.UpsertCommand(cmd)
 	return true
 }
 
@@ -48,14 +48,15 @@ func (a *Actor) persistDelete(client ClientInfo, opType, cmdID string, options m
 		a.reject(client, opType, "COMMAND_NOT_FOUND", "Target command does not exist.", cmdID)
 		return false
 	}
-	roomSeq := a.state.NextRoomSeq()
-	a.state.DeleteCommand(cmdID)
+	roomSeq := a.state.RoomSeq + 1
 	err := a.store.DeleteCommandAtSeq(a.roomID, cmdID, roomSeq, options.Barrier)
 	if err != nil {
 		a.enterReadOnly("persist delete failed", err)
 		a.reject(client, opType, "DB_WRITE_FAILED", "Server failed to delete the command.", cmdID)
 		return false
 	}
+	a.state.RoomSeq = roomSeq
+	a.state.DeleteCommand(cmdID)
 	return true
 }
 
@@ -63,14 +64,15 @@ func (a *Actor) persistClear(client ClientInfo, pageID *int, options mutationOpt
 	if !a.ensureWritable(client, "push-cmd") {
 		return 0, false
 	}
-	roomSeq := a.state.NextRoomSeq()
-	a.state.Clear(pageID)
+	roomSeq := a.state.RoomSeq + 1
 	err := a.store.ClearCommandsAtSeq(a.roomID, pageID, roomSeq, options.Barrier)
 	if err != nil {
 		a.enterReadOnly("persist clear failed", err)
 		a.reject(client, "push-cmd", "DB_WRITE_FAILED", "Server failed to clear commands.", "")
 		return 0, false
 	}
+	a.state.RoomSeq = roomSeq
+	a.state.Clear(pageID)
 	return roomSeq, true
 }
 
@@ -78,14 +80,15 @@ func (a *Actor) persistPageAdd(client ClientInfo, options mutationOptions) (uint
 	if !a.ensureWritable(client, "cmd-page-add") {
 		return 0, false
 	}
-	roomSeq := a.state.NextRoomSeq()
-	a.state.Room.TotalPage++
+	roomSeq := a.state.RoomSeq + 1
 	err := a.store.IncrementPageAtSeq(a.roomID, roomSeq, options.Barrier)
 	if err != nil {
 		a.enterReadOnly("persist page add failed", err)
 		a.reject(client, "cmd-page-add", "DB_WRITE_FAILED", "Server failed to add page.", "")
 		return 0, false
 	}
+	a.state.RoomSeq = roomSeq
+	a.state.Room.TotalPage++
 	return roomSeq, true
 }
 

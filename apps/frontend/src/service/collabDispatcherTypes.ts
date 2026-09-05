@@ -1,15 +1,18 @@
 // File role: shared types for collaboration transport and message dispatching.
 import type { Ref } from "vue";
 import type { EditorHookMap } from "../utils/editorTypes";
-import type { Command, FlatPoint, Point, RemoteCursor } from "@collaborative-whiteboard/shared";
+import type { Command, EditorTool, FlatPoint, Point, RemoteCursor } from "@collaborative-whiteboard/shared";
 
 export interface InitRenderChunkCommandDictionaryEntry {
 	cmdIndex: number;
 	cmdId: string;
+	orderOpId?: string;
+	sourceStart?: number;
 	userId: string;
-	tool: "pen" | "eraser";
+	tool: FlatPoint["tool"];
 	color: string;
 	size: number;
+	strokePattern?: FlatPoint["strokePattern"];
 	isDeleted: boolean;
 }
 
@@ -43,7 +46,7 @@ export interface CollabMessageDispatcherOptions {
 	totalPages: Ref<number>;
 	loadedPageIds: Ref<number[]>;
 	currentPageId: Ref<number>;
-	currentTool: Ref<"pen" | "eraser" | "cursor">;
+	currentTool: Ref<EditorTool>;
 	commands: Ref<Command[]>;
 	currentCommandIndex: Ref<number>;
 	pendingUpdates: Ref<Map<string, Point[]>>;
@@ -63,7 +66,6 @@ export interface CollabMessageDispatcherOptions {
 	}) => void;
 	syncCommandState?: (command: Command) => void;
 	removeCommandState?: (cmdId: string) => void;
-	translateCommandPoints?: (cmdIds: string[], dx: number, dy: number) => void;
 	requestSceneRefresh?: () => void;
 	renderIncrementalCommand?: (
 		cmd: Command,
@@ -80,6 +82,7 @@ export interface CollabMessageDispatcherOptions {
 		buffer: ArrayBuffer
 	) => void;
 	finishInitRenderStream?: () => void;
+	setInitSceneOperations?: (commands: Command[], pageId: number) => void;
 	syncWorkerScene?: (commands: Command[], pageId: number, transformingCmdIds?: string[]) => void;
 	renderSceneFromFlatPoints?: (points: FlatPoint[], pageId: number) => void;
 	goToPage: (page: number) => void;
@@ -91,7 +94,7 @@ export interface CollabMessageDispatcherOptions {
 	getActivePageChangeRequestId?: () => number | null;
 	getActivePageChangeTargetId?: () => number | null;
 	clearActivePageChangeRequest?: (requestId?: number) => void;
-	setTool: (tool: "pen" | "eraser" | "cursor") => void;
+	setTool: (tool: EditorTool) => void;
 	insertCommand: (cmd: Command) => void;
 	removeCommand: (cmdId: string) => Command | null;
 	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;
@@ -105,6 +108,7 @@ export interface CollabMessageDispatcherOptions {
 	requestCurrentPageResync?: () => boolean;
 	cancelRejectedLocalCommand?: (cmdId: string) => void;
 	cancelRejectedOperation?: () => void;
+	notifyRemoteTextPatch?: (elementId: string) => void;
 	onInitConnectionState: () => void;
 	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }

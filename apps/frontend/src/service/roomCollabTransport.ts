@@ -1,7 +1,7 @@
 // File role: websocket transport for room collaboration, reconnection, and raw message intake.
 import { ref, type Ref } from "vue";
 import { toast } from "vue-sonner";
-import type { Command, FlatPoint, Point, RemoteCursor } from "@collaborative-whiteboard/shared";
+import type { Command, EditorTool, FlatPoint, Point, RemoteCursor } from "@collaborative-whiteboard/shared";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
 import { useRoomSessionEmitHook } from "./roomSessionContext";
 import { commandToProtocol, statePageToProtocol } from "@collaborative-whiteboard/shared";
@@ -42,7 +42,7 @@ interface RoomCollabTransportOptions {
 	totalPages: Ref<number>;
 	loadedPageIds: Ref<number[]>;
 	currentPageId: Ref<number>;
-	currentTool: Ref<"pen" | "eraser" | "cursor">;
+	currentTool: Ref<EditorTool>;
 	reconnectFailed: Ref<boolean>;
 	reconnectFailureMessage: Ref<string>;
 	commands: Ref<Command[]>;
@@ -64,7 +64,6 @@ interface RoomCollabTransportOptions {
 	}) => void;
 	syncCommandState?: (command: Command) => void;
 	removeCommandState?: (cmdId: string) => void;
-	translateCommandPoints?: (cmdIds: string[], dx: number, dy: number) => void;
 	requestSceneRefresh?: () => void;
 	renderIncrementalCommand?: (
 		cmd: Command,
@@ -81,6 +80,7 @@ interface RoomCollabTransportOptions {
 		buffer: ArrayBuffer
 	) => void;
 	finishInitRenderStream?: () => void;
+	setInitSceneOperations?: (commands: Command[], pageId: number) => void;
 	syncWorkerScene?: (commands: Command[], pageId: number, transformingCmdIds?: string[]) => void;
 	renderSceneFromFlatPoints?: (points: FlatPoint[], pageId: number) => void;
 	goToPage: (page: number) => void;
@@ -92,7 +92,7 @@ interface RoomCollabTransportOptions {
 	getActivePageChangeRequestId?: () => number | null;
 	getActivePageChangeTargetId?: () => number | null;
 	clearActivePageChangeRequest?: (requestId?: number) => void;
-	setTool: (tool: "pen" | "eraser" | "cursor") => void;
+	setTool: (tool: EditorTool) => void;
 	insertCommand: (cmd: Command) => void;
 	removeCommand: (cmdId: string) => Command | null;
 	replaceLoadedPageWindow: (pageIds: number[], commands: Command[]) => void;
@@ -106,6 +106,7 @@ interface RoomCollabTransportOptions {
 	requestCurrentPageResync?: () => boolean;
 	cancelRejectedLocalCommand?: (cmdId: string) => void;
 	cancelRejectedOperation?: () => void;
+	notifyRemoteTextPatch?: (elementId: string) => void;
 	persistSessionAuth?: (payload: { sessionToken: string; expiresAt: number | null }) => void;
 	onSessionExpired?: () => void;
 }
@@ -438,7 +439,6 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		requestDirtyRender: options.requestDirtyRender,
 		syncCommandState: options.syncCommandState,
 		removeCommandState: options.removeCommandState,
-		translateCommandPoints: options.translateCommandPoints,
 		requestSceneRefresh: options.requestSceneRefresh,
 		renderIncrementalCommand: options.renderIncrementalCommand,
 		renderSinglePointCommand: options.renderSinglePointCommand,
@@ -448,6 +448,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		appendInitRenderChunk: options.appendInitRenderChunk,
 		appendInitRenderBinaryChunk: options.appendInitRenderBinaryChunk,
 		finishInitRenderStream: options.finishInitRenderStream,
+		setInitSceneOperations: options.setInitSceneOperations,
 		syncWorkerScene: options.syncWorkerScene,
 		renderSceneFromFlatPoints: options.renderSceneFromFlatPoints,
 		goToPage: options.goToPage,
@@ -464,6 +465,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		requestCurrentPageResync: options.requestCurrentPageResync,
 		cancelRejectedLocalCommand: options.cancelRejectedLocalCommand,
 		cancelRejectedOperation: options.cancelRejectedOperation,
+		notifyRemoteTextPatch: options.notifyRemoteTextPatch,
 		emitHook,
 		onInitConnectionState: () => {
 			if (isReconnecting.value) {

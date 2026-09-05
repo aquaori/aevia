@@ -115,7 +115,6 @@ export const useCommandStore = defineStore("command", () => {
 		if (cmd.points) {
 			cmd.points = markRaw(cmd.points);
 		}
-
 		if (commandMap.has(cmd.id)) {
 			return;
 		}

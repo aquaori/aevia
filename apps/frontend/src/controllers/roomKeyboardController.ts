@@ -1,8 +1,10 @@
 // File role: keyboard shortcut controller for editor commands and UI toggles.
+import type { EditorTool } from "@collaborative-whiteboard/shared";
+
 interface RoomKeyboardControllerOptions {
 	undo: () => void;
 	redo: () => void;
-	setTool: (tool: "pen" | "eraser" | "cursor") => void;
+	setTool: (tool: EditorTool) => void;
 	openColorMenu: () => void;
 	toggleShortcuts: () => void;
 	toggleFullscreen: () => void;

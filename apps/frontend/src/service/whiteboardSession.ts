@@ -11,6 +11,7 @@ import type {
 	WhiteboardSessionState,
 } from "../utils/editorTypes";
 import type { RemoteCursor } from "../utils/type";
+import type { EditorTool } from "@collaborative-whiteboard/shared";
 
 interface CreateWhiteboardSessionOptions {
 	state: WhiteboardSessionState;
@@ -20,7 +21,7 @@ interface CreateWhiteboardSessionOptions {
 	dispose?: () => void;
 	connect: () => void;
 	disconnect: () => void;
-	setTool: (tool: "pen" | "eraser" | "cursor") => void;
+	setTool: (tool: EditorTool) => void;
 	undo: () => void;
 	redo: () => void;
 	goToPage: (page: number) => void;
@@ -37,7 +38,7 @@ export const createWhiteboardSession = (
 	const lifecycle = ref<SessionLifecyclePhase>("idle");
 	const pluginCleanups = new Map<string, () => void>();
 	const hostState = {
-		currentTool: readonly(options.state.currentTool) as Ref<"pen" | "eraser" | "cursor">,
+		currentTool: readonly(options.state.currentTool) as Ref<EditorTool>,
 		currentColor: readonly(options.state.currentColor) as Ref<string>,
 		currentPageId: readonly(options.state.currentPageId) as Ref<number>,
 		totalPages: readonly(options.state.totalPages) as Ref<number>,
@@ -137,7 +138,7 @@ export const createWhiteboardSession = (
 		events.clear();
 	};
 
-	const setTool = (tool: "pen" | "eraser" | "cursor") => {
+	const setTool = (tool: EditorTool) => {
 		options.setTool(tool);
 		emit("tool:changed", { tool });
 	};

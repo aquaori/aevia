@@ -32,6 +32,7 @@ interface InitStreamState {
 	commandsDoneReceived: boolean;
 	pendingCommandChunks: Map<number, InitCommandsChunkPayload>;
 	commandsBuffer: Command[];
+	liveCommands: Command[];
 	commandsReady: boolean;
 	currentPageId: number;
 	loadedPageIds: number[];
@@ -107,6 +108,8 @@ interface InitCompletePayload {
 interface PageChangeMetaPayload {
 	requestId?: number;
 	snapshotVersion?: number;
+	maxLamport?: number;
+	lastLamport?: number;
 	mode?: "flat-only" | "full";
 	pageId?: number;
 	loadedPageIds?: unknown;
@@ -199,12 +202,6 @@ interface OperationRejectedPayload {
 	pageId?: number | null;
 	shouldRefresh?: boolean;
 	shouldResync?: boolean;
-}
-
-interface BatchCommandUpdate {
-	cmdId: string;
-	points: Point[];
-	boxes?: Command["box"];
 }
 
 interface PageChangeStreamState {
@@ -462,7 +459,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			initStreamState = null;
 		}
 	};
-
 	const flushInitRenderChunks = () => {
 		if (!initStreamState) return;
 
@@ -511,8 +507,16 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			if (!chunk) continue;
 
 			const normalizedCommands = getChunkCommands(chunk);
+			for (const command of normalizedCommands) {
+				const operation = command.sceneOperation;
+				const lamport = Number(operation?.lamport ?? command.lamport ?? 0);
+				if (Number.isFinite(lamport)) {
+					initStreamState.lastLamport = Math.max(initStreamState.lastLamport, lamport);
+				}
+			}
 			if (normalizedCommands.length > 0) {
 				initStreamState.commandsBuffer.push(...normalizedCommands);
+				options.setInitSceneOperations?.(normalizedCommands, initStreamState.currentPageId);
 			}
 		}
 	};
@@ -527,11 +531,19 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		if (initStreamState.commandsReady) return;
 
-		options.replaceLoadedPageWindow(
-			initStreamState.loadedPageIds,
-			initStreamState.commandsBuffer
+		const commandsById = new Map(
+			initStreamState.commandsBuffer.map((command) => [command.id, command] as const)
 		);
+		for (const command of initStreamState.liveCommands) commandsById.set(command.id, command);
+		const mergedCommands = Array.from(commandsById.values());
+		options.replaceLoadedPageWindow(initStreamState.loadedPageIds, mergedCommands);
 		options.loadedPageIds.value = initStreamState.loadedPageIds;
+		options.setInitSceneOperations?.(mergedCommands, initStreamState.currentPageId);
+		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
+		for (const command of initStreamState.liveCommands) {
+			options.emitHook?.("command:before-apply", { command, source: "remote" });
+			options.emitHook?.("command:applied", { command, source: "remote" });
+		}
 		useLamportStore().syncLamport(initStreamState.lastLamport);
 		initStreamState.commandsReady = true;
 		tryCompleteInitStream();
@@ -592,6 +604,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			commandsDoneReceived: false,
 			pendingCommandChunks: new Map(),
 			commandsBuffer: [],
+			liveCommands: [],
 			commandsReady: false,
 			currentPageId,
 			loadedPageIds: nextLoadedPageIds,
@@ -813,12 +826,13 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			unloadPageIds: pageChangeStreamState.unloadPageIds,
 			commands: pageChangeStreamState.commands,
 		});
-		commandStore.updateLastSortedPoints(pageChangeStreamState.flatPoints);
-		options.renderSceneFromFlatPoints?.(
-			pageChangeStreamState.flatPoints,
+		commandStore.updateLastSortedPoints([]);
+		options.setInitSceneOperations?.(
+			pageChangeStreamState.commands,
 			pageChangeStreamState.pageId
 		);
 		options.finishInitRenderStream?.();
+		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
 		options.clearActivePageChangeRequest?.(donePayload?.requestId);
 		pageChangeStreamState = null;
 	};
@@ -904,6 +918,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			const normalizedCommands = getChunkCommands(chunk);
 			if (normalizedCommands.length > 0) {
 				pageChangeStreamState.commands.push(...normalizedCommands);
+				options.setInitSceneOperations?.(normalizedCommands, pageChangeStreamState.pageId);
 			}
 		}
 	};
@@ -926,6 +941,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			commands: pageChangeStreamState.commands,
 		});
 		options.loadedPageIds.value = pageChangeStreamState.loadedPageIds;
+		options.setInitSceneOperations?.(pageChangeStreamState.commands, pageChangeStreamState.pageId);
+		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
 		useLamportStore().syncLamport(pageChangeStreamState.lastLamport);
 		pageChangeStreamState.commandsReady = true;
 		tryCompletePageChangeStream();
@@ -982,7 +999,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			pendingCommandChunks: new Map(),
 			commandsReady: false,
 			completeReceived: false,
-			lastLamport: 0,
+			lastLamport: Number(meta.maxLamport ?? meta.lastLamport ?? 0) || 0,
 			pageId,
 			loadedPageIds,
 			loadPageIds,
@@ -1255,6 +1272,13 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	const handlePushCommand = (msg: CollabIncomingMessage) => {
 		const cmd = msg.data.cmd ? normalizeCommandFromProtocol(msg.data.cmd as Command) : undefined;
 		const pushType = msg.pushType as "normal" | "start" | "update" | "stop";
+		if (pushType === "normal" && cmd && initStreamState && !initStreamState.commandsReady) {
+			if (!initStreamState.liveCommands.some((command) => command.id === cmd.id)) {
+				initStreamState.liveCommands.push(cmd);
+			}
+			useLamportStore().syncLamport(Number(msg.data.lamport ?? cmd.lamport ?? 0));
+			return;
+		}
 
 		if ((pushType === "normal" || pushType === "start") && cmd) {
 			options.emitHook?.("command:before-apply", {
@@ -1276,6 +1300,26 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 			if (pushType === "normal") {
 				options.insertCommand(cmd);
+				const operation = cmd.sceneOperation;
+				const restoresClearedHistory = Boolean(
+					operation?.kind === "history.toggle" &&
+					operation.payload.enabled === false &&
+					options.commands.value.some((candidate) =>
+						candidate.sceneOperation?.kind === "page.clear" &&
+						candidate.sceneOperation.historyGroupId === operation.payload.targetHistoryGroupId
+					)
+				);
+				if (
+					operation?.kind === "text.patch" &&
+					operation.actorId !== options.userId.value
+				) {
+					options.notifyRemoteTextPatch?.(operation.elementId);
+				}
+				if (restoresClearedHistory) {
+					options.requestCurrentPageResync?.();
+					options.emitHook?.("command:applied", { command: cmd, source: "remote" });
+					return;
+				}
 				if (cmd.type === "clear") {
 					if (options.clearClearedCommands(cmd)) {
 						toast.info(
@@ -1288,10 +1332,11 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 					options.currentCommandIndex.value = 0;
 				}
 				options.syncCommandState?.(cmd);
+				const handledIncrementally = cmd.type === "scene-op" && options.isOffscreenMainCanvas?.();
 				if (options.isOffscreenMainCanvas?.()) {
 					cmd.points = undefined;
 				}
-				queueFullRender();
+				if (!handledIncrementally) queueFullRender();
 				options.emitHook?.("command:applied", {
 					command: cmd,
 					source: "remote",
@@ -1396,50 +1441,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 	};
 
-	const handleBatchMove = (msg: CollabIncomingMessage) => {
-		const { userId: msgUserId, cmdIds, dx, dy } = msg.data;
-		if (msgUserId === options.userId.value) return;
-
-		let hasUpdates = false;
-		cmdIds.forEach((id: string) => {
-			const cmd = options.commandMap.get(id);
-			if (!cmd) return;
-			if (cmd.box) {
-				cmd.box = {
-					...cmd.box,
-					minX: cmd.box.minX + dx,
-					maxX: cmd.box.maxX + dx,
-					minY: cmd.box.minY + dy,
-					maxY: cmd.box.maxY + dy,
-				};
-			}
-			hasUpdates = true;
-		});
-		if (hasUpdates) options.translateCommandPoints?.(cmdIds, dx, dy);
-		if (hasUpdates) queueFullRender();
-	};
-
-	const handleBatchUpdate = (msg: CollabIncomingMessage) => {
-		const { userId: msgUserId, updates } = msg.data;
-		if (msgUserId === options.userId.value) return;
-
-		let hasUpdates = false;
-		(updates as BatchCommandUpdate[]).forEach((update) => {
-			const cmd = options.commandMap.get(update.cmdId);
-			if (!cmd) return;
-			cmd.points = update.points;
-			if (msg.type === "cmd-batch-stop" && update.boxes) {
-				cmd.box = update.boxes;
-			}
-			options.syncCommandState?.(cmd);
-			if (options.isOffscreenMainCanvas?.()) {
-				cmd.points = undefined;
-			}
-			hasUpdates = true;
-		});
-		if (hasUpdates) queueFullRender();
-	};
-
 	const handlePageAdd = (msg: CollabIncomingMessage) => {
 		const { totalPages: newTotalPages } = msg.data;
 		if (newTotalPages > options.totalPages.value) {
@@ -1482,18 +1483,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		flushPendingRemoteCommandUpdates(cmdId);
 		cmd.isDeleted = msg.type === "undo-cmd";
 		options.syncCommandState?.(cmd);
-		if (options.isOffscreenMainCanvas?.()) {
-			cmd.points = undefined;
-		}
-		const dirtyRect =
-			cmd.pageId === options.currentPageId.value ? getCommandDirtyRect(cmd) : null;
-		if (dirtyRect && options.requestDirtyRender) {
-			queueDirtyRender(dirtyRect);
-		} else if (options.requestSceneRefresh) {
-			queueSceneRefresh();
-		} else {
-			queueFullRender();
-		}
+		options.syncWorkerScene?.(options.commands.value, options.currentPageId.value, []);
+		queueSceneRefresh();
 		options.setTool(options.currentTool.value);
 	};
 
@@ -1525,9 +1516,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const opType = String(payload.opType ?? "unknown");
 		const cmdId = typeof payload.cmdId === "string" ? payload.cmdId : null;
 		const cmd = cmdId ? options.commandMap.get(cmdId) ?? null : null;
+		const canRollbackRejectedPush = opType === "push-cmd" && Boolean(cmdId && cmd);
 		const shouldResync =
 			payload.shouldResync === true ||
-			opType === "push-cmd" ||
+			(opType === "push-cmd" && !canRollbackRejectedPush) ||
 			opType === "cmd-update" ||
 			opType === "cmd-stop" ||
 			opType === "cmd-batch-move" ||
@@ -1539,11 +1531,15 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			options.pendingUpdates.value.delete(cmdId);
 			options.cancelRejectedLocalCommand?.(cmdId);
 		}
-		if (payload.shouldRefresh !== false || shouldResync) {
+		if (canRollbackRejectedPush || payload.shouldRefresh !== false || shouldResync) {
 			options.cancelRejectedOperation?.();
 		}
 
-		if (opType === "cmd-start" && cmdId) {
+		if (canRollbackRejectedPush && cmdId) {
+			options.removeCommand(cmdId);
+			options.removeCommandState?.(cmdId);
+			queueSceneRefresh();
+		} else if (opType === "cmd-start" && cmdId) {
 			const removed = options.removeCommand(cmdId);
 			options.removeCommandState?.(cmdId);
 			const dirtyRect =
@@ -1608,8 +1604,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		handlePageChangeChunk,
 		handlePageChangeDone,
 		handlePushCommand,
-		handleBatchMove,
-		handleBatchUpdate,
 		handleDeleteCommand,
 		handlePageAdd,
 		handleUndoRedo,

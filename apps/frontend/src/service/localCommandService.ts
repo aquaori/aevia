@@ -2,10 +2,7 @@
 import { v4 as uuidv4 } from "uuid";
 import type { Ref } from "vue";
 import { useLamportStore } from "../store/lamportStore";
-import type { Command } from "@collaborative-whiteboard/shared";
-import { getCommandDirtyRect } from "./commandDirtyRect";
-
-type PushCommandType = "normal" | "start" | "update" | "stop";
+import { SCENE_SCHEMA_VERSION, type Command, type EditorTool } from "@collaborative-whiteboard/shared";
 
 export interface CommandActionResult {
 	ok: boolean;
@@ -21,14 +18,8 @@ interface LocalCommandServiceOptions {
 	roomId: Ref<string>;
 	currentPageId: Ref<number>;
 	username: Ref<string>;
-	currentTool: Ref<"pen" | "eraser" | "cursor">;
+	currentTool: Ref<EditorTool>;
 	insertCommand: (cmd: Command) => void;
-	clearClearedCommands: (cmd: Command) => boolean;
-	pruneDeletedCommandsAfterPointer: (
-		userId: string,
-		pageId: number,
-		pointer: number
-	) => string[];
 	renderCanvas: () => void;
 	requestDirtyRender?: (rect: {
 		minX: number;
@@ -40,72 +31,23 @@ interface LocalCommandServiceOptions {
 		candidateCommandIds?: string[];
 	}) => void;
 	syncCommandState?: (command: Command) => void;
+	isOffscreenMainCanvas?: () => boolean;
 	requestSceneRefresh?: () => void;
 	syncWorkerScene?: (commands: Command[], pageId: number, transformingCmdIds?: string[]) => void;
-	setTool: (tool: "pen" | "eraser" | "cursor") => void;
+	setTool: (tool: EditorTool) => void;
 	send: (type: string, data: unknown) => boolean;
 }
 
 export const createLocalCommandService = (options: LocalCommandServiceOptions) => {
 	const sendFailedMessage = "连接已断开，操作未发送。";
 
-	const pruneDeletedCommandsAfterPointer = () => {
-		const removedCommandIds = options.pruneDeletedCommandsAfterPointer(
-			options.userId.value,
-			options.currentPageId.value,
-			options.currentCommandIndex.value
-		);
-		removedCommandIds.forEach((cmdId) => {
-			options.send("delete-cmd", { cmdId });
-		});
-	};
-
-	const pushCommand = (
-		cmdPartial: Partial<Command>,
-		type: PushCommandType = "normal"
-	): CommandActionResult => {
-		pruneDeletedCommandsAfterPointer();
-
-		if (type === "start") {
-			const sent = options.send("cmd-start", {
-				id: cmdPartial.id,
-				cmd: cmdPartial,
-				lamport: useLamportStore().lamport,
-			});
-			if (!sent) return { ok: false, error: sendFailedMessage };
-
-			if (!options.commands.value.find((command) => command.id === cmdPartial.id)) {
-				options.insertCommand(cmdPartial as Command);
-				options.currentCommandIndex.value = options.commands.value.length - 1;
-			}
-			return { ok: true, command: cmdPartial as Command };
+	const pushCommand = (cmdPartial: Partial<Command>): CommandActionResult => {
+		if (cmdPartial.type !== "scene-op" || !cmdPartial.sceneOperation) {
+			return { ok: false, error: "新写入只允许使用 SceneOperation V2。" };
 		}
 
-		if (type === "update" && cmdPartial.id && cmdPartial.points) {
-			const sent = options.send("cmd-update", {
-				cmdId: cmdPartial.id,
-				points: cmdPartial.points,
-				lamport: useLamportStore().getNextLamport(),
-			});
-			if (!sent) return { ok: false, error: sendFailedMessage };
-			return { ok: true };
-		}
-
-		if (type === "stop") {
-			const sent = options.send("cmd-stop", {
-				cmdId: cmdPartial.id,
-				cmd: cmdPartial,
-				lamport: useLamportStore().lamport,
-				points: cmdPartial.points || [],
-				box: cmdPartial.box || null,
-			});
-			if (!sent) return { ok: false, error: sendFailedMessage };
-			return { ok: true, command: cmdPartial as Command };
-		}
-
-		if (type === "normal") {
-			try {
-				const command = {
+		try {
+			const command = {
 					id: uuidv4(),
 					type: cmdPartial.type || "path",
 					tool: cmdPartial.tool || "pen",
@@ -118,28 +60,36 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 					pageId: options.currentPageId.value,
 					isDeleted: false,
 					...cmdPartial,
-				} as Command;
+			} as Command;
 
-				const sent = options.send("push-cmd", command);
-				if (!sent) return { ok: false, error: sendFailedMessage };
-				if (!options.commands.value.find((item) => item.id === command.id)) {
-					options.insertCommand(command);
-				}
-				options.currentCommandIndex.value = options.commands.value.length - 1;
-				options.renderCanvas();
-				return { ok: true, command };
-			} catch (error: unknown) {
-				return {
-					ok: false,
-					error: error instanceof Error ? error.message : "Failed to create command",
-				};
+			const sent = options.send("push-cmd", {
+				id: command.id,
+				cmd: command,
+				username: Array.isArray(options.username.value)
+					? options.username.value[0]
+					: options.username.value,
+			});
+			if (!sent) return { ok: false, error: sendFailedMessage };
+			if (!options.commands.value.find((item) => item.id === command.id)) {
+				options.insertCommand(command);
 			}
+			options.currentCommandIndex.value = options.commands.value.length - 1;
+			options.syncCommandState?.(command);
+			if (!options.isOffscreenMainCanvas?.()) {
+				options.renderCanvas();
+			}
+			return { ok: true, command };
+		} catch (error: unknown) {
+			return {
+				ok: false,
+				error: error instanceof Error ? error.message : "Failed to create command",
+			};
 		}
-
-		return { ok: false, error: "Unsupported command type" };
 	};
 
 	const undo = (): CommandActionResult => {
+		const sceneResult = toggleSceneHistory(false);
+		if (sceneResult) return sceneResult;
 		for (let index = options.commands.value.length - 1; index >= 0; index -= 1) {
 			const command = options.commands.value[index];
 			if (!command) continue;
@@ -149,22 +99,33 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				!command.isDeleted &&
 				command.type !== "clear"
 			) {
-
-				const sent = options.send("undo-cmd", { cmdId: command.id });
-				if (!sent) return { ok: false, error: sendFailedMessage };
-				command.isDeleted = true;
-				options.currentCommandIndex.value = index - 1;
-				options.syncCommandState?.(command);
-				const dirtyRect = getCommandDirtyRect(command);
-				if (dirtyRect && options.requestDirtyRender) {
-					options.requestDirtyRender(dirtyRect);
-				} else if (options.requestSceneRefresh) {
-					options.requestSceneRefresh();
-				} else {
-					options.renderCanvas();
-				}
-				options.setTool(options.currentTool.value);
-				return { ok: true, command };
+				const opId = uuidv4();
+				const lamport = useLamportStore().getNextLamport();
+				const roomId = Array.isArray(options.roomId.value) ? options.roomId.value[0] ?? "" : options.roomId.value;
+				return pushCommand({
+					id: opId,
+					type: "scene-op",
+					userId: options.userId.value,
+					roomId,
+					pageId: command.pageId,
+					lamport,
+					timestamp: Date.now(),
+					isDeleted: false,
+					box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+					schemaVersion: SCENE_SCHEMA_VERSION,
+					sceneOperation: {
+						schemaVersion: SCENE_SCHEMA_VERSION,
+						opId,
+						elementId: command.id,
+						actorId: options.userId.value,
+						roomId,
+						pageId: command.pageId,
+						lamport,
+						historyGroupId: `legacy-undo:${opId}`,
+						kind: "element.delete",
+						payload: { elementIds: [command.id] },
+					},
+				});
 			}
 		}
 
@@ -172,50 +133,126 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 	};
 
 	const redo = (): CommandActionResult => {
-		const startIndex = Math.max(0, options.currentCommandIndex.value + 1);
-		for (let index = startIndex; index < options.commands.value.length; index += 1) {
-			const command = options.commands.value[index];
-			if (!command) continue;
-			if (
-				command.userId === options.userId.value &&
-				command.pageId === options.currentPageId.value &&
-				command.isDeleted &&
-				command.type !== "clear"
-			) {
-				const sent = options.send("redo-cmd", { cmdId: command.id });
-				if (!sent) return { ok: false, error: sendFailedMessage };
-				command.isDeleted = false;
-				options.currentCommandIndex.value = index;
-				options.syncCommandState?.(command);
-				const dirtyRect = getCommandDirtyRect(command);
-				if (dirtyRect && options.requestDirtyRender) {
-					options.requestDirtyRender(dirtyRect);
-				} else if (options.requestSceneRefresh) {
-					options.requestSceneRefresh();
-				} else {
-					options.renderCanvas();
-				}
-				options.setTool(options.currentTool.value);
-				return { ok: true, command };
-			}
+		const historyState = new Map<string, boolean>();
+		for (const command of options.commands.value) {
+			const operation = command.sceneOperation;
+			if (operation?.kind === "history.toggle") historyState.set(operation.payload.targetHistoryGroupId, operation.payload.enabled);
 		}
-
+		const legacyInverse = [...options.commands.value].reverse().find((command) => {
+			const operation = command.sceneOperation;
+			return Boolean(
+				operation?.kind === "element.delete" &&
+				operation.actorId === options.userId.value &&
+				operation.pageId === options.currentPageId.value &&
+				operation.historyGroupId.startsWith("legacy-undo:") &&
+				(historyState.get(operation.historyGroupId) ?? true)
+			);
+		});
+		if (legacyInverse?.sceneOperation) {
+			return appendHistoryToggle(legacyInverse, legacyInverse.sceneOperation, false);
+		}
+		const sceneResult = toggleSceneHistory(true);
+		if (sceneResult) return sceneResult;
 		return { ok: false };
 	};
 
+	const appendHistoryToggle = (
+		target: Command,
+		targetOperation: NonNullable<Command["sceneOperation"]>,
+		enabled: boolean
+	): CommandActionResult => {
+		const opId = uuidv4();
+		const lamport = useLamportStore().getNextLamport();
+		const roomId = Array.isArray(options.roomId.value)
+			? options.roomId.value[0] ?? ""
+			: options.roomId.value;
+		const result = pushCommand({
+			id: opId,
+			type: "scene-op",
+			userId: options.userId.value,
+			roomId,
+			pageId: targetOperation.pageId,
+			lamport,
+			timestamp: Date.now(),
+			isDeleted: false,
+			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+			schemaVersion: SCENE_SCHEMA_VERSION,
+			sceneOperation: {
+				schemaVersion: SCENE_SCHEMA_VERSION,
+				opId,
+				elementId: targetOperation.elementId,
+				actorId: options.userId.value,
+				roomId,
+				pageId: targetOperation.pageId,
+				lamport,
+				historyGroupId: opId,
+				kind: "history.toggle",
+				payload: {
+					targetHistoryGroupId: targetOperation.historyGroupId,
+					enabled,
+				},
+			},
+		});
+		return result.ok ? { ...result, command: target } : result;
+	};
+
+	const toggleSceneHistory = (enabled: boolean): CommandActionResult | null => {
+		const historyState = new Map<string, boolean>();
+		for (const command of options.commands.value) {
+			const operation = command.sceneOperation;
+			if (!operation) continue;
+			if (operation.kind === "history.toggle") {
+				historyState.set(operation.payload.targetHistoryGroupId, operation.payload.enabled);
+			} else if (!historyState.has(operation.historyGroupId)) {
+				historyState.set(operation.historyGroupId, true);
+			}
+		}
+		const candidates = options.commands.value.filter((command) => {
+			const operation = command.sceneOperation;
+			return Boolean(
+				operation &&
+				operation.kind !== "history.toggle" &&
+				operation.actorId === options.userId.value &&
+				operation.pageId === options.currentPageId.value &&
+				(historyState.get(operation.historyGroupId) ?? true) !== enabled
+			);
+		});
+		const target = enabled ? candidates[0] : candidates[candidates.length - 1];
+		const targetOperation = target?.sceneOperation;
+		if (!target || !targetOperation) return null;
+
+		return appendHistoryToggle(target, targetOperation, enabled);
+	};
+
 	const clearCanvas = (): CommandActionResult => {
+		const opId = uuidv4();
+		const lamport = useLamportStore().getNextLamport();
+		const normalizedRoomId = Array.isArray(options.roomId.value)
+			? (options.roomId.value[0] ?? "")
+			: options.roomId.value;
 		const clearCommand: Command = {
-			id: uuidv4(),
-			type: "clear",
+			id: opId,
+			type: "scene-op",
 			timestamp: Date.now(),
 			userId: options.userId.value,
-			roomId: Array.isArray(options.roomId.value)
-				? (options.roomId.value[0] ?? "")
-				: options.roomId.value,
+			roomId: normalizedRoomId,
 			pageId: options.currentPageId.value,
 			isDeleted: false,
-			lamport: useLamportStore().getNextLamport(),
+			lamport,
 			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+			schemaVersion: SCENE_SCHEMA_VERSION,
+			sceneOperation: {
+				schemaVersion: SCENE_SCHEMA_VERSION,
+				opId,
+				elementId: `page:${options.currentPageId.value}`,
+				actorId: options.userId.value,
+				roomId: normalizedRoomId,
+				pageId: options.currentPageId.value,
+				lamport,
+				historyGroupId: opId,
+				kind: "page.clear",
+				payload: { before: { lamport, opId, sourceIndex: 0, subIndex: 0 } },
+			},
 		};
 
 		const userName = Array.isArray(options.username.value)
@@ -232,7 +269,6 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		options.insertCommand(clearCommand);
 		options.currentCommandIndex.value = options.commands.value.length - 1;
 
-		const cleared = options.clearClearedCommands(clearCommand);
 		options.syncWorkerScene?.(options.commands.value, options.currentPageId.value, []);
 		options.renderCanvas();
 		options.currentCommandIndex.value =
@@ -241,7 +277,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		return {
 			ok: true,
 			command: clearCommand,
-			notice: cleared ? `${userName} 在页面 ${clearCommand.pageId + 1} 执行了清屏操作` : undefined,
+			notice: `${userName} 在页面 ${clearCommand.pageId + 1} 执行了清屏操作`,
 		};
 	};
 

@@ -1,5 +1,14 @@
 // File role: pure interaction calculations for coordinates, selection, hit testing, and transforms.
-import type { Command, Point, aabbBox } from "@collaborative-whiteboard/shared";
+import type {
+	AffineMatrix,
+	Command,
+	Point,
+	TransformTarget,
+	aabbBox,
+} from "@collaborative-whiteboard/shared";
+
+type TransformHandle = "tl" | "tm" | "tr" | "mr" | "br" | "bm" | "bl" | "ml" | "rotate" | "body";
+type CursorInteractionMode = "none" | "box-selecting" | "dragging" | "resizing" | "rotating";
 
 interface PointerCoordinates {
 	x: number;
@@ -44,7 +53,7 @@ interface ResolveSelectionInput {
 interface TransformPreviewInput {
 	currentPos: { x: number; y: number };
 	startPos: { x: number; y: number };
-	handle: "tl" | "tr" | "bl" | "br" | "body";
+	handle: TransformHandle;
 	initialBox: aabbBox;
 }
 
@@ -65,12 +74,13 @@ interface ResolveCursorActionInput {
 		commands: Command[],
 		currentPageId: number
 	) => aabbBox | null;
+	preferredHit?: { elementId: string; bounds: aabbBox | null } | null;
 }
 
 interface ResolveCursorActionResult {
 	action: "group" | "box-selecting";
-	mode: "dragging" | "resizing" | "box-selecting";
-	handle: "tl" | "tr" | "bl" | "br" | "body" | null;
+	mode: "dragging" | "resizing" | "rotating" | "box-selecting";
+	handle: TransformHandle | null;
 	selectedIds: string[];
 	groupBox: aabbBox | null;
 	selectionRect: SelectionRect | null;
@@ -89,6 +99,7 @@ interface BeginCursorInteractionInput {
 		commands: Command[],
 		currentPageId: number
 	) => aabbBox | null;
+	preferredHit?: { elementId: string; bounds: aabbBox | null } | null;
 }
 
 interface BeginCursorInteractionResult {
@@ -106,19 +117,21 @@ interface BeginCursorInteractionResult {
 interface TransformStopPayloadInput {
 	selectedCommandIds: Set<string>;
 	commandMap: Map<string, Command>;
+	deltaMatrix: AffineMatrix;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
 }
 
 interface TransformStopPayload {
-	updates: Array<{ cmdId: string; points: Point[] | undefined }>;
-	boxes: Array<{ cmdId: string; box: aabbBox }>;
+	targets: TransformTarget[];
+	dirtyBoxes: aabbBox[];
 }
 
 interface FinishCursorInteractionInput {
-	interactionMode: "none" | "box-selecting" | "dragging" | "resizing";
+	interactionMode: CursorInteractionMode;
 	selectionRect: SelectionRect | null;
 	selectedCommandIds: Set<string>;
 	commandMap: Map<string, Command>;
+	previewTransform: AffineMatrix | null;
 	currentPageId: number;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
 }
@@ -132,16 +145,14 @@ interface FinishCursorInteractionResult {
 
 interface PreviewCursorInteractionInput {
 	canvas: HTMLCanvasElement;
-	interactionMode: "none" | "box-selecting" | "dragging" | "resizing";
+	interactionMode: CursorInteractionMode;
 	x: number;
 	y: number;
 	dragStartPos: { x: number; y: number } | null;
 	selectedCommandIds: Set<string>;
-	activeTransformHandle: "tl" | "tr" | "bl" | "br" | "body" | null;
+	activeTransformHandle: TransformHandle | null;
 	initialGroupBox: aabbBox | null;
 	transformingCmdIds: Set<string>;
-	initialCmdsState: Map<string, Point[]>;
-	commands: Command[];
 }
 
 interface PreviewCursorInteractionResult {
@@ -151,11 +162,11 @@ interface PreviewCursorInteractionResult {
 	shouldPromote: boolean;
 	nextTransformAnim: { progress: number; phase: "entering"; initialBox: aabbBox } | null;
 	dirtyRect: aabbBox | null;
-	transformedCommands: Array<{ cmdId: string; points: Point[] }>;
+	transformMatrix: AffineMatrix | null;
 }
 
 interface CursorStopState {
-	activePointerId: number;
+	activePointerId: number | null;
 	dragStartPos: null;
 	activeTransformHandle: null;
 	interactionMode: "none";
@@ -213,27 +224,6 @@ export const createInteractionController = () => {
 			y: ny,
 			pageId: input.currentPageId,
 		});
-
-		if (
-			input.interactionMode === "dragging" &&
-			input.selectedCommandIds.size > 0 &&
-			input.dragStartPos
-		) {
-			const dx = nx - input.lastSentPos.x;
-			const dy = ny - input.lastSentPos.y;
-
-			if (Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001) {
-				input.send("cmd-batch-move", {
-					userId: input.userId,
-					cmdIds: Array.from(input.selectedCommandIds),
-					dx,
-					dy,
-					isRealtime: true,
-				});
-
-				return { x: nx, y: ny };
-			}
-		}
 
 		if (input.interactionMode === "box-selecting" && input.selectionRect) {
 			input.send("box-selection", {
@@ -301,8 +291,9 @@ export const createInteractionController = () => {
 	}: TransformPreviewInput) => {
 		const dx = currentPos.x - startPos.x;
 		const dy = currentPos.y - startPos.y;
+		const threshold = handle === "body" ? 0.003 : 0.001;
 
-		return Math.abs(dx) > 0.0001 || Math.abs(dy) > 0.0001 || handle !== "body";
+		return Math.hypot(dx, dy) > threshold;
 	};
 
 	const getTransformDirtyRect = ({ box, canvas }: DirtyRectInput): aabbBox => {
@@ -327,15 +318,38 @@ export const createInteractionController = () => {
 		initialBox,
 		points,
 	}: TransformPreviewInput & { points: Command["points"] extends infer T ? Exclude<T, undefined> : never }) => {
-		if (handle === "body") {
-			const dx = currentPos.x - startPos.x;
-			const dy = currentPos.y - startPos.y;
+		const matrix = getTransformMatrix({ currentPos, startPos, handle, initialBox });
+		return points.map((point) => ({
+			...point,
+			x: matrix[0] * point.x + matrix[2] * point.y + matrix[4],
+			y: matrix[1] * point.x + matrix[3] * point.y + matrix[5],
+		}));
+	};
 
-			return points.map((p) => ({
-				...p,
-				x: p.x + dx,
-				y: p.y + dy,
-			}));
+	const getTransformMatrix = ({
+		currentPos,
+		startPos,
+		handle,
+		initialBox,
+	}: TransformPreviewInput): AffineMatrix => {
+		if (handle === "body") {
+			return [1, 0, 0, 1, currentPos.x - startPos.x, currentPos.y - startPos.y];
+		}
+		if (handle === "rotate") {
+			const centerX = (initialBox.minX + initialBox.maxX) / 2;
+			const centerY = (initialBox.minY + initialBox.maxY) / 2;
+			const angle = Math.atan2(currentPos.y - centerY, currentPos.x - centerX) -
+				Math.atan2(startPos.y - centerY, startPos.x - centerX);
+			const cosine = Math.cos(angle);
+			const sine = Math.sin(angle);
+			return [
+				cosine,
+				sine,
+				-sine,
+				cosine,
+				centerX - cosine * centerX + sine * centerY,
+				centerY - sine * centerX - cosine * centerY,
+			];
 		}
 
 		let anchorX = 0;
@@ -349,6 +363,14 @@ export const createInteractionController = () => {
 				anchorX = initialBox.minX;
 				anchorY = initialBox.maxY;
 				break;
+			case "tm":
+				anchorX = (initialBox.minX + initialBox.maxX) / 2;
+				anchorY = initialBox.maxY;
+				break;
+			case "mr":
+				anchorX = initialBox.minX;
+				anchorY = (initialBox.minY + initialBox.maxY) / 2;
+				break;
 			case "bl":
 				anchorX = initialBox.maxX;
 				anchorY = initialBox.minY;
@@ -356,6 +378,14 @@ export const createInteractionController = () => {
 			case "br":
 				anchorX = initialBox.minX;
 				anchorY = initialBox.minY;
+				break;
+			case "bm":
+				anchorX = (initialBox.minX + initialBox.maxX) / 2;
+				anchorY = initialBox.minY;
+				break;
+			case "ml":
+				anchorX = initialBox.maxX;
+				anchorY = (initialBox.minY + initialBox.maxY) / 2;
 				break;
 		}
 
@@ -373,6 +403,14 @@ export const createInteractionController = () => {
 				originalW = initialBox.maxX - initialBox.minX;
 				originalH = initialBox.minY - initialBox.maxY;
 				break;
+			case "tm":
+				originalW = 1;
+				originalH = initialBox.minY - initialBox.maxY;
+				break;
+			case "mr":
+				originalW = initialBox.maxX - initialBox.minX;
+				originalH = 1;
+				break;
 			case "bl":
 				originalW = initialBox.minX - initialBox.maxX;
 				originalH = initialBox.maxY - initialBox.minY;
@@ -381,20 +419,99 @@ export const createInteractionController = () => {
 				originalW = initialBox.maxX - initialBox.minX;
 				originalH = initialBox.maxY - initialBox.minY;
 				break;
+			case "bm":
+				originalW = 1;
+				originalH = initialBox.maxY - initialBox.minY;
+				break;
+			case "ml":
+				originalW = initialBox.minX - initialBox.maxX;
+				originalH = 1;
+				break;
 		}
 
 		if (originalW === 0 || originalH === 0) {
-			return points;
+			return [1, 0, 0, 1, 0, 0];
 		}
 
-		const scaleX = currentW / originalW;
-		const scaleY = currentH / originalH;
+		const scaleX = handle === "tm" || handle === "bm" ? 1 : currentW / originalW;
+		const scaleY = handle === "ml" || handle === "mr" ? 1 : currentH / originalH;
+		return [
+			scaleX,
+			0,
+			0,
+			scaleY,
+			anchorX * (1 - scaleX),
+			anchorY * (1 - scaleY),
+		];
+	};
 
-		return points.map((p) => ({
-			...p,
-			x: anchorX + (p.x - anchorX) * scaleX,
-			y: anchorY + (p.y - anchorY) * scaleY,
+	const transformBox = (box: aabbBox, matrix: AffineMatrix): aabbBox => {
+		const corners = [
+			{ x: box.minX, y: box.minY },
+			{ x: box.maxX, y: box.minY },
+			{ x: box.maxX, y: box.maxY },
+			{ x: box.minX, y: box.maxY },
+		].map((point) => ({
+			x: matrix[0] * point.x + matrix[2] * point.y + matrix[4],
+			y: matrix[1] * point.x + matrix[3] * point.y + matrix[5],
 		}));
+		const minX = Math.min(...corners.map((point) => point.x));
+		const minY = Math.min(...corners.map((point) => point.y));
+		const maxX = Math.max(...corners.map((point) => point.x));
+		const maxY = Math.max(...corners.map((point) => point.y));
+		return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+	};
+
+	const getTransformHandleAt = (
+		normalizedPoint: { x: number; y: number },
+		groupBox: aabbBox,
+		canvasSize: { width: number; height: number }
+	): Exclude<TransformHandle, "body"> | null => {
+		const paddingX = 5 / Math.max(1, canvasSize.width);
+		const paddingY = 5 / Math.max(1, canvasSize.height);
+		const hitWidth = 10 / Math.max(1, canvasSize.width);
+		const hitHeight = 10 / Math.max(1, canvasSize.height);
+		const left = groupBox.minX - paddingX;
+		const right = groupBox.maxX + paddingX;
+		const top = groupBox.minY - paddingY;
+		const bottom = groupBox.maxY + paddingY;
+		const handles: Record<Exclude<TransformHandle, "body">, { x: number; y: number }> = {
+			tl: { x: left, y: top },
+			tm: { x: (groupBox.minX + groupBox.maxX) / 2, y: top },
+			tr: { x: right, y: top },
+			mr: { x: right, y: (groupBox.minY + groupBox.maxY) / 2 },
+			br: { x: right, y: bottom },
+			bm: { x: (groupBox.minX + groupBox.maxX) / 2, y: bottom },
+			bl: { x: left, y: bottom },
+			ml: { x: left, y: (groupBox.minY + groupBox.maxY) / 2 },
+			rotate: { x: (groupBox.minX + groupBox.maxX) / 2, y: groupBox.minY - 33 / Math.max(1, canvasSize.height) },
+		};
+		for (const [key, point] of Object.entries(handles)) {
+			if (
+				Math.abs(normalizedPoint.x - point.x) <= hitWidth &&
+				Math.abs(normalizedPoint.y - point.y) <= hitHeight
+			) return key as Exclude<TransformHandle, "body">;
+		}
+		return null;
+	};
+
+	const resolveSelectionCursor = (
+		normalizedPoint: { x: number; y: number },
+		groupBox: aabbBox | null,
+		canvasSize: { width: number; height: number }
+	) => {
+		if (!groupBox) return "default";
+		const handle = getTransformHandleAt(normalizedPoint, groupBox, canvasSize);
+		if (handle === "rotate") return "grab";
+		if (handle === "tl" || handle === "br") return "nwse-resize";
+		if (handle === "tr" || handle === "bl") return "nesw-resize";
+		if (handle === "tm" || handle === "bm") return "ns-resize";
+		if (handle === "ml" || handle === "mr") return "ew-resize";
+		if (
+			normalizedPoint.x >= groupBox.minX && normalizedPoint.x <= groupBox.maxX &&
+			normalizedPoint.y >= groupBox.minY && normalizedPoint.y <= groupBox.maxY
+		) return "move";
+		return "default";
 	};
 
 	const resolveCursorAction = ({
@@ -405,32 +522,22 @@ export const createInteractionController = () => {
 		currentPageId,
 		getCommandBoundingBox,
 		getGroupBoundingBox,
+		preferredHit,
 	}: ResolveCursorActionInput): ResolveCursorActionResult => {
 		let handle: ResolveCursorActionResult["handle"] = null;
 		let action: ResolveCursorActionResult["action"] = "box-selecting";
 		let mode: ResolveCursorActionResult["mode"] = "box-selecting";
 		let nextSelectedIds = Array.from(selectedCommandIds);
-		let groupBox = getGroupBoundingBox(selectedCommandIds, commands, currentPageId);
+		let groupBox =
+			preferredHit && selectedCommandIds.size === 1 && selectedCommandIds.has(preferredHit.elementId)
+				? preferredHit.bounds
+				: getGroupBoundingBox(selectedCommandIds, commands, currentPageId);
 
 		if (groupBox && selectedCommandIds.size > 0) {
-			const handleSize = 8 / canvasSize.width;
-			const corners: Record<string, { x: number; y: number }> = {
-				tl: { x: groupBox.minX, y: groupBox.minY },
-				tr: { x: groupBox.maxX, y: groupBox.minY },
-				br: { x: groupBox.maxX, y: groupBox.maxY },
-				bl: { x: groupBox.minX, y: groupBox.maxY },
-			};
-
-			for (const [key, point] of Object.entries(corners)) {
-				if (
-					Math.abs(normalizedPoint.x - point.x) <= handleSize &&
-					Math.abs(normalizedPoint.y - point.y) <= handleSize * (canvasSize.width / canvasSize.height)
-				) {
-					handle = key as ResolveCursorActionResult["handle"];
-					action = "group";
-					mode = "resizing";
-					break;
-				}
+			handle = getTransformHandleAt(normalizedPoint, groupBox, canvasSize);
+			if (handle) {
+				action = "group";
+				mode = handle === "rotate" ? "rotating" : "resizing";
 			}
 
 			if (
@@ -447,12 +554,17 @@ export const createInteractionController = () => {
 		}
 
 		if (action !== "group" || handle === "body") {
-			let hitCmdId: string | null = null;
+			let hitCmdId: string | null = preferredHit?.elementId ?? null;
 			const buffer = 10 / canvasSize.width;
 
-			for (let index = commands.length - 1; index >= 0; index -= 1) {
+			for (let index = commands.length - 1; index >= 0 && !hitCmdId; index -= 1) {
 				const cmd = commands[index];
-				if (!cmd || cmd.isDeleted || cmd.pageId !== currentPageId || cmd.type !== "path") {
+				if (
+					!cmd ||
+					cmd.isDeleted ||
+					cmd.pageId !== currentPageId ||
+					cmd.type !== "path"
+				) {
 					continue;
 				}
 
@@ -477,7 +589,9 @@ export const createInteractionController = () => {
 				action = "group";
 				mode = "dragging";
 				nextSelectedIds = selectedCommandIds.has(hitCmdId) ? nextSelectedIds : [hitCmdId];
-				groupBox = getGroupBoundingBox(new Set(nextSelectedIds), commands, currentPageId);
+				groupBox = preferredHit?.elementId === hitCmdId && nextSelectedIds.length === 1
+					? preferredHit.bounds
+					: getGroupBoundingBox(new Set(nextSelectedIds), commands, currentPageId);
 			}
 		}
 
@@ -508,6 +622,7 @@ export const createInteractionController = () => {
 		currentPageId,
 		getCommandBoundingBox,
 		getGroupBoundingBox,
+		preferredHit,
 	}: BeginCursorInteractionInput): BeginCursorInteractionResult => {
 		const { x, y } = getCoordinates(canvas, event);
 		const dpr = window.devicePixelRatio || 1;
@@ -526,6 +641,7 @@ export const createInteractionController = () => {
 			currentPageId,
 			getCommandBoundingBox,
 			getGroupBoundingBox,
+			preferredHit,
 		});
 
 		const initialCmdsState = new Map<string, Point[]>();
@@ -554,39 +670,19 @@ export const createInteractionController = () => {
 	const buildTransformStopPayload = ({
 		selectedCommandIds,
 		commandMap,
+		deltaMatrix,
 		getCommandBoundingBox,
 	}: TransformStopPayloadInput): TransformStopPayload => {
-		const updates = Array.from(selectedCommandIds)
-			.map((id) => {
-				const cmd = commandMap.get(id);
-				return cmd ? { cmdId: id, points: cmd.points } : null;
-			})
-			.filter((update): update is { cmdId: string; points: Point[] | undefined } => Boolean(update));
-
-		const boxes = updates.reduce<Array<{ cmdId: string; box: aabbBox }>>((result, update) => {
-			const cmd = commandMap.get(update.cmdId);
-			if (!cmd) {
-				return result;
-			}
-
-			cmd.box = getCommandBoundingBox(cmd) ?? {
-				minX: 0,
-				minY: 0,
-				maxX: 0,
-				maxY: 0,
-				width: 0,
-				height: 0,
-			};
-
-			result.push({
-				cmdId: cmd.id,
-				box: cmd.box,
-			});
-
-			return result;
-		}, []);
-
-		return { updates, boxes };
+		const targets: TransformTarget[] = [];
+		const dirtyBoxes: aabbBox[] = [];
+		selectedCommandIds.forEach((elementId) => {
+			const command = commandMap.get(elementId);
+			if (!command) return;
+			const oldBox = getCommandBoundingBox(command);
+			targets.push({ elementId, deltaMatrix });
+			if (oldBox) dirtyBoxes.push(oldBox, transformBox(oldBox, deltaMatrix));
+		});
+		return { targets, dirtyBoxes };
 	};
 
 	const resolveBoxSelectionStop = (input: ResolveSelectionInput) =>
@@ -597,6 +693,7 @@ export const createInteractionController = () => {
 		selectionRect,
 		selectedCommandIds,
 		commandMap,
+		previewTransform,
 		currentPageId,
 		getCommandBoundingBox,
 	}: FinishCursorInteractionInput): FinishCursorInteractionResult => {
@@ -615,17 +712,18 @@ export const createInteractionController = () => {
 		}
 
 		if (
-			(interactionMode === "dragging" || interactionMode === "resizing") &&
+			(interactionMode === "dragging" || interactionMode === "resizing" || interactionMode === "rotating") &&
 			selectedCommandIds.size > 0
 		) {
 			return {
 				remoteSelectionRect: undefined,
 				selectedIds: Array.from(selectedCommandIds),
-				transformPayload: buildTransformStopPayload({
+				transformPayload: previewTransform ? buildTransformStopPayload({
 					selectedCommandIds,
 					commandMap,
+					deltaMatrix: previewTransform,
 					getCommandBoundingBox,
-				}),
+				}) : null,
 				nextState: getCursorStopState(),
 			};
 		}
@@ -648,7 +746,6 @@ export const createInteractionController = () => {
 		activeTransformHandle,
 		initialGroupBox,
 		transformingCmdIds,
-		initialCmdsState,
 	}: PreviewCursorInteractionInput): PreviewCursorInteractionResult => {
 		const normalizedPoint = normalizeCoordinates(canvas, { x, y });
 
@@ -663,7 +760,7 @@ export const createInteractionController = () => {
 				shouldPromote: false,
 				nextTransformAnim: null,
 				dirtyRect: null,
-				transformedCommands: [],
+				transformMatrix: null,
 			};
 		}
 
@@ -680,7 +777,7 @@ export const createInteractionController = () => {
 				shouldPromote: false,
 				nextTransformAnim: null,
 				dirtyRect: null,
-				transformedCommands: [],
+				transformMatrix: null,
 			};
 		}
 
@@ -701,27 +798,16 @@ export const createInteractionController = () => {
 				shouldPromote: false,
 				nextTransformAnim: null,
 				dirtyRect: null,
-				transformedCommands: [],
+				transformMatrix: null,
 			};
 		}
 
-		const transformedCommands = Array.from(selectedCommandIds)
-			.map((cmdId) => {
-				const initialPoints = initialCmdsState.get(cmdId);
-				if (!initialPoints) return null;
-
-				return {
-					cmdId,
-					points: transformPoints({
-						currentPos: normalizedPoint,
-						startPos: dragStartPos,
-						handle: activeTransformHandle,
-						initialBox: initialGroupBox,
-						points: initialPoints,
-					}),
-				};
-			})
-			.filter((item): item is { cmdId: string; points: Point[] } => Boolean(item));
+		const transformMatrix = getTransformMatrix({
+			currentPos: normalizedPoint,
+			startPos: dragStartPos,
+			handle: activeTransformHandle,
+			initialBox: initialGroupBox,
+		});
 
 		return {
 			normalizedPoint,
@@ -741,12 +827,12 @@ export const createInteractionController = () => {
 						canvas,
 				  })
 				: null,
-			transformedCommands,
+			transformMatrix,
 		};
 	};
 
 	const getCursorStopState = (): CursorStopState => ({
-		activePointerId: -1,
+		activePointerId: null,
 		dragStartPos: null,
 		activeTransformHandle: null,
 		interactionMode: "none",
@@ -762,6 +848,10 @@ export const createInteractionController = () => {
 		resolveSelectedCommandIds,
 		shouldPromoteTransformLayer,
 		getTransformDirtyRect,
+		getTransformMatrix,
+		transformBox,
+		getTransformHandleAt,
+		resolveSelectionCursor,
 		transformPoints,
 		resolveCursorAction,
 		beginCursorInteraction,

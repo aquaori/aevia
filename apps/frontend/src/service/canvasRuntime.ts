@@ -26,6 +26,7 @@ interface CanvasRuntimeOptions {
 		height: number;
 		candidateCommandIds?: string[];
 	}) => void;
+	requestWorkerDirtyRenderBatch?: (rects: DirtyRect[]) => void;
 	syncToolState: () => void;
 	isOffscreenEnabled?: () => boolean;
 	hasRenderableScene?: () => boolean;
@@ -49,6 +50,13 @@ export const createCanvasRuntime = (options: CanvasRuntimeOptions) => {
 		}
 		if (!ctx.value || !canvasRef.value) return;
 		reRenderDirtyRect(rect, ctx.value, canvasRef.value);
+	}, options.requestRender, (rects) => {
+		if (options.isOffscreenEnabled?.()) {
+			options.requestWorkerDirtyRenderBatch?.(rects);
+			return;
+		}
+		if (!ctx.value || !canvasRef.value) return;
+		for (const rect of rects) reRenderDirtyRect(rect, ctx.value, canvasRef.value);
 	});
 
 	let dirtyPointBuffer: QueuePoint[] = [];

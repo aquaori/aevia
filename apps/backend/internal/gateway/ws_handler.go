@@ -69,6 +69,15 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(s.cfg.WSMaxPayloadBytes)
 
 	client := newWSClient(conn, actor, claims, initialPageID(r), s.cfg)
+	// Start consuming the outbound queue before Join builds the initial stream.
+	// Otherwise a large snapshot can fill the bounded queue before writePump has
+	// started, causing init chunks (including init-complete) to be dropped.
+	ctx, cancel := context.WithCancel(r.Context())
+	writerDone := client.startWriter(ctx)
+	defer func() {
+		cancel()
+		<-writerDone
+	}()
 	result, err := actor.Join(client.info(), client.pageID, lastRoomSeq(r))
 	if err != nil {
 		reason := "room busy"
@@ -80,7 +89,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("ws connected", "room", claims.RoomID, "user", claims.UserName, "userId", claims.UserID, "page", client.pageID)
 	room.SendInitStream(client.send, roomData.Name, client.info(), result)
-	client.run(r.Context())
+	client.readPump(ctx)
+	client.actor.Leave(client.id)
+	_ = client.conn.Close(websocket.StatusNormalClosure, "closed")
 	acquiredConnection = false
 	s.connectionLimit.Release(ip, claims.RoomID)
 }
@@ -162,6 +173,15 @@ func (c *wsClient) run(parent context.Context) {
 	c.readPump(ctx)
 	cancel()
 	<-done
+}
+
+func (c *wsClient) startWriter(ctx context.Context) chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.writePump(ctx)
+	}()
+	return done
 }
 
 func (c *wsClient) writePump(ctx context.Context) {

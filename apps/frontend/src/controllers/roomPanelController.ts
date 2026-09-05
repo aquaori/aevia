@@ -5,6 +5,7 @@ type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
 
 interface RoomPanelControllerOptions {
 	activeMenu: Ref<ActiveMenu>;
+	headerMenuOpen: Ref<boolean>;
 	showShortcuts: Ref<boolean>;
 	showPageOverview: Ref<boolean>;
 	showMemberList: Ref<boolean>;
@@ -15,6 +16,7 @@ export const createRoomPanelController = (options: RoomPanelControllerOptions) =
 	const openMemberList = () => {
 		options.showMemberList.value = true;
 		options.activeMenu.value = null;
+		options.headerMenuOpen.value = false;
 		options.openMemberListTransport();
 	};
 
@@ -25,6 +27,7 @@ export const createRoomPanelController = (options: RoomPanelControllerOptions) =
 	const toggleShortcuts = () => {
 		options.showShortcuts.value = !options.showShortcuts.value;
 		options.activeMenu.value = null;
+		options.headerMenuOpen.value = false;
 	};
 
 	const closeShortcuts = () => {
@@ -40,7 +43,8 @@ export const createRoomPanelController = (options: RoomPanelControllerOptions) =
 	};
 
 	const toggleMoreMenu = () => {
-		options.activeMenu.value = options.activeMenu.value === "more" ? null : "more";
+		options.headerMenuOpen.value = !options.headerMenuOpen.value;
+		if (options.headerMenuOpen.value) options.activeMenu.value = null;
 	};
 
 	return {
