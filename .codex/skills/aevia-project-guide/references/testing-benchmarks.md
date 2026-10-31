@@ -199,7 +199,9 @@ Exit codes: `0` passed, `1` test/gate failure, `2` harness or usage error, `3` m
 
 `source-check` re-hashes the working tree at the end of a managed run. When it moved it now names the files that became
 dirty, became clean, or changed in place, plus a hint: editing files while a run executes is indistinguishable from a
-reproducibility bug otherwise. The run also warns at start when the tree is already dirty.
+reproducibility bug otherwise. The run also warns at start when the tree is already dirty. The tracked evidence files the
+run itself appends to (`apps/frontend/tests/e2e/external/history/` and `baselines/`) are excluded from the drift verdict
+and reported as "generated evidence changed by the run (ignored)".
 
 ## Runtime Instrumentation Contract
 

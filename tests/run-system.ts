@@ -14,7 +14,7 @@ import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
 import { resolveOnlySelectors, resolveSinceRef, type LabResolveResult } from "./lab/resolve-only";
 import { buildLabEvidencePlan, type LabPlanContext } from "./lab/evidence-plan";
 import { isLiveConsoleEnabled, startLiveConsole, type LiveConsole } from "./lab/live-console";
-import { describeSourceDrift, describeSourceDriftLines } from "./lab/source-drift";
+import { describeSourceDrift, describeSourceDriftLines, isGeneratedEvidencePath } from "./lab/source-drift";
 
 type Step = {
 	title: string;
@@ -1089,7 +1089,7 @@ const runEvidenceStep = async (
 				trackedChanges: manifest.source.trackedChanges,
 				untrackedFiles: manifest.source.untrackedFiles,
 			};
-			const drift = describeSourceDrift(before, source);
+			const drift = describeSourceDrift(before, source, { isIgnoredPath: isGeneratedEvidencePath });
 			if (drift.revisionChanged || drift.fingerprintChanged) {
 				throw new Error([
 					"Source revision or dirty-file fingerprint changed during the test run",

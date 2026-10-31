@@ -1,6 +1,6 @@
 // File role: deterministic coverage for the managed-run source drift explainer.
 import { describe, expect, it } from "vitest";
-import { describeSourceDrift, describeSourceDriftLines } from "./source-drift";
+import { describeSourceDrift, describeSourceDriftLines, isGeneratedEvidencePath } from "./source-drift";
 
 const identity = (overrides: Partial<Parameters<typeof describeSourceDrift>[0]> = {}) => ({
 	revision: "a".repeat(40),
@@ -52,5 +52,32 @@ describe("source drift explainer", () => {
 		const after = identity({ revision: "d".repeat(40) });
 		const lines = describeSourceDriftLines(describeSourceDrift(before, after), before).join("\n");
 		expect(lines).toContain("HEAD changed");
+	});
+
+	it("does not count generated history/baseline evidence the run itself wrote", () => {
+		const historyPath = "apps/frontend/tests/e2e/external/history/performance-external.history.jsonl";
+		const before = identity({ trackedChanges: [] });
+		const after = identity({
+			trackedChanges: [historyPath],
+			dirtyPatchSha256: "e".repeat(64),
+		});
+		const drift = describeSourceDrift(before, after, { isIgnoredPath: isGeneratedEvidencePath });
+		expect(drift.fingerprintChanged).toBe(false);
+		expect(drift.trackedAdded).toEqual([]);
+		expect(drift.ignoredGeneratedPaths).toEqual([historyPath]);
+		expect(describeSourceDriftLines(drift, before).join("\n")).toContain("generated evidence changed by the run");
+	});
+
+	it("still fails when a real source file changes next to an ignored evidence file", () => {
+		const historyPath = "apps/frontend/tests/e2e/external/history/performance-external.history.jsonl";
+		const before = identity();
+		const after = identity({
+			trackedChanges: [historyPath, "apps/frontend/tests/e2e/external/suites.ts"],
+			dirtyPatchSha256: "f".repeat(64),
+		});
+		const drift = describeSourceDrift(before, after, { isIgnoredPath: isGeneratedEvidencePath });
+		expect(drift.fingerprintChanged).toBe(true);
+		expect(drift.trackedAdded).toEqual(["apps/frontend/tests/e2e/external/suites.ts"]);
+		expect(drift.ignoredGeneratedPaths).toEqual([historyPath]);
 	});
 });
