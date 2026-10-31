@@ -298,6 +298,11 @@ export interface ExternalObservability {
 export interface ExternalReport {
 	version: 1;
 	generatedAt: string;
+	run?: {
+		id: string;
+		sourceRevision: string;
+		dirtyPatchSha256: string;
+	};
 	config: Pick<
 		ExternalConfig,
 		| "action"

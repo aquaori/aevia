@@ -16,6 +16,8 @@ interface ApiResponse {
 	};
 }
 
+type ProtocolMessage = { type?: string; data?: Record<string, unknown> };
+
 const requestJson = async (
 	url: string,
 	body: unknown,
@@ -93,6 +95,7 @@ export const randomRoomId = () => String(Math.floor(100000 + Math.random() * 900
 export class ProtocolClient {
 	private ws: WebSocket | null = null;
 	private lamport = 1;
+	private messageWaiters = new Set<(message: ProtocolMessage) => void>();
 
 	constructor(
 		private config: ExternalConfig,
@@ -109,7 +112,8 @@ export class ProtocolClient {
 
 			ws.on("message", (data) => {
 				try {
-					const msg = JSON.parse(data.toString());
+					const msg = JSON.parse(data.toString()) as ProtocolMessage;
+					for (const waiter of [...this.messageWaiters]) waiter(msg);
 					if (msg?.type === "init-meta") {
 						const trustedUserId = msg?.data?.userId;
 						if (typeof trustedUserId !== "string" || trustedUserId.length === 0) {
@@ -129,6 +133,41 @@ export class ProtocolClient {
 				reject(error);
 			});
 		});
+	}
+
+	private waitForMessage(predicate: (message: ProtocolMessage) => boolean, label: string, timeoutMs = 10000) {
+		return new Promise<ProtocolMessage>((resolve, reject) => {
+			const waiter = (message: ProtocolMessage) => {
+				if (!predicate(message)) return;
+				clearTimeout(timer);
+				this.messageWaiters.delete(waiter);
+				resolve(message);
+			};
+			const timer = setTimeout(() => {
+				this.messageWaiters.delete(waiter);
+				reject(new Error(`websocket ${label} timed out`));
+			}, timeoutMs);
+			this.messageWaiters.add(waiter);
+		});
+	}
+
+	async sendRawAndWaitFor(
+		type: string,
+		data: unknown,
+		responseType: string,
+		matches: (message: ProtocolMessage) => boolean = () => true
+	) {
+		const response = this.waitForMessage((message) =>
+			(message.type === responseType && matches(message)) ||
+			(message.type === "op-rejected" && message.data?.opType === type),
+			`${type} awaiting ${responseType}`
+		);
+		await this.sendJsonAwait({ type, data });
+		const message = await response;
+		if (message.type === "op-rejected") {
+			throw new Error(`websocket ${type} rejected: ${JSON.stringify(message.data)}`);
+		}
+		return message;
 	}
 
 	close() {
@@ -257,6 +296,7 @@ export class ProtocolClient {
 		size?: number;
 		pageId?: number;
 		commandId?: string;
+		waitForCommit?: boolean;
 	}) {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
 			throw new Error("protocol websocket is not connected");
@@ -282,10 +322,15 @@ export class ProtocolClient {
 			payload: this.createStrokePayload(points, color, size, true),
 		});
 
-		await this.sendJsonAwait({
-			type: "push-cmd",
-			data: { id: commandId, cmdId: commandId, cmd: command, lamport: command.lamport },
-		});
+		const sendOperation = async (id: string, operation: Record<string, unknown>) => {
+			const data = { id, cmd: operation, lamport: operation.lamport };
+			if (options.waitForCommit) {
+				await this.sendRawAndWaitFor("push-cmd", data, "ack.accepted", (message) => message.data?.cmdId === id);
+			} else {
+				await this.sendJsonAwait({ type: "push-cmd", data });
+			}
+		};
+		await sendOperation(commandId, command);
 
 		return commandId;
 	}
@@ -335,7 +380,7 @@ export class ProtocolClient {
 				color, size, kind: "element.append",
 				payload: { points: stopPoints, sourceStart: 1, isComplete: true },
 			});
-			await this.sendJsonAwait({ type: "push-cmd", data: { id: appendId, cmd: append, lamport: append.lamport } });
+			await sendOperation(appendId, append);
 		}
 
 		return commandId;

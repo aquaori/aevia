@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { createHash } from "node:crypto";
 import type { Page } from "playwright";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
@@ -180,6 +181,56 @@ export const captureCanvasPng = async (page: Page, roi?: Roi) => {
 		: box;
 	return page.screenshot({ clip });
 };
+
+export const captureVisibleScreenshotSample = async (page: Page, roi?: Roi): Promise<CanvasSample> => {
+	const buffer = await captureCanvasPng(page, roi);
+	const image = decodePng(buffer);
+	let nonBlank = 0;
+	for (let index = 0; index < image.data.length; index += 4) {
+		const r = image.data[index] ?? 255;
+		const g = image.data[index + 1] ?? 255;
+		const b = image.data[index + 2] ?? 255;
+		const a = image.data[index + 3] ?? 255;
+		if (a > 0 && (r < 245 || g < 245 || b < 245)) nonBlank += 1;
+	}
+	return {
+		signature: createHash("sha256").update(buffer).digest("hex"),
+		nonBlankRatio: nonBlank / Math.max(1, image.width * image.height),
+		width: image.width,
+		height: image.height,
+		source: "screenshot",
+	};
+};
+
+const waitForVisibleScreenshotRegion = async (
+	page: Page,
+	options: { roi: Roi; timeoutMs: number; threshold?: number },
+	visible: boolean
+) => {
+	const startedAt = performance.now();
+	let frames = 0;
+	let consecutiveMatches = 0;
+	let sample = await captureVisibleScreenshotSample(page, options.roi);
+	const threshold = options.threshold ?? (visible ? 0.002 : 0.001);
+	while (performance.now() - startedAt < options.timeoutMs) {
+		const matches = visible ? sample.nonBlankRatio >= threshold : sample.nonBlankRatio <= threshold;
+		consecutiveMatches = matches ? consecutiveMatches + 1 : 0;
+		if (consecutiveMatches >= 2) {
+			return { elapsedMs: performance.now() - startedAt, frames, sample };
+		}
+		await page.waitForTimeout(50);
+		frames += 1;
+		sample = await captureVisibleScreenshotSample(page, options.roi);
+	}
+	const state = visible ? "non-blank" : "blank";
+	throw new Error(`visible screenshot ${state} region timeout: ratio=${sample.nonBlankRatio}`);
+};
+
+export const waitForVisibleScreenshotContent = (page: Page, options: { roi: Roi; timeoutMs: number; minNonBlankRatio?: number }) =>
+	waitForVisibleScreenshotRegion(page, { ...options, threshold: options.minNonBlankRatio }, true);
+
+export const waitForVisibleScreenshotBlank = (page: Page, options: { roi: Roi; timeoutMs: number; maxNonBlankRatio?: number }) =>
+	waitForVisibleScreenshotRegion(page, { ...options, threshold: options.maxNonBlankRatio }, false);
 
 export const captureCanvasSample = async (
 	page: Page,

@@ -1,14 +1,25 @@
 # Testing and Benchmark Guide
 
 Read this before modifying tests, benchmark scripts, reports, baselines, budgets, or performance instrumentation.
+For command selection and evidence interpretation, also read [the aevia-testing skill](../../aevia-testing/SKILL.md).
 
 ## Test Layout
 
 Root:
 
 - `vitest.config.ts`: Vitest project definitions.
-- `tests/run-system.ts`: interactive profile runner; reads Vitest JSON reports on failure and starts one isolated frontend/backend pair before external steps. The direct external runner still expects caller-provided services.
-- `tests/report/aggregate.ts`: aggregates Vitest and external reports.
+- `tests/run-system.ts`: managed `quick`, `ci`, and `full` profiles plus the legacy interactive benchmark runner. Managed runs own a UUID report directory and manifest.
+- `tests/report/contract.ts`: run manifest, step, and artifact contracts.
+- `tests/report/provenance.ts`: Git revision and dirty-source fingerprint.
+- `tests/report/aggregate.ts`: fail-closed aggregation of only manifest-listed artifacts.
+- `tests/report/aggregate.spec.ts`: regression tests for missing, stale, skipped, duplicated, and denominator-mismatched evidence.
+- `tests/catalog/external-cases.ts`: stable external case IDs, capability labels, observable oracles, and PR-required membership.
+- `tests/report/external-case-catalog.spec.ts`: validates catalog uniqueness and the explicit PR-required case set.
+- `tests/catalog/feature-obligations.json`: current backend HTTP route, WebSocket event, scene-operation, frontend route, and built-in tool inventory with explicit obligation states.
+- `apps/backend/internal/gateway/surface_catalog_test.go`: Go AST parity checks for backend surfaces and public 501 contracts for reserved V2 routes.
+- `tests/report/feature-obligations.spec.ts`: TypeScript AST parity checks for frontend routes/tools, validates evidence references, and verifies catalog shape.
+- `tests/browser-launch.ts`: selected Playwright browser and Chromium executable resolution.
+- `.github/workflows/ci.yml`: OS/browser correctness matrix; it does not run performance gates.
 - `tests/reports/`: generated report outputs.
 
 Frontend:
@@ -24,7 +35,7 @@ Frontend:
 
 Important files:
 
-- `external/runner.ts`: main entry; launches Chrome via Playwright, dispatches suites, writes reports, applies regressions.
+- `external/runner.ts`: main entry; launches the selected Playwright browser, dispatches suites, writes reports, applies legacy regression rules, and attaches run/source identity.
 - `external/config.ts`: CLI/env parsing and defaults.
 - `external/suites.ts`: test case definitions and sampled performance cases.
 - `external/protocol-driver.ts`: API/WebSocket protocol driver.
@@ -49,19 +60,7 @@ From `runner.ts`:
 - `correctness-full`
 - `performance-external`
 
-Performance case IDs in `suites.ts` include:
-
-- `full-render-*`
-- `incremental-remote-first-pixel`
-- `local-realtime-first-pixel`
-
-Correctness/harness case IDs include:
-
-- `harness-health`
-- `correctness-smoke`
-- `concurrent-crossing-visual-consistency`
-- `late-joiner-visual-consistency`
-- `protocol-multipage-isolation`
+The stable IDs, capability labels, current observable oracles, known limitations, and PR-required subset live in `tests/catalog/external-cases.ts`. `runner.ts`, `suites.ts`, and the managed evidence plan consume IDs from that catalog. It currently seeds the existing external suites; it is not yet the complete product-feature catalogue or proof of 99% behavior coverage. The feature-obligation catalog currently inventories public backend surfaces plus frontend routes/tool IDs, but not all UI/worker behaviors or scenario obligations; its run report must be read for the recorded scope and unresolved IDs.
 
 ## CLI Defaults
 
@@ -80,23 +79,25 @@ External harness defaults from `config.ts`:
 
 ## Common Commands
 
-Root scripts:
+Managed root scripts:
 
 ```powershell
-cmd /c npm run test:unit
-cmd /c npm run test:integration
-cmd /c npm run test:browser
-cmd /c npm run test:bench
-cmd /c npm run test:e2e:smoke
-cmd /c npm run test:benchmark
-cmd /c npm run test:report
+npm run test:doctor
+npm run test:quick
+npm run test:ci
+npm run test:full
+npm run test:replay -- --run-id=<uuid>
+npm run test:report -- --manifest=<run-manifest.json>
+npm run test:perf
 ```
 
-The root `test:benchmark` command is self-contained and routes through `tests/run-system.ts`, so it owns an isolated frontend/backend pair. Workspace-level `benchmark:external:*` commands intentionally remain raw runners for callers that already provide `VITE_FRONTEND_URL`, `VITE_API_URL`, and `VITE_WS_URL`. Root benchmark CLI overrides such as `--matrix=false --runs=1 --warmup=0 --scales=1000` are forwarded to the external runner.
+`test:ci` owns one report directory, a source revision and dirty-file hash, an isolated database and service pair, exact expected artifacts, and a terminal result even after a failed step. It runs Go package inventory, Go tests with cross-package coverage, frontend/shared tests with coverage, browser component tests, and the existing correctness-full external suite. Coverage validation checks the complete discovered source/package inventory, not just a nonzero aggregate. Managed browser tests receive a per-run free API port. `test:quick` also runs the backend surface AST contract and records a run-scoped feature-catalog snapshot. `test:full` currently has the same scope as `test:ci`; mutation, fuzz, broader scenario coverage, failure injection, and repeated-run stability gates remain future work.
 
-`vitest.config.ts` canonicalizes `process.cwd()` with `realpathSync`. Keep this when changing the config: the common Windows workspace path under `Desktop\\code` is a directory junction to `D:\\code`, and mixing the junction path with Vite's real path produces `/@fs/D:/...` module-not-found failures when `npm run test` starts from the C-drive spelling.
+Current coverage output is measurement, not a percentage threshold gate. The managed frontend/shared report is bound to an explicit executable-source inventory, and Go coverage must match the exact package inventory from the same run. The requested 99% per-module targets are not achieved. The earlier 50.7% Go figure used a different aggregation scope from the managed `-coverpkg=./...` profile; do not compare those values as a trend until the metric definitions are aligned.
 
-Root `npm run test` allocates local ports, injects `VITE_FRONTEND_URL`/`VITE_API_URL`/`VITE_WS_URL`, and uses a per-run SQLite file for external suites. Override the automatic ports with `AEVIA_TEST_FRONTEND_PORT` and `AEVIA_TEST_BACKEND_PORT` only when a fixed port is required. It stops only the services it started and removes that run's database on completion or interruption.
+`vitest.config.ts` canonicalizes `process.cwd()` with `realpathSync`. Keep its Vite root aligned with the Vitest process cwd: the common Windows workspace spelling under `Desktop\\code` is a junction to `D:\\code`; mixed roots have caused module-resolution and dependency-optimization failures. Managed Vitest subprocesses use the canonical root. Browser selection is `AEVIA_TEST_BROWSER=chromium|firefox|webkit`.
+
+The legacy interactive benchmark runner and workspace-level `benchmark:external:*` commands are not part of managed CI evidence. They still write their own reports and can be used for local diagnosis, but collection calibration and thresholds are not validated. Do not compare their values as trusted performance evidence until calibration is complete.
 
 Frontend external harness:
 
@@ -167,5 +168,11 @@ For benchmark harness script changes, use the smallest direct run that exercises
 For report aggregation changes:
 
 ```powershell
-cmd /c npm run test:report
+npm run test:quick
+```
+
+To inspect a report, pass the exact manifest path:
+
+```powershell
+npm run test:report -- --manifest=tests/reports/summary/runs/<uuid>/run-manifest.json
 ```

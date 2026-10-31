@@ -1,0 +1,54 @@
+name: Aevia correctness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  correctness:
+    name: ${{ matrix.os }} / ${{ matrix.browser }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - run: npm ci
+      - name: Install browser engines and Linux dependencies
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Install browser engines
+        if: runner.os != 'Linux'
+        run: npx playwright install chromium firefox webkit
+      - name: Check test environment
+        run: npm run test:doctor
+        env:
+          AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+          AEVIA_TEST_JSON: "1"
+      - name: Run managed correctness suite
+        run: npm run test:ci
+        env:
+          AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aevia-test-evidence-${{ matrix.os }}-${{ matrix.browser }}
+          path: tests/reports/summary/runs/
+          if-no-files-found: warn
+          retention-days: 14

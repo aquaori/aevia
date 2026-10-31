@@ -13,23 +13,22 @@ const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
 (() => {
 	const measurementConfig = ${JSON.stringify(config)};
 	window.__externalRoomRenderMeasurement = (async () => {
-		const timeoutAt = performance.now() + measurementConfig.timeoutMs;
+		const startedAt = performance.now();
+		const timeoutAt = startedAt + measurementConfig.timeoutMs;
 		const waitFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 		while (performance.now() < timeoutAt) {
 			if (
 				window.__externalCanvasObserver &&
-				document.querySelector("canvas") &&
-				typeof window.__aeviaInitStreamStartedAt === "number"
+				document.querySelector("canvas")
 			) {
 				break;
 			}
 			await waitFrame();
 		}
-		if (!window.__externalCanvasObserver || !document.querySelector("canvas") || typeof window.__aeviaInitStreamStartedAt !== "number") {
-			throw new Error("room render measurement timeout: canvas or init stream unavailable");
+		if (!window.__externalCanvasObserver || !document.querySelector("canvas")) {
+			throw new Error("room render measurement timeout: canvas observer unavailable");
 		}
 		const observer = window.__externalCanvasObserver;
-		const startedAt = performance.now();
 		let firstNonBlankMs = null;
 		let previous = observer.sample({ sampleSize: measurementConfig.sampleSize });
 		let stableCount = 0;

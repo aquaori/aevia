@@ -8,12 +8,14 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/config"
 	"collaborative-whiteboard/apps/backend/internal/room"
 	"collaborative-whiteboard/apps/backend/internal/storage"
+	"github.com/coder/websocket"
 )
 
 // HTTP contract tests for the gateway. These replace the supertest suite that
@@ -22,16 +24,45 @@ import (
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	server, _ := newTestServerAtPath(t, filepath.Join(t.TempDir(), "gateway.sqlite"))
+	return server
+}
+
+func newTestServerAtPath(t *testing.T, dbPath string) (*httptest.Server, func()) {
+	t.Helper()
+	handler, closeGateway := newTestGatewayAtPath(t, dbPath)
+	server := httptest.NewServer(handler)
+	closeServer := func() {
+		server.Close()
+		closeGateway()
+	}
+	t.Cleanup(closeServer)
+	return server, closeServer
+}
+
+func newTestGatewayAtPath(t *testing.T, dbPath string) (http.Handler, func()) {
+	t.Helper()
 	cfg := config.Config{
-		DBPath:                 filepath.Join(t.TempDir(), "gateway.sqlite"),
+		DBPath:                 dbPath,
 		JWTSecret:              "test-secret",
 		SessionTTL:             30 * time.Minute,
 		InviteTTL:              time.Hour,
 		RoomReliableQueue:      64,
 		RoomRealtimeQueue:      64,
 		ConnectionSendMessages: 64,
+		WSMaxPayloadBytes:      256 * 1024,
+		WSMaxPointsPerCommand:  20000,
+		WSMaxPointsPerUpdate:   2000,
+		WSMaxBatchCommands:     200,
+		WSRealtimePerSecond:    90,
+		WSRealtimeBurst:        180,
+		WSReliablePerSecond:    120,
+		WSReliableBurst:        240,
+		WSHeartbeatInterval:    25 * time.Second,
+		WSPongTimeout:          10 * time.Second,
 		DBBatchSize:            16,
 		DBBatchWindow:          time.Millisecond,
+		InitPreloadPageCount:   2,
 		InitCommandChunkSize:   100,
 		InitFlatPointChunkSize: 2000,
 		MaxHTTPBodyBytes:       1 << 20,
@@ -58,13 +89,22 @@ func newTestServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatalf("session epoch: %v", err)
 	}
-	server := httptest.NewServer(NewServer(cfg, store, registry, epoch).Routes())
-	t.Cleanup(func() {
-		server.Close()
-		registry.Shutdown(context.Background())
-		_ = store.Close()
-	})
-	return server
+	handler := NewServer(cfg, store, registry, epoch).Routes()
+	closed := false
+	closeGateway := func() {
+		if closed {
+			return
+		}
+		closed = true
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		registry.Shutdown(ctx)
+		if err := store.Close(); err != nil {
+			t.Errorf("close test storage: %v", err)
+		}
+	}
+	t.Cleanup(closeGateway)
+	return handler, closeGateway
 }
 
 type apiResponse struct {
@@ -302,5 +342,209 @@ func TestInviteTokenRoundTrip(t *testing.T) {
 
 	if status, _ := do(t, server, "GET", "/get-token-info?token=garbage", nil, ""); status != http.StatusBadRequest {
 		t.Fatalf("expected a malformed invite token to be rejected, got %d", status)
+	}
+}
+
+type gatewayWSEnvelope struct {
+	Type string         `json:"type"`
+	Data map[string]any `json:"data"`
+}
+
+func dialGatewayWebsocket(t *testing.T, server *httptest.Server, token string) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, strings.Replace(server.URL, "http", "ws", 1)+"/ws?pageId=0", &websocket.DialOptions{
+		Subprotocols: []string{token},
+	})
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	return conn
+}
+
+func readGatewayWSEnvelope(t *testing.T, conn *websocket.Conn) gatewayWSEnvelope {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		messageType, payload, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("read websocket: %v", err)
+		}
+		if messageType != websocket.MessageText {
+			continue
+		}
+		var message gatewayWSEnvelope
+		if err := json.Unmarshal(payload, &message); err != nil {
+			t.Fatalf("decode websocket message: %v", err)
+		}
+		return message
+	}
+}
+
+func readGatewayWSType(t *testing.T, conn *websocket.Conn, expected string) gatewayWSEnvelope {
+	t.Helper()
+	for {
+		message := readGatewayWSEnvelope(t, conn)
+		if message.Type == "op-rejected" && expected != "op-rejected" {
+			t.Fatalf("unexpected websocket rejection while waiting for %s: %+v", expected, message.Data)
+		}
+		if message.Type == expected {
+			return message
+		}
+	}
+}
+
+func testScenePush(opID, actorID, roomID string) map[string]any {
+	operation := map[string]any{
+		"schemaVersion":  float64(2),
+		"opId":           opID,
+		"elementId":      "element-" + opID,
+		"actorId":        actorID,
+		"roomId":         roomID,
+		"pageId":         float64(0),
+		"lamport":        float64(1),
+		"historyGroupId": "history-" + opID,
+		"kind":           "element.create",
+		"payload": map[string]any{
+			"descriptor": map[string]any{
+				"elementKind": "path",
+				"toolId":      "pen",
+				"recipeId":    "stroke",
+				"style": map[string]any{
+					"color":         "#112233",
+					"size":          float64(4),
+					"strokePattern": "solid",
+				},
+			},
+			"points": []any{map[string]any{
+				"x": float64(0.1), "y": float64(0.2), "p": float64(0.5), "lamport": float64(1),
+			}},
+			"isComplete": true,
+		},
+	}
+	return map[string]any{
+		"type": "push-cmd",
+		"data": map[string]any{
+			"cmd": map[string]any{
+				"id": opID, "type": "scene-op", "schemaVersion": float64(2),
+				"userId": actorID, "roomId": roomID, "pageId": float64(0), "lamport": float64(1),
+				"sceneOperation": operation,
+			},
+		},
+	}
+}
+
+func writeGatewayWSJSON(t *testing.T, conn *websocket.Conn, message any) {
+	t.Helper()
+	payload, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("marshal websocket message: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
+		t.Fatalf("write websocket message: %v", err)
+	}
+}
+
+func readGatewayInitCommandIDs(t *testing.T, conn *websocket.Conn) []string {
+	t.Helper()
+	var commandIDs []string
+	for {
+		message := readGatewayWSEnvelope(t, conn)
+		if message.Type == "init-commands-chunk" {
+			commands, _ := message.Data["commands"].([]any)
+			for _, raw := range commands {
+				command, _ := raw.(map[string]any)
+				if id, _ := command["id"].(string); id != "" {
+					commandIDs = append(commandIDs, id)
+				}
+			}
+		}
+		if message.Type == "init-complete" {
+			return commandIDs
+		}
+	}
+}
+
+func TestWebsocketSceneWriteSurvivesGatewayRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "restart.sqlite")
+	server, stopServer := newTestServerAtPath(t, dbPath)
+	const roomID = "700008"
+	if status, _ := do(t, server, "POST", "/create-room", map[string]any{"roomId": roomID, "roomName": "Restart"}, ""); status != http.StatusOK {
+		t.Fatalf("create room: status=%d", status)
+	}
+	_, joined := do(t, server, "POST", "/join-room", map[string]any{"roomId": roomID, "userName": "Writer"}, "")
+	token, _ := joined.Data["sessionToken"].(string)
+	if token == "" {
+		t.Fatalf("join response omitted the session token: %+v", joined.Data)
+	}
+
+	client := dialGatewayWebsocket(t, server, token)
+	meta := readGatewayWSType(t, client, "init-meta")
+	userID, _ := meta.Data["userId"].(string)
+	if userID == "" {
+		t.Fatal("init-meta omitted the trusted user id")
+	}
+	readGatewayWSType(t, client, "init-complete")
+
+	writeGatewayWSJSON(t, client, testScenePush("forged-op", "another-user", roomID))
+	rejected := readGatewayWSType(t, client, "op-rejected")
+	if rejected.Data["code"] != "INVALID_SCENE_OPERATION" {
+		t.Fatalf("expected a forged identity to be rejected, got %+v", rejected.Data)
+	}
+
+	writeGatewayWSJSON(t, client, testScenePush("persisted-op", userID, roomID))
+	ack := readGatewayWSType(t, client, "ack.accepted")
+	if ack.Data["cmdId"] != "persisted-op" {
+		t.Fatalf("ack did not identify the accepted operation: %+v", ack.Data)
+	}
+	roomSeq, ok := ack.Data["roomSeq"].(float64)
+	if !ok || roomSeq <= 0 {
+		t.Fatalf("ack omitted the durable room sequence: %+v", ack.Data)
+	}
+	if err := client.Close(websocket.StatusNormalClosure, "restart test"); err != nil {
+		t.Fatalf("close first websocket: %v", err)
+	}
+	stopServer()
+
+	restarted, _ := newTestServerAtPath(t, dbPath)
+	rejoined := dialGatewayWebsocket(t, restarted, token)
+	restartMeta := readGatewayWSType(t, rejoined, "init-meta")
+	if restartMeta.Data["userId"] != userID {
+		t.Fatalf("session identity changed across restart: before=%v after=%v", userID, restartMeta.Data["userId"])
+	}
+	if snapshotVersion, ok := restartMeta.Data["snapshotVersion"].(float64); !ok || snapshotVersion != roomSeq {
+		t.Fatalf("restart snapshot version did not recover the committed sequence: got %v want %v", restartMeta.Data["snapshotVersion"], roomSeq)
+	}
+	readGatewayInitCommandIDs(t, rejoined)
+	if err := rejoined.Close(websocket.StatusNormalClosure, "session restored"); err != nil {
+		t.Fatalf("close restored session websocket: %v", err)
+	}
+
+	status, laterJoin := do(t, restarted, "POST", "/join-room", map[string]any{"roomId": roomID, "userName": "Later reader"}, "")
+	if status != http.StatusOK {
+		t.Fatalf("later join: status=%d response=%+v", status, laterJoin)
+	}
+	laterToken, _ := laterJoin.Data["sessionToken"].(string)
+	if laterToken == "" {
+		t.Fatalf("later join response omitted the session token: %+v", laterJoin.Data)
+	}
+	laterClient := dialGatewayWebsocket(t, restarted, laterToken)
+	defer laterClient.Close(websocket.StatusNormalClosure, "test complete")
+	laterMeta := readGatewayWSType(t, laterClient, "init-meta")
+	if laterMeta.Data["userId"] == userID {
+		t.Fatalf("later join reused the original session identity: %v", userID)
+	}
+	commandIDs := readGatewayInitCommandIDs(t, laterClient)
+	var persisted, forged bool
+	for _, id := range commandIDs {
+		persisted = persisted || id == "persisted-op"
+		forged = forged || id == "forged-op"
+	}
+	if !persisted || forged {
+		t.Fatalf("later join snapshot commands persisted=%v forged=%v ids=%v chunkSummary=%v", persisted, forged, commandIDs, laterMeta.Data["chunkSummary"])
 	}
 }

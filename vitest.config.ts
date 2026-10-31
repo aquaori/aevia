@@ -3,8 +3,12 @@ import path from "node:path";
 import { playwright } from "@vitest/browser-playwright";
 import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vitest/config";
+import { resolveChromiumLaunchOptions, selectedBrowser } from "./tests/browser-launch";
 
 const projectRoot = realpathSync(process.cwd());
+const chromiumLaunchOptions = resolveChromiumLaunchOptions();
+const browserName = selectedBrowser();
+const browserApiPort = Number(process.env.AEVIA_TEST_BROWSER_PORT) || 51204;
 const fromRoot = (relativePath: string) => path.resolve(projectRoot, relativePath);
 
 const sharedAlias = {
@@ -23,7 +27,12 @@ export default defineConfig({
 		coverage: {
 			provider: "v8",
 			reportsDirectory: "tests/reports/vitest/coverage",
-			reporter: ["text", "json", "html"],
+			reporter: ["text", "json", "json-summary", "html"],
+			include: [
+				"apps/frontend/src/**/*.{ts,tsx,vue}",
+				"packages/shared/src/**/*.{ts,tsx,vue}",
+			],
+			exclude: ["**/*.spec.ts", "**/*.unit.spec.ts", "**/*.d.ts"],
 		},
 		projects: [
 			{
@@ -60,14 +69,22 @@ export default defineConfig({
 					name: "frontend-module",
 					globals: true,
 					environment: "happy-dom",
+					exclude: ["apps/frontend/src/service/**/*.unit.spec.ts"],
 					include: [
 						"apps/frontend/src/service/**/*.spec.ts",
-						"!apps/frontend/src/service/**/*.unit.spec.ts",
 						"apps/frontend/src/store/**/*.spec.ts",
 					],
 				},
 				resolve: {
 					alias: frontendAlias,
+				},
+			},
+			{
+				test: {
+					name: "harness-unit",
+					globals: true,
+					environment: "node",
+					include: ["tests/report/**/*.spec.ts"],
 				},
 			},
 			{
@@ -78,14 +95,14 @@ export default defineConfig({
 					include: ["apps/frontend/tests/browser/**/*.spec.ts"],
 					browser: {
 						enabled: true,
-						provider: playwright(),
+						provider: playwright(browserName === "chromium" ? { launchOptions: chromiumLaunchOptions } : {}),
 						headless: true,
-						instances: [{ browser: "chromium" }],
+						instances: [{ browser: browserName }],
 						// Vitest's default browser port (63315) falls inside the range
 						// Windows reserves for Hyper-V/WSL, so the server fails to bind
-						// with EACCES before any test loads. Pin a port outside the
-						// usual reserved ranges.
-						api: { port: 51204 },
+						// with EACCES before any test loads. Managed runs allocate a free
+						// port; direct suite runs use a stable fallback.
+						api: { port: browserApiPort },
 					},
 				},
 				resolve: {

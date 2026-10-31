@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import path from "node:path";
+import { writeAggregateReport } from "./report/aggregate";
+import type { RunManifest, RunStep } from "./report/contract";
+import { readSourceIdentity } from "./report/provenance";
+import { browserAvailability, selectedBrowser } from "./browser-launch";
+import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
 
 type Step = {
 	title: string;
@@ -29,7 +35,20 @@ type ExternalServices = {
 };
 
 type ExternalMode = "headless" | "headed";
-type Profile = "standard" | "boundary-small" | "boundary-full" | "nightly" | "custom";
+type Profile = "quick" | "ci" | "full" | "standard" | "boundary-small" | "boundary-full" | "nightly" | "custom";
+
+type EvidenceStep = {
+	id: string;
+	title: string;
+	description: string;
+	command?: string;
+	cwd?: string;
+	timeoutMs?: number;
+	stdoutArtifact?: string;
+	env?: NodeJS.ProcessEnv;
+	requiresServices?: boolean;
+	action?: "source-check";
+};
 
 type Answers = {
 	profile: Profile;
@@ -45,7 +64,6 @@ type Answers = {
 	includeStandardBenchmark: boolean;
 	includeResilience: boolean;
 	includeBoundary: boolean;
-	includeReport: boolean;
 	scales: string;
 	boundaryScales: string;
 	concurrencyLevels: string;
@@ -62,6 +80,8 @@ const testTempDir = path.join(canonicalRootDir, "tests", ".tmp");
 const startedAt = Date.now();
 const spinnerFrames = ["-", "\\", "|", "/"];
 let activeExternalServices: ExternalServices | undefined;
+let activeTestProcess: ChildProcess | undefined;
+let interruptedSignal: "SIGINT" | "SIGTERM" | undefined;
 
 const dateTag = () => new Date().toISOString().replace(/[:.]/g, "-");
 const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
@@ -107,6 +127,7 @@ const startManagedService = (
 		env: options.env,
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
+		detached: process.platform !== "win32",
 	});
 	const service: ManagedService = { name, child, tail: [] };
 	const collect = (chunk: Buffer, source: "stdout" | "stderr") => {
@@ -171,7 +192,7 @@ const stopManagedService = async (service: ManagedService) => {
 			resolve();
 		});
 	});
-	service.child.kill("SIGTERM");
+	stopProcessTree(service.child);
 	await closed;
 	service.child.stdout?.destroy();
 	service.child.stderr?.destroy();
@@ -303,9 +324,9 @@ const stopExternalServices = async () => {
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
 	process.once(signal, () => {
-		void stopExternalServices().finally(() => {
-			process.exit(signal === "SIGINT" ? 130 : 143);
-		});
+		interruptedSignal = signal;
+		if (activeTestProcess) stopProcessTree(activeTestProcess);
+		void stopExternalServices();
 	});
 }
 
@@ -384,6 +405,9 @@ const askNumber = async (rl: readline.Interface, question: string, defaultValue:
 
 const normalizeProfile = (value: string | undefined): Profile => {
 	if (
+		value === "quick" ||
+		value === "ci" ||
+		value === "full" ||
 		value === "standard" ||
 		value === "boundary-small" ||
 		value === "boundary-full" ||
@@ -401,15 +425,14 @@ const presetAnswers = (profile: Profile): Answers => ({
 	runs: 3,
 	warmup: 1,
 	matrix: profile === "nightly",
-	includeBuild: profile !== "custom",
+	includeBuild: profile !== "custom" && profile !== "quick",
 	includeUnit: profile !== "custom",
 	includeIntegration: profile !== "custom",
-	includeBrowser: profile !== "custom",
-	includeSmoke: profile !== "custom",
+	includeBrowser: profile !== "custom" && profile !== "quick",
+	includeSmoke: profile !== "custom" && profile !== "quick",
 	includeStandardBenchmark: profile === "standard" || profile === "boundary-small" || profile === "boundary-full" || profile === "nightly",
 	includeResilience: profile === "nightly",
 	includeBoundary: profile === "boundary-small" || profile === "boundary-full" || profile === "nightly",
-	includeReport: true,
 	scales: "10000,50000,100000",
 	boundaryScales: profile === "boundary-small" ? "10000,50000" : "100000,250000,500000,1000000,2000000,5000000",
 	concurrencyLevels: profile === "boundary-small" ? "5,10" : "10,25,50,100",
@@ -437,7 +460,6 @@ const collectAnswers = async (): Promise<Answers> => {
 			includeStandardBenchmark: argBoolean("benchmark", preset.includeStandardBenchmark),
 			includeResilience: argBoolean("resilience", preset.includeResilience),
 			includeBoundary: argBoolean("boundary", preset.includeBoundary),
-			includeReport: argBoolean("report", preset.includeReport),
 			scales: argValue("scales") || preset.scales,
 			boundaryScales: argValue("boundary-scales") || preset.boundaryScales,
 			concurrencyLevels: argValue("concurrency-levels") || preset.concurrencyLevels,
@@ -484,7 +506,6 @@ const collectAnswers = async (): Promise<Answers> => {
 			answers.includeStandardBenchmark = await askYesNo(rl, "Run standard external benchmark", true);
 			answers.includeResilience = await askYesNo(rl, "Run network resilience cases", false);
 			answers.includeBoundary = await askYesNo(rl, "Run boundary cases", false);
-			answers.includeReport = await askYesNo(rl, "Aggregate report at the end", true);
 		}
 
 		if (answers.includeStandardBenchmark || answers.includeResilience || answers.includeBoundary) {
@@ -525,7 +546,9 @@ const runStep = (step: Step, index: number, total: number) =>
 			shell: true,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: { ...process.env, FORCE_COLOR: "0" },
+			detached: process.platform !== "win32",
 		});
+		activeTestProcess = child;
 
 		const collect = (chunk: Buffer, isError = false) => {
 			for (const line of chunk.toString().split(/\r?\n/)) {
@@ -543,11 +566,13 @@ const runStep = (step: Step, index: number, total: number) =>
 		child.stderr?.on("data", (chunk) => collect(chunk, true));
 		child.on("error", (error) => {
 			clearInterval(timer);
+			if (activeTestProcess === child) activeTestProcess = undefined;
 			process.stdout.write(`\r${" ".repeat(100)}\r`);
 			reject(error);
 		});
 		child.on("close", (code) => {
 			clearInterval(timer);
+			if (activeTestProcess === child) activeTestProcess = undefined;
 			process.stdout.write(`\r${" ".repeat(100)}\r`);
 			if (code === 0) {
 				print(`    ✓ completed in ${formatDuration(Date.now() - stepStartedAt)}`);
@@ -671,14 +696,424 @@ const buildSteps = (answers: Answers): Step[] => {
 			requiresServices: true,
 		});
 	}
-	if (answers.includeReport) {
-		steps.push({ title: "Aggregate report", description: "Writing the latest combined HTML/JSON report.", command: "npm --silent run test:report" });
-	}
 	return steps;
 };
 
+const shellQuote = (value: string) => `"${value.replaceAll('"', '\\"')}"`;
+
+const listCoverageSources = () => {
+	const files: string[] = [];
+	const extensions = new Set([".ts", ".tsx", ".vue"]);
+	const visit = (directory: string) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const absolutePath = path.join(directory, entry.name);
+			if (entry.isDirectory()) visit(absolutePath);
+			else if (
+				entry.isFile() && extensions.has(path.extname(entry.name)) &&
+				!entry.name.endsWith(".d.ts") && !entry.name.endsWith(".spec.ts")
+			) files.push(absolutePath);
+		}
+	};
+	for (const directory of ["apps/frontend/src", "packages/shared/src"]) {
+		visit(path.join(canonicalRootDir, directory));
+	}
+	return files.sort();
+};
+
+const managedEvidencePlan = (profile: "quick" | "ci" | "full", runDir: string, runId: string, source: RunManifest["source"]) => {
+	const frontendReport = path.join(runDir, "frontend", "vitest.json");
+	const browserReport = path.join(runDir, "frontend", "browser.json");
+	const coverageDir = path.join(runDir, "frontend", "coverage");
+	const packageList = path.join(runDir, "backend", "packages.txt");
+	const goTests = path.join(runDir, "backend", "go-tests.jsonl");
+	const goCoverage = path.join(runDir, "backend", "coverage.out");
+	const externalDir = path.join(runDir, "external");
+	const quick = profile === "quick";
+	const artifacts: RunManifest["expectedArtifacts"] = quick
+		? [
+			{ id: "feature-obligations", stepId: "catalog-check", kind: "feature-catalog", path: "catalog/feature-obligations.json" },
+			{ id: "frontend-vitest", stepId: "frontend-test", kind: "vitest", path: "frontend/vitest.json" },
+		]
+		: [
+			{ id: "feature-obligations", stepId: "go-test", kind: "feature-catalog", path: "catalog/feature-obligations.json" },
+			{ id: "go-package-inventory", stepId: "go-package-list", kind: "package-list", path: "backend/packages.txt" },
+			{ id: "go-test", stepId: "go-test", kind: "go-test", path: "backend/go-tests.jsonl" },
+			{ id: "go-coverage", stepId: "go-test", kind: "go-coverage", path: "backend/coverage.out", expectedCases: [] },
+			{ id: "frontend-vitest", stepId: "frontend-test", kind: "vitest", path: "frontend/vitest.json" },
+			{
+				id: "frontend-coverage",
+				stepId: "frontend-test",
+				kind: "coverage",
+				path: "frontend/coverage/coverage-summary.json",
+				expectedSources: listCoverageSources(),
+			},
+			{ id: "frontend-browser", stepId: "browser-test", kind: "vitest", path: "frontend/browser.json" },
+			{
+				id: "external-correctness",
+				stepId: "external-e2e",
+				kind: "external",
+				path: "external/correctness-full-external-results.json",
+				expectedCases: CI_REQUIRED_EXTERNAL_CASE_IDS,
+			},
+		];
+	const steps: EvidenceStep[] = quick
+		? [
+			{
+				id: "catalog-check",
+				title: "Backend feature inventory",
+				description: "Checking backend HTTP/WS/scene and frontend route/tool surfaces against the reviewed catalog.",
+				command: "go test ./internal/gateway -run \"TestFeatureSurfaceCatalogMatchesBackendSources|TestCatalogSurfacePathsAreValidHTTPPatterns|TestV2PlaceholdersExplicitlyRejectUntilImplemented\" -count=1",
+				cwd: backendDir,
+				timeoutMs: 180000,
+			},
+			{
+				id: "frontend-test",
+				title: "Quick frontend and shared regression",
+				description: "Running deterministic unit, module and test-harness checks.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} run --project=shared-unit --project=frontend-unit --project=frontend-module --project=harness-unit --reporter=json --outputFile=${shellQuote(frontendReport)}`,
+				cwd: canonicalRootDir,
+				stdoutArtifact: undefined,
+				timeoutMs: 180000,
+			},
+			{ id: "source-check", title: "Source identity check", description: "Confirming source files did not change during this run.", action: "source-check" },
+		]
+		: [
+			{ id: "build", title: "Production build", description: "Building the backend and typechecking/building the frontend.", command: "npm --silent run build", timeoutMs: 300000 },
+			{ id: "go-vet", title: "Go static analysis", description: "Running go vet across all backend packages.", command: "go vet ./...", cwd: backendDir, timeoutMs: 180000 },
+			{
+				id: "go-package-list",
+				title: "Go package inventory",
+				description: "Recording the exact backend packages required in this run.",
+				command: "go list ./...",
+				cwd: backendDir,
+				stdoutArtifact: packageList,
+				timeoutMs: 60000,
+			},
+			{
+				id: "go-test",
+				title: "Go tests and coverage",
+				description: "Running every Go package once with cross-package statement coverage.",
+				command: `go test -json -coverpkg=./... -coverprofile=${shellQuote(goCoverage)} ./...`,
+				cwd: backendDir,
+				stdoutArtifact: goTests,
+				timeoutMs: 600000,
+			},
+			{
+				id: "frontend-test",
+				title: "Frontend and shared coverage tests",
+				description: "Running unit, module and harness suites with source coverage.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} run --project=shared-unit --project=frontend-unit --project=frontend-module --project=harness-unit --coverage --reporter=json --outputFile=${shellQuote(frontendReport)} --coverage.reportsDirectory=${shellQuote(coverageDir)}`,
+				cwd: canonicalRootDir,
+				timeoutMs: 600000,
+			},
+			{
+				id: "browser-test",
+				title: "Browser component tests",
+				description: "Running the browser component project in an isolated Vitest process.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} run --project=frontend-browser --reporter=json --outputFile=${shellQuote(browserReport)}`,
+				cwd: canonicalRootDir,
+				timeoutMs: 300000,
+			},
+			{
+				id: "external-e2e",
+				title: "External correctness E2E",
+				description: "Running the full correctness suite in the selected browser against isolated services.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=correctness-full --mode=headless --reporter=json --report-dir=${shellQuote(externalDir)}`,
+				cwd: frontendDir,
+				requiresServices: true,
+				timeoutMs: 600000,
+				env: {
+					AEVIA_TEST_RUN_ID: runId,
+					AEVIA_TEST_SOURCE_REVISION: source.revision || "",
+					AEVIA_TEST_DIRTY_SHA256: source.dirtyPatchSha256,
+				},
+			},
+			{ id: "source-check", title: "Source identity check", description: "Confirming source files did not change during this run.", action: "source-check" },
+		];
+	if (profile === "full") {
+		steps.splice(steps.length - 1, 0,
+			{
+				id: "go-race",
+				title: "Go race detector",
+				description: "Running the backend suite with the Go race detector on this host and platform.",
+				command: "go test -race ./...",
+				cwd: backendDir,
+				timeoutMs: 900000,
+			},
+			{
+				id: "go-fuzz",
+				title: "Scene payload fuzz smoke",
+				description: "Fuzzing the public scene payload validator for 30 seconds with a bounded worker count.",
+				command: "go test ./internal/gateway -run=^$ -fuzz=FuzzValidateScenePayloadNeverPanics -fuzztime=30s -parallel=2",
+				cwd: backendDir,
+				timeoutMs: 180000,
+			}
+		);
+	}
+	return { steps, artifacts };
+};
+
+const persistManifest = (manifestPath: string, manifest: RunManifest) => {
+	const temporaryPath = `${manifestPath}.${process.pid}.tmp`;
+	writeFileSync(temporaryPath, JSON.stringify(manifest, null, 2), "utf8");
+	renameSync(temporaryPath, manifestPath);
+};
+
+const stopProcessTree = (child: ChildProcess) => {
+	if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+	if (process.platform === "win32") {
+		spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+		return;
+	}
+	try { process.kill(-child.pid, "SIGTERM"); }
+	catch { child.kill("SIGTERM"); }
+	const pid = child.pid;
+	const forceTimer = setTimeout(() => {
+		try { process.kill(-pid, "SIGKILL"); } catch { /* Process already exited. */ }
+	}, 2500);
+	forceTimer.unref();
+};
+
+const runEvidenceStep = async (
+	step: EvidenceStep,
+	record: RunStep,
+	manifest: RunManifest,
+	manifestPath: string,
+	runDir: string
+) => {
+	const startedAt = new Date();
+	record.status = "running";
+	record.startedAt = startedAt.toISOString();
+	persistManifest(manifestPath, manifest);
+	const logPath = path.join(runDir, "logs", `${step.id}.log`);
+	record.logPath = path.relative(runDir, logPath).replaceAll("\\", "/");
+	let stdout = "";
+	let stderr = "";
+	let errorMessage: string | undefined;
+	let exitCode: number | null = 0;
+	let timedOut = false;
+
+	try {
+		if (step.action === "source-check") {
+			const source = readSourceIdentity(canonicalRootDir);
+			const addedUntracked = (source.untrackedFiles || []).filter((item) => !(manifest.source.untrackedFiles || []).includes(item));
+			const removedUntracked = (manifest.source.untrackedFiles || []).filter((item) => !(source.untrackedFiles || []).includes(item));
+			if (
+				source.revision !== manifest.source.revision ||
+				source.dirtyPatchSha256 !== manifest.source.dirtyPatchSha256
+			) throw new Error([
+				"Source revision or dirty-file fingerprint changed during the test run",
+				`expected=${manifest.source.revision}/${manifest.source.dirtyPatchSha256}`,
+				`actual=${source.revision}/${source.dirtyPatchSha256}`,
+				addedUntracked.length ? `new untracked files: ${addedUntracked.join(", ")}` : "",
+				removedUntracked.length ? `removed untracked files: ${removedUntracked.join(", ")}` : "",
+			].filter(Boolean).join("; "));
+		} else {
+			if (step.requiresServices && !activeExternalServices) await startExternalServices();
+			const childEnv = { ...process.env, ...step.env, FORCE_COLOR: "0" };
+			if (step.id === "browser-test") childEnv.AEVIA_TEST_BROWSER_PORT = String(await findAvailablePort());
+			const child = spawn(step.command || "", {
+				cwd: step.cwd || rootDir,
+				shell: true,
+				stdio: ["ignore", "pipe", "pipe"],
+				env: childEnv,
+				windowsHide: true,
+				detached: process.platform !== "win32",
+			});
+			activeTestProcess = child;
+			const timeout = setTimeout(() => {
+				timedOut = true;
+				stopProcessTree(child);
+			}, step.timeoutMs || 300000);
+			child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
+			child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+			try {
+				exitCode = await new Promise<number | null>((resolve, reject) => {
+					child.once("error", reject);
+					child.once("close", (code) => resolve(code));
+				});
+			} finally {
+				clearTimeout(timeout);
+				if (activeTestProcess === child) activeTestProcess = undefined;
+			}
+			if (exitCode !== 0) errorMessage = timedOut ? `Timed out after ${step.timeoutMs || 300000} ms` : `Process exited with code ${exitCode}`;
+			if (step.stdoutArtifact) {
+				mkdirSync(path.dirname(step.stdoutArtifact), { recursive: true });
+				writeFileSync(step.stdoutArtifact, stdout, "utf8");
+			}
+		}
+	} catch (error) {
+		errorMessage = error instanceof Error ? error.message : String(error);
+		exitCode = null;
+	}
+
+	mkdirSync(path.dirname(logPath), { recursive: true });
+	writeFileSync(logPath, `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}${errorMessage ? `\n[runner] ${errorMessage}\n` : ""}`, "utf8");
+	record.finishedAt = new Date().toISOString();
+	record.durationMs = Date.now() - startedAt.getTime();
+	record.exitCode = exitCode;
+	record.status = interruptedSignal ? "cancelled" : errorMessage ? "failed" : "passed";
+	if (errorMessage) record.error = errorMessage;
+	persistManifest(manifestPath, manifest);
+	print(`    ${record.status === "passed" ? "✓" : "✕"} ${step.title} (${formatDuration(record.durationMs)})`);
+	if (record.status !== "passed" && errorMessage) {
+		for (const line of errorMessage.split(/\r?\n/)) print(`      ${line}`);
+		for (const line of `${stdout}\n${stderr}`.trim().split(/\r?\n/).slice(-20)) print(`      ${line}`);
+	}
+};
+
+const runEvidenceProfile = async (profile: "quick" | "ci" | "full") => {
+	const runId = randomUUID();
+	const runDir = path.join(canonicalRootDir, "tests", "reports", "summary", "runs", runId);
+	mkdirSync(runDir, { recursive: true });
+	const source = readSourceIdentity(canonicalRootDir);
+	const catalogSnapshot = path.join(runDir, "catalog", "feature-obligations.json");
+	mkdirSync(path.dirname(catalogSnapshot), { recursive: true });
+	writeFileSync(
+		catalogSnapshot,
+		readFileSync(path.join(canonicalRootDir, "tests", "catalog", "feature-obligations.json"), "utf8"),
+		"utf8"
+	);
+	const { steps, artifacts } = managedEvidencePlan(profile, runDir, runId, source);
+	const manifest: RunManifest = {
+		schemaVersion: 1,
+		runId,
+		profile,
+		status: "running",
+		source,
+		startedAt: new Date().toISOString(),
+		expectedSteps: steps.map((step) => step.id),
+		steps: steps.map((step) => ({ id: step.id, title: step.title, status: "pending" })),
+		expectedArtifacts: artifacts,
+	};
+	const manifestPath = path.join(runDir, "run-manifest.json");
+	persistManifest(manifestPath, manifest);
+	print(`Run ${runId} · profile=${profile} · source=${source.revision}`);
+	let failed = false;
+	try {
+		for (const step of steps) {
+			const record = manifest.steps.find((candidate) => candidate.id === step.id)!;
+			await runEvidenceStep(step, record, manifest, manifestPath, runDir);
+			if (record.status !== "passed") {
+				failed = true;
+				break;
+			}
+			if (step.id === "go-package-list") {
+				const packages = readFileSync(path.join(runDir, "backend", "packages.txt"), "utf8")
+					.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+				for (const artifact of artifacts.filter((item) => item.kind === "go-test" || item.kind === "go-coverage")) {
+					artifact.expectedCases = packages;
+				}
+			}
+		}
+	} catch (error) {
+		failed = true;
+		const runningStep = manifest.steps.find((step) => step.status === "running");
+		if (runningStep) {
+			runningStep.status = interruptedSignal ? "cancelled" : "failed";
+			runningStep.error = error instanceof Error ? error.message : String(error);
+			runningStep.finishedAt = new Date().toISOString();
+		}
+	} finally {
+		await stopExternalServices();
+		for (const step of manifest.steps) {
+			if (step.status === "pending") step.status = interruptedSignal ? "cancelled" : "skipped";
+		}
+		manifest.status = interruptedSignal ? "cancelled" : failed ? "failed" : "passed";
+		manifest.finishedAt = new Date().toISOString();
+		persistManifest(manifestPath, manifest);
+	}
+
+	try {
+		let report = writeAggregateReport(manifestPath);
+		if (report.status !== "passed" && manifest.status === "passed") {
+			manifest.status = "failed";
+			persistManifest(manifestPath, manifest);
+			report = writeAggregateReport(manifestPath);
+		}
+		print(`Report: ${path.join(runDir, "test-report.html")}`);
+		print(`Result: ${report.status}; ${report.failures.length} evidence issue(s)`);
+		if (report.status !== "passed") process.exitCode = interruptedSignal ? 130 : 1;
+	} catch (error) {
+		print(`Report generation failed: ${error instanceof Error ? error.message : String(error)}`);
+		process.exitCode = 1;
+	}
+};
+
+const runDoctor = () => {
+	const goVersion = spawnSync("go", ["version"], { cwd: canonicalRootDir, encoding: "utf8" });
+	const browserName = selectedBrowser();
+	const browser = browserAvailability(browserName);
+	const checks = [
+		{
+			name: "node",
+			passed: Number(process.versions.node.split(".")[0]) >= 20,
+		detail: process.versions.node,
+		},
+		{
+			name: "git",
+			passed: spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: canonicalRootDir, encoding: "utf8" }).status === 0,
+			detail: "repository revision is readable",
+		},
+		{
+			name: "go",
+			passed: goVersion.status === 0,
+			detail: goVersion.stdout?.trim() || "Go is not on PATH",
+		},
+		{
+			name: "dependencies",
+			passed: existsSync(path.join(canonicalRootDir, "node_modules", "vitest", "package.json")) &&
+				existsSync(path.join(canonicalRootDir, "node_modules", "tsx", "package.json")),
+			detail: "Vitest and tsx are installed",
+		},
+		{
+			name: browserName,
+			passed: browser.available,
+			detail: browser.executablePath,
+		},
+	];
+	const result = { schemaVersion: 1, checkedAt: new Date().toISOString(), checks };
+	if (hasArg("json") || process.env.AEVIA_TEST_JSON === "1") print(JSON.stringify(result));
+	else {
+		print("Aevia test environment");
+		for (const check of checks) print(`${check.passed ? "PASS" : "FAIL"} ${check.name}: ${check.detail}`);
+	}
+	if (checks.some((check) => !check.passed)) process.exitCode = 1;
+};
+
+const runReplay = async () => {
+	const runId = argValue("run-id");
+	if (!runId || !/^[0-9a-f-]{36}$/i.test(runId)) throw new Error("Replay requires --run-id=<UUID> from a prior managed run");
+	const manifestPath = path.join(canonicalRootDir, "tests", "reports", "summary", "runs", runId, "run-manifest.json");
+	if (!existsSync(manifestPath)) throw new Error(`Run manifest not found: ${manifestPath}`);
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as RunManifest;
+	const source = readSourceIdentity(canonicalRootDir);
+	if (
+		manifest.runId !== runId ||
+		manifest.source.revision !== source.revision ||
+		manifest.source.dirtyPatchSha256 !== source.dirtyPatchSha256
+	) throw new Error("Replay refused: current source identity differs from the recorded run");
+	if (manifest.profile !== "quick" && manifest.profile !== "ci" && manifest.profile !== "full") {
+		throw new Error(`Replay is not supported for profile: ${manifest.profile}`);
+	}
+	print(`Re-running profile=${manifest.profile} from source-matched run=${runId}`);
+	await runEvidenceProfile(manifest.profile);
+};
+
 const main = async () => {
+	if (hasArg("doctor")) {
+		runDoctor();
+		return;
+	}
+	if (hasArg("replay")) {
+		await runReplay();
+		return;
+	}
 	const answers = await collectAnswers();
+	if (answers.profile === "quick" || answers.profile === "ci" || answers.profile === "full") {
+		await runEvidenceProfile(answers.profile);
+		return;
+	}
 	const steps = buildSteps(answers);
 
 	print("");
@@ -704,7 +1139,7 @@ const main = async () => {
 		}
 		print("");
 		print(`✓ workflow completed in ${elapsed()}`);
-		print(`Report: ${path.join(rootDir, "tests", "reports", "summary", "latest", "test-report.html")}`);
+		print("The legacy interactive run wrote individual suite reports; use test:ci for managed evidence and aggregation.");
 	} catch (error: unknown) {
 		print("");
 		print(`✕ workflow failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -714,4 +1149,7 @@ const main = async () => {
 	}
 };
 
-void main();
+void main().catch((error) => {
+	print(`✕ ${error instanceof Error ? error.message : String(error)}`);
+	process.exitCode = interruptedSignal ? 130 : 1;
+});

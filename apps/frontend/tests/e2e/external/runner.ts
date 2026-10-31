@@ -1,5 +1,6 @@
 import path from "path";
-import { chromium, type Browser, type LaunchOptions } from "playwright";
+import { randomUUID } from "node:crypto";
+import type { Browser, LaunchOptions } from "playwright";
 import {
 	applyPerformanceRegressions,
 	buildExternalReport,
@@ -20,13 +21,17 @@ import {
 	runPerformanceExternal,
 } from "./suites";
 import { logEnvironment, logReport, logRunHeader } from "./cli-progress";
+import { readSourceIdentity } from "../../../../../tests/report/provenance";
+import { resolveChromiumLaunchOptions, selectedBrowser, selectedBrowserType } from "../../../../../tests/browser-launch";
 
 const launchBrowser = async (mode: RunMode, gpu: "on" | "off"): Promise<Browser> => {
+	const browser = selectedBrowser();
+	const browserType = selectedBrowserType();
 	const launchOptions: LaunchOptions = {
 		headless: mode === "headless",
-		channel: "chrome",
+		...(browser === "chromium" ? resolveChromiumLaunchOptions() : {}),
 	};
-	if (gpu === "off") {
+	if (browser === "chromium" && gpu === "off") {
 		launchOptions.args = [
 			"--disable-gpu",
 			"--disable-gpu-compositing",
@@ -34,7 +39,7 @@ const launchBrowser = async (mode: RunMode, gpu: "on" | "off"): Promise<Browser>
 			"--disable-accelerated-2d-canvas",
 		];
 	}
-	return chromium.launch(launchOptions);
+	return browserType.launch(launchOptions);
 };
 
 const runSuite = async (context: SuiteContext): Promise<CaseResult[]> => {
@@ -164,14 +169,22 @@ const main = async () => {
 			}
 		}
 	}
-	const report = buildExternalReport(
+	const source = readSourceIdentity(process.cwd());
+	const report = {
+		...buildExternalReport(
 		config,
 		results,
 		regressions,
 		learningArtifacts.learning,
 		learningArtifacts.learnedRegressions,
 		learningArtifacts.baselineRecommendations
-	);
+		),
+		run: {
+			id: process.env.AEVIA_TEST_RUN_ID || randomUUID(),
+			sourceRevision: process.env.AEVIA_TEST_SOURCE_REVISION || source.revision,
+			dirtyPatchSha256: process.env.AEVIA_TEST_DIRTY_SHA256 || source.dirtyPatchSha256,
+		},
+	};
 	const reportPath = writeReports(reportRoot, report, reportTag);
 	if (config.importCurrentToHistory) {
 		const imported = importHistoryFromReport(config, reportPath);

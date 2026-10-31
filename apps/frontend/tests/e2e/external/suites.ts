@@ -13,6 +13,8 @@ import {
 	captureCanvasSample,
 	roiAround,
 	saveCanvasPng,
+	waitForVisibleScreenshotBlank,
+	waitForVisibleScreenshotContent,
 	waitForCanvasChange,
 	waitForNonBlankCanvas,
 } from "./canvas-observer";
@@ -26,66 +28,67 @@ import {
 	waitForScreenshotChange,
 } from "./cdp-observer";
 import { logCaseEnd, logCaseStart, logStep } from "./cli-progress";
+import { EXTERNAL_CASES } from "../../../../../tests/catalog/external-cases";
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 const CASE_META: Record<string, { title: string; description: string; category: CaseCategory }> = {
-	"harness-health": {
+	[EXTERNAL_CASES.harnessHealth.id]: {
 		title: "Harness health",
 		description: "验证前端可访问、后端 create/join、WebSocket 握手、协议驱动远端绘制和 canvas ROI 外部观测链路。",
 		category: "harness",
 	},
-	"correctness-smoke": {
+	[EXTERNAL_CASES.correctnessSmoke.id]: {
 		title: "Correctness smoke",
-		description: "双端真实绘制互相可见，撤销/重做后最终 canvas 截图一致，并覆盖基础翻页返回。",
+		description: "双端绘制互相可见；撤销时目标区域消失且其他笔画保留，重做后恢复；分页返回用可见截图断言内容隔离。",
 		category: "correctness",
 	},
-	"concurrent-crossing-visual-consistency": {
+	[EXTERNAL_CASES.concurrentCrossing.id]: {
 		title: "Concurrent crossing consistency",
 		description: "两个浏览器同时交叉绘制，最终只用 canvas 截图和 pixel diff 验证视觉一致性。",
 		category: "correctness",
 	},
-	"late-joiner-visual-consistency": {
+	[EXTERNAL_CASES.lateJoiner.id]: {
 		title: "Late joiner consistency",
 		description: "后加入用户加载已有历史内容后，与原用户最终 canvas 截图保持一致。",
 		category: "correctness",
 	},
-	"protocol-multipage-isolation": {
+	[EXTERNAL_CASES.multipageIsolation.id]: {
 		title: "Protocol multipage isolation",
 		description: "通过公开协议制造多页历史，验证 late observer 切页后不同页内容可见且可返回。",
 		category: "correctness",
 	},
-	"full-render": {
+	[EXTERNAL_CASES.fullRenderPerformance.id]: {
 		title: "Full render late joiner",
 		description: "公开 WebSocket 协议制造大量历史点，测量 late joiner 首个非空画面和视觉稳定时间。",
 		category: "performance",
 	},
-	"incremental-remote-first-pixel": {
+	[EXTERNAL_CASES.remoteFirstPixelPerformance.id]: {
 		title: "Incremental remote first pixel",
 		description: "从测试侧发送公开 WebSocket 远端笔画，到 observer 目标 ROI 首次出现像素变化。",
 		category: "performance",
 	},
-	"local-realtime-first-pixel": {
+	[EXTERNAL_CASES.localFirstPixelPerformance.id]: {
 		title: "Local realtime first pixel",
 		description: "Playwright 真实 pointer 绘制后，目标 ROI 首次出现像素变化的耗时和帧数。",
 		category: "performance",
 	},
-	"boundary-full-render-until-crash": {
+	[EXTERNAL_CASES.fullRenderBoundary.id]: {
 		title: "Boundary full render until crash",
 		description: "外部协议制造阶梯历史数据，用 Playwright/CDP 硬指标寻找全量初始化的 renderer/page/browser 边界。",
 		category: "boundary",
 	},
-	"boundary-same-page-heap-growth": {
+	[EXTERNAL_CASES.heapGrowthBoundary.id]: {
 		title: "Boundary same-page heap growth",
 		description: "同一页多轮注入和重载后，通过 CDP JS heap 与 DOM counter 观察内存增长边界。",
 		category: "boundary",
 	},
-	"boundary-incremental-redraw-freeze": {
+	[EXTERNAL_CASES.redrawFreezeBoundary.id]: {
 		title: "Boundary incremental redraw freeze",
 		description: "多协议客户端并发局部重绘，用外部截图、CDP heap 和输入耗时观察软卡死边界。",
 		category: "boundary",
 	},
-	"resilience-network-recovery": {
+	[EXTERNAL_CASES.networkRecovery.id]: {
 		title: "Network latency recovery",
 		description: "通过 CDP 网络模拟长延迟和离线恢复，观测页面恢复到可绘制状态的时间。",
 		category: "performance",
@@ -93,7 +96,8 @@ const CASE_META: Record<string, { title: string; description: string; category: 
 };
 
 const withMeta = (context: SuiteContext, id: string, result: CaseResult): CaseResult => {
-	const key = id.startsWith("full-render-") ? "full-render" : id;
+	const fullRenderPrefix = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
+	const key = id.startsWith(fullRenderPrefix) ? EXTERNAL_CASES.fullRenderPerformance.id : id;
 	const meta = CASE_META[key];
 	return {
 		...result,
@@ -111,7 +115,8 @@ const runCase = async (
 	fn: () => Promise<Omit<CaseResult, "id" | "durationMs">>
 ): Promise<CaseResult> => {
 	const startedAt = performance.now();
-	const meta = CASE_META[id.startsWith("full-render-") ? "full-render" : id];
+	const fullRenderPrefix = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
+	const meta = CASE_META[id.startsWith(fullRenderPrefix) ? EXTERNAL_CASES.fullRenderPerformance.id : id];
 	logCaseStart(id, meta?.title || id, meta?.description);
 	try {
 		const result = await fn();
@@ -198,7 +203,7 @@ const assessSampleQuality = (id: string, samples: CaseSample[]) => {
 		sample.qualityStatus = "valid";
 	}
 
-	if (id.startsWith("full-render-")) {
+	if (id.startsWith(`${EXTERNAL_CASES.fullRenderPerformance.id}-`)) {
 		const ratios = measuredPassed
 			.map((sample) => sample.metrics.nonBlankRatio)
 			.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
@@ -216,7 +221,7 @@ const assessSampleQuality = (id: string, samples: CaseSample[]) => {
 	const validMeasured = measuredPassed.filter((sample) => sample.qualityStatus === "valid");
 	if (validMeasured.length < 3) return;
 
-	const outlierMetrics = id.startsWith("full-render-")
+	const outlierMetrics = id.startsWith(`${EXTERNAL_CASES.fullRenderPerformance.id}-`)
 		? ["firstNonBlankMs", "visuallyStableMs"]
 		: id === "incremental-remote-first-pixel"
 			? ["remoteFirstPixelMs"]
@@ -254,7 +259,8 @@ const runSampledCase = async (
 ): Promise<CaseResult> => {
 	const startedAt = performance.now();
 	const samples: CaseSample[] = [];
-	const meta = CASE_META[id.startsWith("full-render-") ? "full-render" : id];
+	const fullRenderPrefix = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
+	const meta = CASE_META[id.startsWith(fullRenderPrefix) ? EXTERNAL_CASES.fullRenderPerformance.id : id];
 	logCaseStart(
 		id,
 		meta?.title || id,
@@ -464,7 +470,7 @@ const prepareBoundaryFullRenderRooms = async (context: SuiteContext) => {
 };
 
 const runBoundaryFullRender = async (context: SuiteContext) =>
-	runCase(context, "boundary-full-render-until-crash", async () => {
+	runCase(context, EXTERNAL_CASES.fullRenderBoundary.id, async () => {
 		const preseededRooms = await prepareBoundaryFullRenderRooms(context);
 		const records: MetricMap[] = [];
 		let lastSurvivedScale = 0;
@@ -547,7 +553,7 @@ const runBoundaryFullRender = async (context: SuiteContext) =>
 	});
 
 const runBoundaryHeapGrowth = async (context: SuiteContext) =>
-	runCase(context, "boundary-same-page-heap-growth", async () => {
+	runCase(context, EXTERNAL_CASES.heapGrowthBoundary.id, async () => {
 		const scale = context.config.boundaryScales[0] || context.config.scales[0] || 100000;
 		const records: MetricMap[] = [];
 		let roomId: string | null = null;
@@ -623,7 +629,7 @@ const runBoundaryHeapGrowth = async (context: SuiteContext) =>
 	});
 
 const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
-	runCase(context, "boundary-incremental-redraw-freeze", async () => {
+	runCase(context, EXTERNAL_CASES.redrawFreezeBoundary.id, async () => {
 		const records: MetricMap[] = [];
 		let lastSurvivedConcurrency = 0;
 		let firstCrashConcurrency = 0;
@@ -712,7 +718,7 @@ const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
 	});
 
 const runNetworkRecovery = async (context: SuiteContext) =>
-	runCase(context, "resilience-network-recovery", async () => {
+	runCase(context, EXTERNAL_CASES.networkRecovery.id, async () => {
 		const records: MetricMap[] = [];
 		let worstRecoveryMs = 0;
 		for (const latencyMs of context.config.latencies) {
@@ -786,7 +792,7 @@ const runNetworkRecovery = async (context: SuiteContext) =>
 	});
 
 export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResult[]> => [
-	await runCase(context, "harness-health", async () => {
+	await runCase(context, EXTERNAL_CASES.harnessHealth.id, async () => {
 		await assertFrontendReachable(context.config);
 		const { users } = await createRoomWithUsers(context.config, ["HealthObserver", "HealthBot"]);
 		const observer = await openRoomPage(context.browser, context.config, users[0]!);
@@ -820,8 +826,8 @@ export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResul
 
 export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseResult[]> => [
 	...(await runHarnessHealth(context)),
-	await runCase(context, "correctness-smoke", async () => {
-		const dir = artifactDir(context, "correctness-smoke");
+	await runCase(context, EXTERNAL_CASES.correctnessSmoke.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.correctnessSmoke.id);
 		const { users } = await createRoomWithUsers(context.config, ["SmokeA", "SmokeB"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
 		const pageB = await openRoomPage(context.browser, context.config, users[1]!);
@@ -844,10 +850,38 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 			sampleSize: 72,
 		});
 
-		await pressUndo(pageA.page);
-		await pageB.page.waitForTimeout(900);
-		await pressRedo(pageA.page);
-		await pageB.page.waitForTimeout(1200);
+		const firstStrokeRegion = roiAround(320, 290);
+		const secondStrokeRegion = roiAround(730, 350);
+		await pressUndo(pageB.page);
+		const [undoneA, undoneB, preservedA, preservedB] = await Promise.all([
+			waitForVisibleScreenshotBlank(pageA.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
+			waitForVisibleScreenshotBlank(pageB.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
+			waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
+			waitForVisibleScreenshotContent(pageB.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
+		]);
+		const undoBlankPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-target-blank.png"), secondStrokeRegion);
+		const undoPreservedPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-other-stroke-retained.png"), firstStrokeRegion);
+		await pressRedo(pageB.page);
+		const [redoneA, redoneB] = await Promise.all([
+			waitForVisibleScreenshotContent(pageA.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
+			waitForVisibleScreenshotContent(pageB.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
+		]);
+		const redoVisiblePath = await saveCanvasPng(pageA.page, path.join(dir, "redo-target-visible.png"), secondStrokeRegion);
+
+		const waitForPageIndicator = (page: typeof pageA.page, expected: string) => page.waitForFunction(
+			(pageNumber) => document.querySelector('button[title="页面概览"]')?.textContent?.replace(/\s+/g, "") === pageNumber,
+			expected,
+			{ timeout: 5000 }
+		);
+		await pageA.page.locator('button[title="新建页面"]').click();
+		await waitForPageIndicator(pageA.page, "2/2");
+		await drawLine(pageA.page, 260, 460, 460, 500, 10);
+		const newPageRegion = roiAround(360, 480);
+		await waitForVisibleScreenshotContent(pageA.page, { roi: newPageRegion, timeoutMs: 5000 });
+		await pageA.page.locator('button[title="上一页"]').click();
+		await waitForPageIndicator(pageA.page, "1/2");
+		const revisit = await waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 5000 });
+		const pageIsolation = await waitForVisibleScreenshotBlank(pageA.page, { roi: newPageRegion, timeoutMs: 5000 });
 		const diff = await compareCanvasPages(pageA.page, pageB.page, {
 			diffPath: path.join(dir, "final-diff.png"),
 			threshold: 0.01,
@@ -855,14 +889,12 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 		const artifacts = [
 			await saveCanvasPng(pageA.page, path.join(dir, "page-a.png")),
 			await saveCanvasPng(pageB.page, path.join(dir, "page-b.png")),
+			undoBlankPath,
+			undoPreservedPath,
+			redoVisiblePath,
+			await saveCanvasPng(pageA.page, path.join(dir, "returned-page-isolated.png")),
 			path.join(dir, "final-diff.png"),
 		];
-
-		await pageA.page.keyboard.press("ArrowRight");
-		await drawLine(pageA.page, 260, 460, 460, 500, 10);
-		await pageA.page.keyboard.press("ArrowLeft");
-		await pageA.page.waitForTimeout(500);
-		const revisit = await captureCanvasSample(pageA.page);
 
 		await pageA.close();
 		await pageB.close();
@@ -887,7 +919,15 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 				remoteFirstPixelMsBtoA: aChanged.elapsedMs,
 				framesToFirstPixelBtoA: aChanged.frames,
 				finalConsistencyDiffRatio: diff.diffRatio,
-				revisitNonBlankRatio: revisit.nonBlankRatio,
+				undoTargetBlankRatioA: undoneA.sample.nonBlankRatio,
+				undoTargetBlankRatioB: undoneB.sample.nonBlankRatio,
+				undoOtherStrokeRatioA: preservedA.sample.nonBlankRatio,
+				undoOtherStrokeRatioB: preservedB.sample.nonBlankRatio,
+				redoTargetVisibleRatioA: redoneA.sample.nonBlankRatio,
+				redoTargetVisibleRatioB: redoneB.sample.nonBlankRatio,
+				pageReturnVisibleRatio: revisit.sample.nonBlankRatio,
+				pageTwoLeakRatioAfterReturn: pageIsolation.sample.nonBlankRatio,
+				visibleScreenshotOracle: true,
 			},
 			artifacts,
 		};
@@ -896,8 +936,8 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 
 export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseResult[]> => [
 	...(await runCorrectnessSmoke(context)),
-	await runCase(context, "concurrent-crossing-visual-consistency", async () => {
-		const dir = artifactDir(context, "concurrent-crossing-visual-consistency");
+	await runCase(context, EXTERNAL_CASES.concurrentCrossing.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.concurrentCrossing.id);
 		const { users } = await createRoomWithUsers(context.config, ["CrossA", "CrossB"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
 		const pageB = await openRoomPage(context.browser, context.config, users[1]!);
@@ -930,8 +970,8 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			artifacts,
 		};
 	}),
-	await runCase(context, "late-joiner-visual-consistency", async () => {
-		const dir = artifactDir(context, "late-joiner-visual-consistency");
+	await runCase(context, EXTERNAL_CASES.lateJoiner.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.lateJoiner.id);
 		const { roomId, users } = await createRoomWithUsers(context.config, ["LateA"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
 		await drawLine(pageA.page, 200, 200, 500, 380, 30);
@@ -959,38 +999,60 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			artifacts,
 		};
 	}),
-	await runCase(context, "protocol-multipage-isolation", async () => {
-		const dir = artifactDir(context, "protocol-multipage-isolation");
+	await runCase(context, EXTERNAL_CASES.multipageIsolation.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.multipageIsolation.id);
 		const { roomId, users } = await createRoomWithUsers(context.config, ["PageObserver", "PageBot"]);
 		const bot = new ProtocolClient(context.config, users[1]!);
 		await bot.connect();
-		bot.sendRaw("cmd-page-add", {
+		await bot.sendRawAndWaitFor("cmd-page-add", {
 			userId: users[1]!.userId,
 			username: users[1]!.userName,
 			totalPages: 2,
-		});
-		bot.sendStroke({
+		}, "ack.committed", (message) => typeof message.data?.roomSeq === "number" && message.data.roomSeq > 0);
+		await bot.sendCommittedStroke({
 			pageId: 0,
 			points: createLinePoints(36, { x: 0.18, y: 0.28 }, { x: 0.006, y: 0.003 }),
 			color: "#111827",
 			size: 5,
+			waitForCommit: true,
 		});
-		bot.sendStroke({
+		await bot.sendCommittedStroke({
 			pageId: 1,
 			points: createLinePoints(36, { x: 0.62, y: 0.32 }, { x: -0.005, y: 0.004 }),
 			color: "#2563eb",
 			size: 5,
+			waitForCommit: true,
 		});
 
 		const observerUser = await joinRoom(context.config, roomId, "PageLateObserver");
 		const observer = await openRoomPage(context.browser, context.config, observerUser);
-		const page0 = await waitForNonBlankCanvas(observer.page, { timeoutMs: 15000 });
+		const waitForPageIndicator = (expected: string) => observer.page.waitForFunction(
+			(pageNumber) => document.querySelector('button[title="页面概览"]')?.textContent?.replace(/\s+/g, "") === pageNumber,
+			expected,
+			{ timeout: 5000 }
+		);
+		await waitForPageIndicator("1/2");
+		const canvasBounds = await observer.page.locator("canvas").first().boundingBox();
+		if (!canvasBounds) throw new Error("multipage canvas bounds unavailable");
+		const regionSize = Math.max(96, Math.min(canvasBounds.width * 0.16, canvasBounds.height * 0.28));
+		const page0Region = roiAround(canvasBounds.width * 0.285, canvasBounds.height * 0.33, regionSize);
+		const page1Region = roiAround(canvasBounds.width * 0.53, canvasBounds.height * 0.39, regionSize);
+		logStep(`multipage regions: canvas=${canvasBounds.width}x${canvasBounds.height} p0=${JSON.stringify(page0Region)} p1=${JSON.stringify(page1Region)}`);
 		const page0Path = await saveCanvasPng(observer.page, path.join(dir, "page-0.png"));
-		await observer.page.keyboard.press("ArrowRight");
-		const page1 = await waitForNonBlankCanvas(observer.page, { timeoutMs: 15000 });
+		const page0Own = await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page0Region });
+		const page0Leak = await waitForVisibleScreenshotBlank(observer.page, { timeoutMs: 1500, roi: page1Region });
+		await saveCanvasPng(observer.page, page0Path);
+		const pageSwitchStartedAt = performance.now();
+		await observer.page.locator('button[title="下一页"]').click();
+		await waitForPageIndicator("2/2");
 		const page1Path = await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
-		await observer.page.keyboard.press("ArrowLeft");
-		await waitForNonBlankCanvas(observer.page, { timeoutMs: 15000 });
+		const page1 = await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page1Region });
+		const page1ClickToObservedScreenshotMs = performance.now() - pageSwitchStartedAt;
+		const page1Leak = await waitForVisibleScreenshotBlank(observer.page, { timeoutMs: 1500, roi: page0Region });
+		await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
+		await observer.page.locator('button[title="上一页"]').click();
+		await waitForPageIndicator("1/2");
+		await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page0Region });
 		const page0ReturnPath = await saveCanvasPng(observer.page, path.join(dir, "page-0-return.png"));
 		bot.close();
 		await observer.close();
@@ -998,10 +1060,12 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			status: "passed",
 			failureType: "none",
 			metrics: {
-				page0NonBlankRatio: page0.sample.nonBlankRatio,
-				page1SwitchVisibleMs: page1.elapsedMs,
-				page1FramesToFirstPixel: page1.frames,
-				page1NonBlankRatio: page1.sample.nonBlankRatio,
+				page0ExpectedRegionRatio: page0Own.sample.nonBlankRatio,
+				page0OtherPageRegionRatio: page0Leak.sample.nonBlankRatio,
+				page1ClickToObservedScreenshotMs,
+				page1ExpectedRegionRatio: page1.sample.nonBlankRatio,
+				page1OtherPageRegionRatio: page1Leak.sample.nonBlankRatio,
+				pixelOracleSource: "visible-screenshot",
 			},
 			artifacts: [page0Path, page1Path, page0ReturnPath],
 		};
@@ -1012,10 +1076,10 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 	const results: CaseResult[] = [];
 	if (context.config.caseSet === "standard" || context.config.caseSet === "all") {
 		for (const scale of context.config.scales) {
-			results.push(await runSampledCase(context, `full-render-${scale}`, async (run, warmup) => {
+			results.push(await runSampledCase(context, `${EXTERNAL_CASES.fullRenderPerformance.id}-${scale}`, async (run, warmup) => {
 				const dir = artifactDir(
 					context,
-					`full-render-${scale}-${context.config.environment}-${warmup ? "warmup" : "run"}-${run}`
+					`${EXTERNAL_CASES.fullRenderPerformance.id}-${scale}-${context.config.environment}-${warmup ? "warmup" : "run"}-${run}`
 				);
 				const { roomId, users } = await createRoomWithUsers(context.config, ["PerfBot"]);
 				const bot = new ProtocolClient(context.config, users[0]!);
@@ -1053,7 +1117,7 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 			}, { scale }));
 		}
 
-		results.push(await runSampledCase(context, "incremental-remote-first-pixel", async () => {
+		results.push(await runSampledCase(context, EXTERNAL_CASES.remoteFirstPixelPerformance.id, async () => {
 			const { users } = await createRoomWithUsers(context.config, ["IncObserver", "IncBot"]);
 			const observer = await openRoomPage(context.browser, context.config, users[0]!);
 			const bot = new ProtocolClient(context.config, users[1]!);
@@ -1085,7 +1149,7 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 			};
 		}));
 
-		results.push(await runSampledCase(context, "local-realtime-first-pixel", async () => {
+		results.push(await runSampledCase(context, EXTERNAL_CASES.localFirstPixelPerformance.id, async () => {
 			const { users } = await createRoomWithUsers(context.config, ["RealtimeUser"]);
 			const page = await openRoomPage(context.browser, context.config, users[0]!);
 			const roi = roiAround(360, 330, 280);
