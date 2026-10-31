@@ -2,7 +2,7 @@
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { ExpectedArtifact } from "../report/contract";
-import { CORRECTNESS_FULL_EXTERNAL_CASE_IDS } from "../catalog/external-cases";
+import { CORRECTNESS_FULL_EXTERNAL_CASE_IDS, EXTERNAL_CASES } from "../catalog/external-cases";
 import type { LabResolveResult } from "./resolve-only";
 
 export type LabEvidenceStep = {
@@ -41,8 +41,18 @@ const q = (ctx: LabPlanContext, value: string) => ctx.shellQuote(value);
 const vitestRun = (ctx: LabPlanContext, args: string) =>
 	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} ${args}`;
 
-const externalRun = (ctx: LabPlanContext, suite: string, extra = "") =>
-	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=json --report-dir=${q(ctx, path.join(ctx.runDir, "external"))} --lab=on${extra}`;
+const externalRun = (ctx: LabPlanContext, suite: string, extra = "", reportSubdir = "") =>
+	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=json --report-dir=${q(ctx, path.join(ctx.runDir, "external", reportSubdir))} --lab=on${extra}`;
+
+/**
+ * Boundary cases seed millions of points each; two of them in one database already pushes
+ * create-room into HTTP 500. Each case therefore runs as its own step on a freshly reset store.
+ */
+const BOUNDARY_CASES = [
+	{ suffix: "full-render", id: EXTERNAL_CASES.fullRenderBoundary.id },
+	{ suffix: "heap-growth", id: EXTERNAL_CASES.heapGrowthBoundary.id },
+	{ suffix: "redraw-freeze", id: EXTERNAL_CASES.redrawFreezeBoundary.id },
+] as const;
 
 /** Optional local/nightly-run shortcut; production nightly keeps the full default ladder. */
 const boundaryScalesOverride = () => {
@@ -202,22 +212,23 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			timeoutMs: 1200000,
 			env: ctx.externalEnv,
 		},
-		{
-			id: "external-performance-boundary",
-			title: "Boundary stress E2E (fresh database)",
+		...BOUNDARY_CASES.map((boundaryCase) => ({
+			id: `external-performance-boundary-${boundaryCase.suffix}`,
+			title: `Boundary stress E2E: ${boundaryCase.suffix} (fresh database)`,
 			description:
-				"Running the multi-million-point boundary suite on a freshly reset SQLite store so accumulated rows cannot turn create-room into HTTP 500.",
+				"Running one multi-million-point boundary case on a freshly reset SQLite store so accumulated rows cannot turn create-room into HTTP 500.",
 			command: externalRun(
 				ctx,
 				"performance-external",
-				` --case-set=boundary --matrix=false --runs=1 --warmup=0${boundaryScalesOverride()}`
+				` --case-set=boundary --case-ids=${boundaryCase.id} --matrix=false --runs=1 --warmup=0${boundaryScalesOverride()}`,
+				`boundary-${boundaryCase.suffix}`
 			),
 			cwd: ctx.frontendDir,
 			requiresServices: true,
 			freshServices: true,
-			timeoutMs: 3600000,
+			timeoutMs: 2400000,
 			env: ctx.externalEnv,
-		},
+		})),
 		{
 			id: "external-e2e",
 			title: "External correctness E2E",
@@ -284,12 +295,13 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			kind: "external",
 			path: "external/performance-external-resilience-external-results.json",
 		},
-		{
-			id: "performance-external-boundary",
-			stepId: "external-performance-boundary",
-			kind: "external",
-			path: "external/performance-external-boundary-external-results.json",
-		},
+		...BOUNDARY_CASES.map((boundaryCase) => ({
+			id: `performance-external-boundary-${boundaryCase.suffix}`,
+			stepId: `external-performance-boundary-${boundaryCase.suffix}`,
+			kind: "external" as const,
+			path: `external/boundary-${boundaryCase.suffix}/performance-external-boundary-external-results.json`,
+			expectedCases: [boundaryCase.id],
+		})),
 		{
 			id: "external-correctness",
 			stepId: "external-e2e",
@@ -309,12 +321,12 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			kind: "lab-gate",
 			path: "external/performance-external-resilience-lab-gate.json",
 		},
-		{
-			id: "performance-external-boundary-gate",
-			stepId: "external-performance-boundary",
-			kind: "lab-gate",
-			path: "external/performance-external-boundary-lab-gate.json",
-		},
+		...BOUNDARY_CASES.map((boundaryCase) => ({
+			id: `performance-external-boundary-${boundaryCase.suffix}-gate`,
+			stepId: `external-performance-boundary-${boundaryCase.suffix}`,
+			kind: "lab-gate" as const,
+			path: `external/boundary-${boundaryCase.suffix}/performance-external-boundary-lab-gate.json`,
+		})),
 		{
 			id: "external-correctness-gate",
 			stepId: "external-e2e",

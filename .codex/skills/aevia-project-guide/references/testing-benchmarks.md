@@ -172,7 +172,7 @@ Lab profiles always write a v2 run manifest, fail-closed evidence, and a lab rep
 | `single` | `npm run test:single -- --only=file:<path>` / `--since=<git-ref>` | 单点：只跑刚改动的测试目标，不写基线/历史/latest | off |
 | `smoke` | `npm run test:smoke` | catalog-check + 四个 vitest project + correctness-smoke external | off |
 | `ci` | `npm run test:ci` | 与旧 CI 证据链一致（build/vet/go test/coverage/browser/correctness-full）+ 采集门禁 | `--perf=request` 可选，只产 `perf-request.json` |
-| `nightly` | `npm run test:nightly` | ci 全量 + 性能（standard/resilience/boundary 分三轮，boundary 前重置隔离库）+ race/fuzz + 模块债务清单 | on |
+| `nightly` | `npm run test:nightly` | ci 全量 + 性能（standard/resilience 各一轮 + boundary 三个 case 各自独立重置库并重启服务）+ race/fuzz + 模块债务清单 | on |
 
 Nightly probes `go test -race` once while building the plan: hosts without a usable CGO toolchain omit that step with a
 printed note instead of failing the run (the failure is an environment problem, not a product regression).

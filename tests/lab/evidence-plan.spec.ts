@@ -56,7 +56,9 @@ describe("lab evidence plans", () => {
 			"browser-test",
 			"external-performance-standard",
 			"external-performance-resilience",
-			"external-performance-boundary",
+			"external-performance-boundary-full-render",
+			"external-performance-boundary-heap-growth",
+			"external-performance-boundary-redraw-freeze",
 			"external-e2e",
 			...raceSteps,
 			"go-fuzz",
@@ -67,7 +69,9 @@ describe("lab evidence plans", () => {
 			expect.arrayContaining([
 				"performance-external-standard-gate",
 				"performance-external-resilience-gate",
-				"performance-external-boundary-gate",
+				"performance-external-boundary-full-render-gate",
+				"performance-external-boundary-heap-growth-gate",
+				"performance-external-boundary-redraw-freeze-gate",
 				"external-correctness-gate",
 				"lab-inventory",
 			])
@@ -76,9 +80,15 @@ describe("lab evidence plans", () => {
 		expect(standard?.command).toContain("--case-set=standard");
 		expect(standard?.command).toContain("--matrix=true");
 		expect(standard?.command).toContain("--import-current-to-history=true");
-		const boundary = plan.steps.find((step) => step.id === "external-performance-boundary");
-		expect(boundary?.freshServices).toBe(true);
-		expect(boundary?.command).toContain("--case-set=boundary");
+		const boundarySteps = plan.steps.filter((step) => step.id.startsWith("external-performance-boundary-"));
+		expect(boundarySteps).toHaveLength(3);
+		for (const boundary of boundarySteps) {
+			expect(boundary.freshServices).toBe(true);
+			expect(boundary.command).toContain("--case-set=boundary");
+			expect(boundary.command).toContain("--case-ids=boundary-");
+		}
+		const boundaryReportDirs = boundarySteps.map((step) => step.command.match(/--report-dir=.*?boundary-[a-z-]+/)?.[0] ?? "");
+		expect(new Set(boundaryReportDirs).size).toBe(3);
 		const correctness = plan.artifacts.find((artifact) => artifact.id === "external-correctness");
 		expect(correctness?.expectedCases).toEqual(CORRECTNESS_FULL_EXTERNAL_CASE_IDS);
 	});
