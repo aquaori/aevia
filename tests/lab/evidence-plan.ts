@@ -1,5 +1,6 @@
 // File role: managed evidence plans for the lab runner modes that extend the core quick/ci/full profiles.
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import type { ExpectedArtifact } from "../report/contract";
 import { CORRECTNESS_FULL_EXTERNAL_CASE_IDS } from "../catalog/external-cases";
 import type { LabResolveResult } from "./resolve-only";
@@ -47,6 +48,27 @@ const externalRun = (ctx: LabPlanContext, suite: string, extra = "") =>
 const boundaryScalesOverride = () => {
 	const scales = (process.env.AEVIA_NIGHTLY_BOUNDARY_SCALES || "").trim();
 	return scales ? ` --boundary-scales=${scales}` : "";
+};
+
+/**
+ * `go test -race` needs a working CGO toolchain. Some Windows hosts ship a MinGW gcc that
+ * cannot even compile Go's own cgo shim, and failing nightly on that is an environment
+ * problem rather than a product regression. Probe once per run and omit the step when the
+ * detector cannot be built at all.
+ */
+const raceProbeCache = new Map<string, boolean>();
+export const supportsGoRaceDetector = (backendDir: string): boolean => {
+	const cached = raceProbeCache.get(backendDir);
+	if (cached !== undefined) return cached;
+	const probe = spawnSync("go", ["test", "-race", "-run=^$", "./internal/config"], {
+		cwd: backendDir,
+		encoding: "utf8",
+		timeout: 180000,
+		windowsHide: true,
+	});
+	const supported = probe.status === 0;
+	raceProbeCache.set(backendDir, supported);
+	return supported;
 };
 
 const sourceCheckStep = (): LabEvidenceStep => ({
@@ -206,14 +228,18 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			timeoutMs: 900000,
 			env: ctx.externalEnv,
 		},
-		{
-			id: "go-race",
-			title: "Go race detector",
-			description: "Running the backend suite with the Go race detector on this host and platform.",
-			command: "go test -race ./...",
-			cwd: ctx.backendDir,
-			timeoutMs: 900000,
-		},
+		...(supportsGoRaceDetector(ctx.backendDir)
+			? [
+					{
+						id: "go-race",
+						title: "Go race detector",
+						description: "Running the backend suite with the Go race detector on this host and platform.",
+						command: "go test -race ./...",
+						cwd: ctx.backendDir,
+						timeoutMs: 900000,
+					},
+				]
+			: []),
 		{
 			id: "go-fuzz",
 			title: "Scene payload fuzz smoke",

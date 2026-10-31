@@ -1,10 +1,12 @@
 // File role: deterministic checks for the lab evidence plans behind smoke/nightly/single modes.
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildLabEvidencePlan,
 	buildNightlyPlan,
 	buildSinglePlan,
 	buildSmokePlan,
+	supportsGoRaceDetector,
 	type LabPlanContext,
 } from "./evidence-plan";
 import { CORRECTNESS_FULL_EXTERNAL_CASE_IDS } from "../catalog/external-cases";
@@ -44,6 +46,7 @@ describe("lab evidence plans", () => {
 
 	it("builds a nightly plan with the performance matrix, fuzz/race and all gates", () => {
 		const plan = buildNightlyPlan(context());
+		const raceSteps = supportsGoRaceDetector(path.resolve("apps/backend")) ? ["go-race"] : [];
 		expect(stepIds(plan)).toEqual([
 			"build",
 			"go-vet",
@@ -55,7 +58,7 @@ describe("lab evidence plans", () => {
 			"external-performance-resilience",
 			"external-performance-boundary",
 			"external-e2e",
-			"go-race",
+			...raceSteps,
 			"go-fuzz",
 			"lab-inventory",
 			"source-check",
