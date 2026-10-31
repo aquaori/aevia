@@ -162,6 +162,15 @@ only compare a run against a baseline produced the same way on the same machine.
 Re-baseline with `benchmark:external:set-baseline`, then regenerate budgets with
 `node scripts/regen-budgets.mjs`.
 
+Current provenance: re-baselined on 2026-10-31 from run `928f2f5b` (one of three
+successful nightly runs at `982f752` on the Windows dev host; it was the candidate
+closest to the cross-run median), with budgets regenerated at 100% headroom. On a
+noisy host the baseline comparison stays advisory: a fresh validation matrix run
+stayed inside every budget, but 4 of 40 baseline deltas exceeded the 20%+8ms
+tolerance in the CPU-throttled environments. If the actual `self-hosted,
+aevia-nightly` runner is a different machine, re-baseline there before trusting
+nightly regression output.
+
 ## Lab Runner Modes
 
 `tests/run-system.ts` owns both the legacy interactive profiles and the managed lab profiles.

@@ -5,176 +5,176 @@
     "gpu_cpuHigh::full-render-10000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 68.2
+          "max": 496.6
         },
         "visuallyStableMsMedian": {
-          "max": 87.8
+          "max": 512.6
         }
       }
     },
     "gpu_cpuHigh::full-render-50000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 125.6
+          "max": 1039.4
         },
         "visuallyStableMsMedian": {
-          "max": 142.4
+          "max": 1061
         }
       }
     },
     "gpu_cpuHigh::full-render-100000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 79.2
+          "max": 1660
         },
         "visuallyStableMsMedian": {
-          "max": 109.4
+          "max": 1673.8
         }
       }
     },
     "gpu_cpuHigh::incremental-remote-first-pixel": {
       "metrics": {
         "remoteFirstPixelMsMedian": {
-          "max": 16.6
+          "max": 17.6
         }
       }
     },
     "gpu_cpuHigh::local-realtime-first-pixel": {
       "metrics": {
         "inputToFirstPixelMsMedian": {
-          "max": 34
+          "max": 36
         }
       }
     },
     "gpu_cpuLow::full-render-10000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 164
+          "max": 1299.4
         },
         "visuallyStableMsMedian": {
-          "max": 228.6
+          "max": 1329.6
         }
       }
     },
     "gpu_cpuLow::full-render-50000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 184.2
+          "max": 1373.2
         },
         "visuallyStableMsMedian": {
-          "max": 246
+          "max": 1939.6
         }
       }
     },
     "gpu_cpuLow::full-render-100000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 212.6
+          "max": 1649.4
         },
         "visuallyStableMsMedian": {
-          "max": 248
+          "max": 2244.2
         }
       }
     },
     "gpu_cpuLow::incremental-remote-first-pixel": {
       "metrics": {
         "remoteFirstPixelMsMedian": {
-          "max": 51
+          "max": 45.2
         }
       }
     },
     "gpu_cpuLow::local-realtime-first-pixel": {
       "metrics": {
         "inputToFirstPixelMsMedian": {
-          "max": 130.4
+          "max": 119.6
         }
       }
     },
     "noGpu_cpuHigh::full-render-10000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 101.2
+          "max": 525.6
         },
         "visuallyStableMsMedian": {
-          "max": 166.6
+          "max": 594.4
         }
       }
     },
     "noGpu_cpuHigh::full-render-50000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 132.4
+          "max": 1241.6
         },
         "visuallyStableMsMedian": {
-          "max": 197.6
+          "max": 1306.4
         }
       }
     },
     "noGpu_cpuHigh::full-render-100000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 121
+          "max": 2064.4
         },
         "visuallyStableMsMedian": {
-          "max": 187
+          "max": 2131
         }
       }
     },
     "noGpu_cpuHigh::incremental-remote-first-pixel": {
       "metrics": {
         "remoteFirstPixelMsMedian": {
-          "max": 26.6
+          "max": 23.4
         }
       }
     },
     "noGpu_cpuHigh::local-realtime-first-pixel": {
       "metrics": {
         "inputToFirstPixelMsMedian": {
-          "max": 50.2
+          "max": 53.4
         }
       }
     },
     "noGpu_cpuLow::full-render-10000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 239.4
+          "max": 1394.2
         },
         "visuallyStableMsMedian": {
-          "max": 329.2
+          "max": 1449.6
         }
       }
     },
     "noGpu_cpuLow::full-render-50000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 216.4
+          "max": 1658.8
         },
         "visuallyStableMsMedian": {
-          "max": 276.2
+          "max": 1740.8
         }
       }
     },
     "noGpu_cpuLow::full-render-100000": {
       "metrics": {
         "firstNonBlankMsMedian": {
-          "max": 222.8
+          "max": 1649
         },
         "visuallyStableMsMedian": {
-          "max": 285.4
+          "max": 1765
         }
       }
     },
     "noGpu_cpuLow::incremental-remote-first-pixel": {
       "metrics": {
         "remoteFirstPixelMsMedian": {
-          "max": 52.8
+          "max": 55.6
         }
       }
     },
     "noGpu_cpuLow::local-realtime-first-pixel": {
       "metrics": {
         "inputToFirstPixelMsMedian": {
-          "max": 135.2
+          "max": 132.6
         }
       }
     }
