@@ -1,0 +1,167 @@
+{
+	"schemaVersion": 1,
+	"description": "Cross-runtime ordering golden vectors. ASCII ids only: non-ASCII ids are excluded because the Go backend compares UTF-8 bytes while the frontend compares UTF-16 code units, and those orders are not guaranteed to agree. commands exercises compareCommandOrder (== domain.CompareFlatPoint with PointIndex 0); renderKeys exercises compareRenderOrder.",
+	"commands": [
+		{
+			"labels": ["c3", "a1", "b2"],
+			"expectedOrder": ["a1", "b2", "c3"],
+			"items": [
+				{"id": "c3", "lamport": 3},
+				{"id": "a1", "lamport": 1},
+				{"id": "b2", "lamport": 2}
+			]
+		},
+		{
+			"labels": ["bbb", "aaa", "ccc"],
+			"expectedOrder": ["aaa", "bbb", "ccc"],
+			"items": [
+				{"id": "bbb", "lamport": 5},
+				{"id": "aaa", "lamport": 5},
+				{"id": "ccc", "lamport": 5}
+			]
+		},
+		{
+			"labels": ["b", "A", "a", "B"],
+			"expectedOrder": ["A", "B", "a", "b"],
+			"items": [
+				{"id": "b", "lamport": 2},
+				{"id": "A", "lamport": 2},
+				{"id": "a", "lamport": 2},
+				{"id": "B", "lamport": 2}
+			]
+		},
+		{
+			"labels": ["cmd-10", "cmd-2", "cmd-1"],
+			"expectedOrder": ["cmd-1", "cmd-10", "cmd-2"],
+			"items": [
+				{"id": "cmd-10", "lamport": 7},
+				{"id": "cmd-2", "lamport": 7},
+				{"id": "cmd-1", "lamport": 7}
+			]
+		},
+		{
+			"labels": ["abc", "a", "ab"],
+			"expectedOrder": ["a", "ab", "abc"],
+			"items": [
+				{"id": "abc", "lamport": 4},
+				{"id": "a", "lamport": 4},
+				{"id": "ab", "lamport": 4}
+			]
+		},
+		{
+			"labels": ["b", "z", "a", "y"],
+			"expectedOrder": ["y", "z", "a", "b"],
+			"items": [
+				{"id": "b", "lamport": 2},
+				{"id": "z", "lamport": 1},
+				{"id": "a", "lamport": 2},
+				{"id": "y", "lamport": 1}
+			]
+		},
+		{
+			"labels": ["z", "a"],
+			"expectedOrder": ["z", "a"],
+			"items": [
+				{"id": "z", "lamport": 0},
+				{"id": "a", "lamport": 1000000}
+			]
+		},
+		{
+			"labels": ["cmd_1", "cmdA", "cmd-1"],
+			"expectedOrder": ["cmd-1", "cmdA", "cmd_1"],
+			"items": [
+				{"id": "cmd_1", "lamport": 3},
+				{"id": "cmdA", "lamport": 3},
+				{"id": "cmd-1", "lamport": 3}
+			]
+		},
+		{
+			"labels": ["9", "10", "2"],
+			"expectedOrder": ["10", "2", "9"],
+			"items": [
+				{"id": "9", "lamport": 1},
+				{"id": "10", "lamport": 1},
+				{"id": "2", "lamport": 1}
+			]
+		}
+	],
+	"renderKeys": [
+		{
+			"labels": ["r3", "r1", "r2"],
+			"expectedOrder": ["r1", "r2", "r3"],
+			"items": [
+				{"lamport": 3, "opId": "op-c", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 1, "opId": "op-a", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 2, "opId": "op-b", "sourceIndex": 0, "subIndex": 0}
+			]
+		},
+		{
+			"labels": ["b", "a", "c"],
+			"expectedOrder": ["a", "b", "c"],
+			"items": [
+				{"lamport": 9, "opId": "op-b", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 9, "opId": "op-a", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 9, "opId": "op-c", "sourceIndex": 0, "subIndex": 0}
+			]
+		},
+		{
+			"labels": ["lower", "upper"],
+			"expectedOrder": ["upper", "lower"],
+			"items": [
+				{"lamport": 1, "opId": "op", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 1, "opId": "Op", "sourceIndex": 0, "subIndex": 0}
+			]
+		},
+		{
+			"labels": ["chunk5", "chunk2"],
+			"expectedOrder": ["chunk2", "chunk5"],
+			"items": [
+				{"lamport": 2, "opId": "op-x", "sourceIndex": 5, "subIndex": 0},
+				{"lamport": 2, "opId": "op-x", "sourceIndex": 2, "subIndex": 0}
+			]
+		},
+		{
+			"labels": ["sub3", "sub1"],
+			"expectedOrder": ["sub1", "sub3"],
+			"items": [
+				{"lamport": 2, "opId": "op-x", "sourceIndex": 0, "subIndex": 3},
+				{"lamport": 2, "opId": "op-x", "sourceIndex": 0, "subIndex": 1}
+			]
+		},
+		{
+			"labels": ["b-first", "a-late"],
+			"expectedOrder": ["a-late", "b-first"],
+			"items": [
+				{"lamport": 1, "opId": "b", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 1, "opId": "a", "sourceIndex": 100, "subIndex": 0}
+			]
+		},
+		{
+			"labels": ["l4", "l2", "l3", "l1"],
+			"expectedOrder": ["l2", "l1", "l3", "l4"],
+			"items": [
+				{"lamport": 4, "opId": "op-2", "sourceIndex": 1, "subIndex": 0},
+				{"lamport": 4, "opId": "op-1", "sourceIndex": 9, "subIndex": 9},
+				{"lamport": 4, "opId": "op-2", "sourceIndex": 0, "subIndex": 1},
+				{"lamport": 4, "opId": "op-2", "sourceIndex": 0, "subIndex": 0}
+			]
+		},
+		{
+			"labels": ["op10", "op2", "op1"],
+			"expectedOrder": ["op1", "op10", "op2"],
+			"items": [
+				{"lamport": 2, "opId": "op-10", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 2, "opId": "op-2", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 2, "opId": "op-1", "sourceIndex": 0, "subIndex": 0}
+			]
+		},
+		{
+			"labels": ["late-op-a", "early-op-z"],
+			"expectedOrder": ["early-op-z", "late-op-a"],
+			"items": [
+				{"lamport": 2, "opId": "a", "sourceIndex": 0, "subIndex": 0},
+				{"lamport": 1, "opId": "z", "sourceIndex": 0, "subIndex": 0}
+			]
+		}
+	]
+}

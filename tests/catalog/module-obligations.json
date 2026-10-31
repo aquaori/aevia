@@ -66,7 +66,8 @@
       "id": "frontend:apps/frontend/src/config/endpoints.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/config/endpoints.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/sessionApi.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/controllers/interactionController.ts",
@@ -247,25 +248,29 @@
       "id": "frontend:apps/frontend/src/service/collabCommandHandlers.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/collabCommandHandlers.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/collabCommandHandlers.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/collabDispatcherTypes.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/collabDispatcherTypes.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/collabCommandHandlers.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/collabMessageDispatcher.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/collabMessageDispatcher.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/collabMessageDispatcher.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/collabPresenceHandlers.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/collabPresenceHandlers.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/collabPresenceHandlers.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/collabPressurePolicy.ts",
@@ -279,7 +284,7 @@
       "kind": "frontend",
       "path": "apps/frontend/src/service/collabProtocol.ts",
       "state": "covered",
-      "owner": "packages/shared/src/protocol/collabProtocol.spec.ts"
+      "owner": "apps/frontend/src/service/collabProtocol.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/commandDirtyRect.ts",
@@ -313,7 +318,8 @@
       "id": "frontend:apps/frontend/src/service/pageOverviewService.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/pageOverviewService.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/pageOverviewService.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/realtimeBinary.ts",
@@ -345,19 +351,22 @@
       "id": "frontend:apps/frontend/src/service/roomPageService.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/roomPageService.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/roomPageService.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/roomSessionContext.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/roomSessionContext.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/roomPageService.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/sessionApi.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/sessionApi.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/sessionApi.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/strokeInputSampler.ts",
@@ -434,7 +443,8 @@
       "id": "frontend:apps/frontend/src/utils/editorEventBus.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/utils/editorEventBus.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/utils/editorEventBus.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/utils/editorTypes.ts",
@@ -478,7 +488,8 @@
       "id": "frontend:apps/frontend/src/workers/canvasWorker.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/workers/canvasWorker.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/tests/browser/worker-init-stream.browser.spec.ts"
     },
     {
       "id": "go:apps/backend/cmd/aevia-backend/main.go",
