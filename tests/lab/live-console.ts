@@ -44,6 +44,8 @@ export type LiveConsoleOptions = {
 	runId: string;
 	mode: string;
 	profile: string;
+	revision?: string;
+	startedAt?: string;
 	steps: Array<{ id: string; title: string }>;
 	runDir: string;
 	onCancel: () => void;
@@ -220,6 +222,9 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 				runId: options.runId,
 				mode: options.mode,
 				profile: options.profile,
+				revision: options.revision,
+				startedAt,
+				steps: stepList().map((step) => ({ id: step.id, title: step.title, status: step.status })),
 				token,
 				wsPath: "/ws",
 			});
@@ -294,7 +299,7 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 		}
 	});
 
-	const startedAt = new Date().toISOString();
+	const startedAt = options.startedAt ?? new Date().toISOString();
 
 	const listen = async () => {
 		await new Promise<void>((resolve, reject) => {
@@ -313,7 +318,7 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 	const port = await listen();
 	const url = `${publishBaseUrl}/?token=${encodeURIComponent(token)}`;
 	print(`[lab-live] console: ${url}`);
-	print(`[lab-live] 仅本机可访问；测试结束后页面会保留 ${Math.round(graceMs / 1000)}s 用于打开报告`);
+	print(`[lab-live] 仅本机可访问；测试结束后若有页面连接，会保留 ${Math.round(graceMs / 1000)}s 供查看报告`);
 	if (options.open) {
 		print("[lab-live] opening browser…");
 		openBrowser(url);
@@ -375,6 +380,14 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 			if (logTimer) {
 				clearTimeout(logTimer);
 				flushLogs();
+			}
+			// Steps that never ran because the run stopped early end up skipped/cancelled,
+			// otherwise the final dashboard shows a half-finished plan forever.
+			const terminalStatus: LiveStepStatus = input.status === "cancelled" ? "cancelled" : "skipped";
+			for (const step of steps.values()) {
+				if (step.status !== "pending" && step.status !== "running") continue;
+				step.status = terminalStatus;
+				broadcast({ type: "step", step: { ...step } });
 			}
 			broadcast({ type: "state", status: runStatus });
 			broadcast({ type: "done", ...done });

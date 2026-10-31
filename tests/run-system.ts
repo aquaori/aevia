@@ -1201,6 +1201,8 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 				runId,
 				mode,
 				profile,
+				revision: source.revision || undefined,
+				startedAt: manifest.startedAt,
 				steps: steps.map((step) => ({ id: step.id, title: step.title })),
 				runDir,
 				print,
