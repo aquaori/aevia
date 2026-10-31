@@ -73,6 +73,14 @@ export type LabPolicy = {
 		visuallyStableMs: number;
 		interactionMs: number;
 	};
+	/**
+	 * Relative half-band applied on top of the absolute tolerance, scaled by the
+	 * smaller of the two sources. External observers quantise (rAF / ROI polling)
+	 * while marks measure a different pipeline point, so absolute-only agreement
+	 * would flag every honest measurement; the band still catches a broken source
+	 * that collapses to near zero or drifts by orders of magnitude.
+	 */
+	witnessRelativeBand: number;
 };
 
 export type LabSpanViolation = {

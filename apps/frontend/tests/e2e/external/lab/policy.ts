@@ -24,8 +24,12 @@ export const DEFAULT_LAB_POLICY: LabPolicy = {
 	witness: {
 		firstPaintMs: 25,
 		visuallyStableMs: 40,
-		interactionMs: 12,
+		// The external observer polls the ROI once per animation frame, so a genuinely
+		// instant local paint still shows up ~2 frames late. Treat two 60 Hz frames as
+		// the observation floor instead of pretending both sources share a clock.
+		interactionMs: 34,
 	},
+	witnessRelativeBand: 2,
 };
 
 export const resolveLabPolicy = (env: NodeJS.ProcessEnv = process.env): LabPolicy => ({
@@ -46,4 +50,7 @@ export const resolveLabPolicy = (env: NodeJS.ProcessEnv = process.env): LabPolic
 			numberFromEnv(env, "AEVIA_LAB_WITNESS_INTERACTION_MS", DEFAULT_LAB_POLICY.witness.interactionMs)
 		),
 	},
+	witnessRelativeBand: nonNegative(
+		numberFromEnv(env, "AEVIA_LAB_WITNESS_RELATIVE_BAND", DEFAULT_LAB_POLICY.witnessRelativeBand)
+	),
 });

@@ -206,6 +206,12 @@ Mark vocabulary (single source: `labMarkNames.ts`): `aevia.init.meta`, `aevia.in
 
 **Never compute a duration across threads.** worker marks carry worker-local time; cross-thread spans are settled on the
 main thread at the moment it receives the worker message (`lab:marks` batches are merged by `renderWorkerBridge.ts`).
+Witness agreement is deliberately bounded, not exact: `|instrumented - external| <= absoluteFloor + band * min(a, b)`
+(defaults: 25/40/34 ms floors for first paint / visually stable / interaction, band 2.0, all overridable with
+`AEVIA_LAB_WITNESS_*`). External observers quantise through rAF and ROI polling, so absolute-only agreement would reject
+honest measurements; the band still catches a source that collapses to ~0 or drifts by an order of magnitude. Cases whose
+main-side settlement mark does not exist yet (remote incremental paint, page isolation) are sentinel-only and documented in
+`external/lab/contracts.ts` instead of being faked.
 `tests/lab/instrumentation-guard.spec.ts` fails if `performance.mark(` appears outside `src/instrumentation/` or if the
 name table drifts (duplicates, missing `aevia.` prefix).
 
