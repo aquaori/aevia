@@ -341,12 +341,16 @@ const main = async () => {
 	const historyEntries = loadHistoryEntries(config.historyFile);
 	const learningArtifacts = buildLearningArtifacts(config, results, historyEntries, baseline);
 	if (config.saveBaseline) {
-		const baselineSourcePath = path.join(reportRoot, `${reportTag}-external-results.json`);
-		writeBaselineFile(
-			config.baselineFile,
-			createBaselineFromResults(results, baselineSourcePath, config.suite)
-		);
-		console.log(`[external-e2e] saved baseline: ${config.baselineFile}`);
+		if (gate.status !== "valid" || results.some((result) => result.status === "failed")) {
+			console.error("[external-e2e] baseline not saved: measurement is not valid or cases failed");
+		} else {
+			const baselineSourcePath = path.join(reportRoot, `${reportTag}-external-results.json`);
+			writeBaselineFile(
+				config.baselineFile,
+				createBaselineFromResults(results, baselineSourcePath, config.suite)
+			);
+			console.log(`[external-e2e] saved baseline: ${config.baselineFile}`);
+		}
 	}
 	const learningFailure = shouldFailForLearning(config, learningArtifacts.learnedRegressions);
 	if (learningFailure.shouldFail) {
@@ -380,10 +384,16 @@ const main = async () => {
 	};
 	const reportPath = writeReports(reportRoot, report, reportTag);
 	if (config.importCurrentToHistory) {
-		const imported = importHistoryFromReport(config, reportPath);
-		console.log(
-			`[external-e2e] imported current report into history: +${imported.imported} entries (total=${imported.total})`
-		);
+		if (gate.status !== "valid" || results.some((result) => result.status === "failed")) {
+			console.error(
+				`[external-e2e] history import skipped: validity=${gate.status} failed=${results.filter((result) => result.status === "failed").length}`
+			);
+		} else {
+			const imported = importHistoryFromReport(config, reportPath);
+			console.log(
+				`[external-e2e] imported current report into history: +${imported.imported} entries (total=${imported.total})`
+			);
+		}
 	}
 	const failed = results.filter((result) => result.status === "failed");
 	const validityReasons: ValidityReason[] = gate.reasons;

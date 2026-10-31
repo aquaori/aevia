@@ -67,6 +67,8 @@ type EvidenceStep = {
 	stdoutArtifact?: string;
 	env?: NodeJS.ProcessEnv;
 	requiresServices?: boolean;
+	/** Restart the isolated services with a brand-new SQLite file before this step. */
+	freshServices?: boolean;
 	action?: "source-check";
 };
 
@@ -100,6 +102,7 @@ const testTempDir = path.join(canonicalRootDir, "tests", ".tmp");
 const startedAt = Date.now();
 const spinnerFrames = ["-", "\\", "|", "/"];
 let activeExternalServices: ExternalServices | undefined;
+let activeServicesDbPath: string | undefined;
 let activeTestProcess: ChildProcess | undefined;
 let interruptedSignal: "SIGINT" | "SIGTERM" | undefined;
 let activeLiveConsole: LiveConsole | undefined;
@@ -237,6 +240,7 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 	const apiUrl = `http://127.0.0.1:${backendPort}`;
 	const wsUrl = `ws://127.0.0.1:${backendPort}/ws`;
 	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}.sqlite`);
+	activeServicesDbPath = databasePath;
 	const backendExecutable = path.join(
 		testTempDir,
 		`aevia-backend-${process.pid}${process.platform === "win32" ? ".exe" : ""}`
@@ -341,6 +345,28 @@ const stopExternalServices = async () => {
 	if (!activeExternalServices) return;
 	await activeExternalServices.stop();
 	activeExternalServices = undefined;
+};
+
+/**
+ * Restart the isolated backend/frontend with a clean SQLite file. Multi-million-point
+ * boundary seeding grows the database past the point where create-room starts failing
+ * with HTTP 500, so the boundary step runs on a fresh store instead of inheriting the
+ * accumulated rows of the correctness/performance steps.
+ */
+const resetExternalServices = async () => {
+	const dbPath = activeServicesDbPath;
+	await stopExternalServices();
+	if (dbPath) {
+		for (const suffix of ["", "-wal", "-shm"]) {
+			try {
+				rmSync(`${dbPath}${suffix}`, { force: true });
+			} catch {
+				// Windows may still hold the file for a moment; the next start recreates it.
+			}
+		}
+		print("    [services] resetting the isolated database for this step");
+	}
+	await startExternalServices();
 };
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -1069,7 +1095,8 @@ const runEvidenceStep = async (
 				removedUntracked.length ? `removed untracked files: ${removedUntracked.join(", ")}` : "",
 			].filter(Boolean).join("; "));
 		} else {
-			if (step.requiresServices && !activeExternalServices) await startExternalServices();
+			if (step.freshServices) await resetExternalServices();
+			else if (step.requiresServices && !activeExternalServices) await startExternalServices();
 			const childEnv = { ...process.env, ...step.env, FORCE_COLOR: "0" };
 			if (step.id === "browser-test") childEnv.AEVIA_TEST_BROWSER_PORT = String(await findAvailablePort());
 			const child = spawn(step.command || "", {

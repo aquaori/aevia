@@ -28,6 +28,10 @@ export const LAB_MARKS = {
 	deltaMeta: "aevia.delta.meta",
 	deltaComplete: "aevia.delta.complete",
 	frameCommit: "aevia.frame.commit",
+	/** Main-thread settlement emitted when the bridge receives the worker's first paint. */
+	frameFirstPaint: "aevia.frame.first-paint",
+	/** Main-thread settlement emitted when the bridge receives the worker's render-complete. */
+	frameRenderComplete: "aevia.frame.render-complete",
 	pointerDown: "aevia.pointer.down",
 	localPaintDone: "aevia.local.paint-done",
 	wsOpen: "aevia.ws.open",
@@ -83,11 +87,18 @@ const markSelector = (name: string, detailIncludes?: LabMarkSelector["detailIncl
 });
 
 /**
- * Late-join full render. Both spans are settled on main-thread marks only:
- * `aevia.worker.ack` is the main-thread settlement of the worker's
- * scene-operation render, `aevia.frame.commit` the main-side paint dispatch and
- * `aevia.init.render-complete` the fallback settlement of the render stream.
- * Worker timestamps are never subtracted here.
+ * Late-join full render. Two different quantities are measured:
+ *
+ * - `firstNonBlankMs` = main-thread time from document start to the first worker paint
+ *   (`aevia.frame.first-paint`). The external observer instead waits for a non-blank
+ *   *threshold* while chunks arrive progressively, so the two values are intentionally
+ *   not witness-compared: at large scales the external figure is dominated by chunk
+ *   arrival while the instrumented figure is the literal first paint.
+ * - `visuallyStableMs` = document start to the last worker render-complete
+ *   (`aevia.frame.render-complete`, main-thread settlement of the worker batch). This is
+ *   semantically the same event the external observer watches, so it is the witness metric.
+ *
+ * Worker timestamps are never subtracted: every span endpoint here is a main-thread mark.
  */
 const FULL_RENDER_CONTRACT: CaseLabContract = {
 	requiredSpans: [
@@ -97,6 +108,7 @@ const FULL_RENDER_CONTRACT: CaseLabContract = {
 			start: markSelector(LAB_MARKS.pageStart),
 			after: markSelector(LAB_MARKS.initMeta),
 			end: [
+				markSelector(LAB_MARKS.frameFirstPaint),
 				markSelector(LAB_MARKS.workerAck, { key: "type", valueIncludes: "scene-operation-rendered" }),
 				markSelector(LAB_MARKS.frameCommit),
 				markSelector(LAB_MARKS.initRenderComplete),
@@ -108,14 +120,11 @@ const FULL_RENDER_CONTRACT: CaseLabContract = {
 			thread: "main",
 			start: markSelector(LAB_MARKS.pageStart),
 			after: markSelector(LAB_MARKS.initMeta),
-			end: [markSelector(LAB_MARKS.initRenderComplete)],
-			endPick: "first",
+			end: [markSelector(LAB_MARKS.frameRenderComplete), markSelector(LAB_MARKS.initRenderComplete)],
+			endPick: "last",
 		},
 	],
-	witnesses: [
-		{ metric: "firstNonBlankMs", externalMetric: "firstNonBlankMs", kind: "firstPaint" },
-		{ metric: "visuallyStableMs", externalMetric: "visuallyStableMs", kind: "visuallyStable" },
-	],
+	witnesses: [{ metric: "visuallyStableMs", externalMetric: "visuallyStableMs", kind: "visuallyStable" }],
 	requireSentinel: true,
 	checkPageErrors: true,
 };

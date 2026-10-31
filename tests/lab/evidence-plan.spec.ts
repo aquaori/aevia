@@ -42,7 +42,7 @@ describe("lab evidence plans", () => {
 		expect(external?.command).toContain("--suite=correctness-smoke");
 	});
 
-	it("builds a nightly plan with the performance matrix, fuzz/race and both gates", () => {
+	it("builds a nightly plan with the performance matrix, fuzz/race and all gates", () => {
 		const plan = buildNightlyPlan(context());
 		expect(stepIds(plan)).toEqual([
 			"build",
@@ -51,27 +51,38 @@ describe("lab evidence plans", () => {
 			"go-test",
 			"frontend-test",
 			"browser-test",
-			"external-performance",
+			"external-performance-standard",
+			"external-performance-resilience",
+			"external-performance-boundary",
 			"external-e2e",
 			"go-race",
 			"go-fuzz",
 			"lab-inventory",
 			"source-check",
 		]);
-		expect(artifactIds(plan)).toContain("performance-external-gate");
-		expect(artifactIds(plan)).toContain("external-correctness-gate");
-		expect(artifactIds(plan)).toContain("lab-inventory");
-		const performance = plan.steps.find((step) => step.id === "external-performance");
-		expect(performance?.command).toContain("--case-set=all");
-		expect(performance?.command).toContain("--matrix=true");
-		expect(performance?.command).toContain("--import-current-to-history=true");
+		expect(artifactIds(plan)).toEqual(
+			expect.arrayContaining([
+				"performance-external-standard-gate",
+				"performance-external-resilience-gate",
+				"performance-external-boundary-gate",
+				"external-correctness-gate",
+				"lab-inventory",
+			])
+		);
+		const standard = plan.steps.find((step) => step.id === "external-performance-standard");
+		expect(standard?.command).toContain("--case-set=standard");
+		expect(standard?.command).toContain("--matrix=true");
+		expect(standard?.command).toContain("--import-current-to-history=true");
+		const boundary = plan.steps.find((step) => step.id === "external-performance-boundary");
+		expect(boundary?.freshServices).toBe(true);
+		expect(boundary?.command).toContain("--case-set=boundary");
 		const correctness = plan.artifacts.find((artifact) => artifact.id === "external-correctness");
 		expect(correctness?.expectedCases).toEqual(CORRECTNESS_FULL_EXTERNAL_CASE_IDS);
 	});
 
 	it("skips history import on a dirty nightly tree and can request a perf gate", () => {
 		const dirty = buildNightlyPlan(context({ cleanTree: false }));
-		expect(dirty.steps.find((step) => step.id === "external-performance")?.command).not.toContain(
+		expect(dirty.steps.find((step) => step.id === "external-performance-standard")?.command).not.toContain(
 			"--import-current-to-history=true"
 		);
 		const requested = buildLabEvidencePlan("smoke", context({ perfRequest: true }));

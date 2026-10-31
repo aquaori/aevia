@@ -171,7 +171,7 @@ Lab profiles always write a v2 run manifest, fail-closed evidence, and a lab rep
 | `single` | `npm run test:single -- --only=file:<path>` / `--since=<git-ref>` | 单点：只跑刚改动的测试目标，不写基线/历史/latest | off |
 | `smoke` | `npm run test:smoke` | catalog-check + 四个 vitest project + correctness-smoke external | off |
 | `ci` | `npm run test:ci` | 与旧 CI 证据链一致（build/vet/go test/coverage/browser/correctness-full）+ 采集门禁 | `--perf=request` 可选，只产 `perf-request.json` |
-| `nightly` | `npm run test:nightly` | ci 全量 + 4 环境性能矩阵 + race/fuzz + 模块债务清单 | on |
+| `nightly` | `npm run test:nightly` | ci 全量 + 性能（standard/resilience/boundary 分三轮，boundary 前重置隔离库）+ race/fuzz + 模块债务清单 | on |
 
 `single` selectors: `case:<external-case-id>[,<id>]`、`file:<path>`、`test:<substring>`、`go:<pkg>[#TestName]`；
 `--since=<ref>` 会用 `git diff --name-only <ref>...HEAD` 加未跟踪文件，经 `tests/lab/resolve-only.ts` 映射到 owner test。
@@ -209,8 +209,12 @@ main thread at the moment it receives the worker message (`lab:marks` batches ar
 Witness agreement is deliberately bounded, not exact: `|instrumented - external| <= absoluteFloor + band * min(a, b)`
 (defaults: 25/40/34 ms floors for first paint / visually stable / interaction, band 2.0, all overridable with
 `AEVIA_LAB_WITNESS_*`). External observers quantise through rAF and ROI polling, so absolute-only agreement would reject
-honest measurements; the band still catches a source that collapses to ~0 or drifts by an order of magnitude. Cases whose
-main-side settlement mark does not exist yet (remote incremental paint, page isolation) are sentinel-only and documented in
+honest measurements; the band still catches a source that collapses to ~0 or drifts by an order of magnitude.
+Cross-source witness is only applied where both sources observe the same event: for full render, `visuallyStableMs`
+(main-thread receipt of the worker's last render-complete vs the external stable-frame oracle) is compared, while
+`firstNonBlankMs` is tracked but not witness-compared because the external observer waits for a non-blank *threshold*
+across progressively arriving chunks and the instrumented mark is the literal first worker paint. Cases whose main-side
+settlement mark does not exist yet (remote incremental paint, page isolation) are sentinel-only and documented in
 `external/lab/contracts.ts` instead of being faked.
 `tests/lab/instrumentation-guard.spec.ts` fails if `performance.mark(` appears outside `src/instrumentation/` or if the
 name table drifts (duplicates, missing `aevia.` prefix).

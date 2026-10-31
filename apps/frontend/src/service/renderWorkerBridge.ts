@@ -5,7 +5,13 @@ import type {
 	InitRenderChunkMetaPayload,
 } from "./collabDispatcherTypes";
 import { labEnabled, labMark, mergeWorkerMarks, type LabMark } from "../instrumentation/labMarks";
-import { LAB_MARK_WORKER_ACK } from "../instrumentation/labMarkNames";
+import {
+	LAB_MARK_FRAME_FIRST_PAINT,
+	LAB_MARK_FRAME_RENDER_COMPLETE,
+	LAB_MARK_WORKER_ACK,
+	LAB_MARK_WORKER_FIRST_PAINT,
+	LAB_MARK_WORKER_RENDER_COMPLETE,
+} from "../instrumentation/labMarkNames";
 
 interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
@@ -242,7 +248,17 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 			if (type === "lab:marks") {
 				if (labEnabled()) {
-					mergeWorkerMarks((event.data.marks as LabMark[]) ?? []);
+					const marks = (event.data.marks as LabMark[]) ?? [];
+					// Settle worker terminal paints on the main timeline: the span end is the
+					// moment the main thread learns about the paint, never a worker clock value.
+					for (const mark of marks) {
+						if (mark.name === LAB_MARK_WORKER_FIRST_PAINT) {
+							labMark(LAB_MARK_FRAME_FIRST_PAINT, mark.detail ?? {});
+						} else if (mark.name === LAB_MARK_WORKER_RENDER_COMPLETE) {
+							labMark(LAB_MARK_FRAME_RENDER_COMPLETE, mark.detail ?? {});
+						}
+					}
+					mergeWorkerMarks(marks);
 				}
 				return;
 			}

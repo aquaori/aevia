@@ -32,6 +32,11 @@ export const LAB_MARK_DELTA_META = "aevia.delta.meta";
 export const LAB_MARK_DELTA_COMPLETE = "aevia.delta.complete";
 
 export const LAB_MARK_FRAME_COMMIT = "aevia.frame.commit";
+// Main-thread settlement of the worker's terminal paint marks. The bridge emits
+// these at message-receipt time, so a main-thread span never subtracts a worker
+// timestamp while still ending when the paint actually reached the main thread.
+export const LAB_MARK_FRAME_FIRST_PAINT = "aevia.frame.first-paint";
+export const LAB_MARK_FRAME_RENDER_COMPLETE = "aevia.frame.render-complete";
 export const LAB_MARK_POINTER_DOWN = "aevia.pointer.down";
 export const LAB_MARK_LOCAL_PAINT_DONE = "aevia.local.paint-done";
 export const LAB_MARK_NET_FLUSH = "aevia.net.flush";
