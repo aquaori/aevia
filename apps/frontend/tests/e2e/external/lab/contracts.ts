@@ -34,6 +34,8 @@ export const LAB_MARKS = {
 	wsMessage: "aevia.ws.message",
 	workerFirstPaint: "aevia.worker.first-paint",
 	workerRenderComplete: "aevia.worker.render-complete",
+	/** Main-thread mark emitted when a worker message is received (settlement point). */
+	workerAck: "aevia.worker.ack",
 } as const;
 
 export const HARNESS_PAGE_START_MARK = LAB_MARKS.pageStart;
@@ -55,8 +57,9 @@ export type LabSpanSpec = {
 	 * measured render (late-join init only starts at `aevia.init.meta`).
 	 */
 	after?: LabMarkSelector;
-	/** First matching end mark after the start/anchor mark wins. */
+	/** Matching end mark after the start/anchor mark: earliest or latest. */
 	end: LabMarkSelector[];
+	endPick?: "first" | "last";
 	/** Optional per-span ceiling; defaults to `LabPolicy.maxSpanMs`. */
 	maxMs?: number;
 };
@@ -80,9 +83,11 @@ const markSelector = (name: string, detailIncludes?: LabMarkSelector["detailIncl
 });
 
 /**
- * Late-join full render. `firstNonBlankMs` ends on the first main-thread paint
- * commit after the init meta message; that is the main-side settlement of the
- * worker's first paint, not a cross-thread subtraction of worker time.
+ * Late-join full render. Both spans are settled on main-thread marks only:
+ * `aevia.worker.ack` is the main-thread settlement of the worker's
+ * scene-operation render, `aevia.frame.commit` the main-side paint dispatch and
+ * `aevia.init.render-complete` the fallback settlement of the render stream.
+ * Worker timestamps are never subtracted here.
  */
 const FULL_RENDER_CONTRACT: CaseLabContract = {
 	requiredSpans: [
@@ -91,14 +96,20 @@ const FULL_RENDER_CONTRACT: CaseLabContract = {
 			thread: "main",
 			start: markSelector(LAB_MARKS.pageStart),
 			after: markSelector(LAB_MARKS.initMeta),
-			end: [markSelector(LAB_MARKS.frameCommit), markSelector(LAB_MARKS.initRenderComplete)],
+			end: [
+				markSelector(LAB_MARKS.workerAck, { key: "type", valueIncludes: "scene-operation-rendered" }),
+				markSelector(LAB_MARKS.frameCommit),
+				markSelector(LAB_MARKS.initRenderComplete),
+			],
+			endPick: "first",
 		},
 		{
 			metric: "visuallyStableMs",
 			thread: "main",
 			start: markSelector(LAB_MARKS.pageStart),
 			after: markSelector(LAB_MARKS.initMeta),
-			end: [markSelector(LAB_MARKS.initCommandsComplete)],
+			end: [markSelector(LAB_MARKS.initRenderComplete)],
+			endPick: "first",
 		},
 	],
 	witnesses: [
@@ -115,7 +126,12 @@ const INCREMENTAL_REMOTE_FIRST_PIXEL_CONTRACT: CaseLabContract = {
 			metric: "remoteFirstPixelMs",
 			thread: "main",
 			start: markSelector(LAB_MARKS.wsMessage, { key: "type", valueIncludes: "cmd" }),
-			end: [markSelector(LAB_MARKS.frameCommit)],
+			// Main-thread settlement of the worker render, with the main paint
+			// commit as fallback; never a worker-clock subtraction.
+			end: [
+				markSelector(LAB_MARKS.workerAck, { key: "type", valueIncludes: "scene-operation-rendered" }),
+				markSelector(LAB_MARKS.frameCommit),
+			],
 		},
 	],
 	witnesses: [{ metric: "remoteFirstPixelMs", externalMetric: "remoteFirstPixelMs", kind: "firstPaint" }],
@@ -137,15 +153,12 @@ const LOCAL_REALTIME_FIRST_PIXEL_CONTRACT: CaseLabContract = {
 	checkPageErrors: true,
 };
 
+// This case's observable oracle is page isolation through canvas screenshots, not switch
+// latency. Requiring a page-change -> first-paint span here produced a false invalid case
+// whenever the page was served from cache without an init chunk, so the contract is
+// sentinel + page-error only. A dedicated page-change latency scenario can add spans later.
 const MULTIPAGE_ISOLATION_CONTRACT: CaseLabContract = {
-	requiredSpans: [
-		{
-			metric: "page1ClickToObservedScreenshotMs",
-			thread: "main",
-			start: markSelector(LAB_MARKS.pageChange),
-			end: [markSelector(LAB_MARKS.frameCommit), markSelector(LAB_MARKS.initFirstChunk)],
-		},
-	],
+	requiredSpans: [],
 	witnesses: [],
 	requireSentinel: true,
 	checkPageErrors: true,
@@ -271,10 +284,9 @@ export const deriveInstrumentedMetrics = (
 		}
 		let endIndex = -1;
 		for (let index = searchFrom + 1; index < marks.length; index += 1) {
-			if (span.end.some((selector) => markMatches(marks[index], selector, span.thread))) {
-				endIndex = index;
-				break;
-			}
+			if (!span.end.some((selector) => markMatches(marks[index], selector, span.thread))) continue;
+			endIndex = index;
+			if ((span.endPick ?? "first") === "first") break;
 		}
 		if (endIndex < 0) {
 			violations.push({

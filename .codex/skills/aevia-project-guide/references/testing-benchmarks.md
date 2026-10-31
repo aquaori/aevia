@@ -218,6 +218,28 @@ complete coverage of the source tree, honest owners (frontend spec files / same-
 with a reason, and catalog freshness. Nightly records the snapshot as `lab-inventory` evidence; new uncovered files fail
 the evidence check instead of silently growing debt.
 
+## Unified Lab Report and Rerun
+
+`tests/report/aggregate.ts` now finishes every managed run by calling
+`writeLabReport({runDir, manifest, aggregate})` from `tests/report/lab-report.ts`. That writes:
+
+- `runDir/lab-report.json` — one durable model: `run` (mode/profile/validity/recorded/source/rerun), `steps`, `artifacts`,
+  `gate`, `instrumentation`, `suites {unit, integration, browser, go, e2e, performance}`, `measurements`
+  (external vs instrumented vs witness delta vs baseline/budget/learned), `coverage`, `obligations`, `failures`, `logs`,
+  `gallery`, `cases` and `rerun` (case/scenario index used by the rerun API).
+- `runDir/lab-report.html` and `runDir/test-report.html` — the same single-page report (inline CSS/JS, no external
+  resources, embedded `#lab-data` JSON): verdict header, KPI cards, gate panel (invalid cases, scenario verdicts,
+  instrumentation state, witness deltas), nine tabs with search, performance table, screenshot gallery, log tail, and
+  rerun buttons.
+
+`npm run lab:serve` (`scripts/lab-serve.mjs`, no dependencies, binds `127.0.0.1:4790`, `LAB_PORT` overrides) serves the
+run index at `/`, reports under `/runs/:id/...`, and the API `/api/{health,runs,runs/:id,jobs,jobs/:id,rerun}`.
+The served HTML is injected with `window.__LAB_SERVE__ = true` plus a per-process token; a button POSTs
+`{runId, scope: "run"|"scenario"|"case", ids}` to `/api/rerun` with that token. One job runs at a time (409 otherwise).
+Rerun spawns `tsx tests/run-system.ts --profile=<manifest.profile> --rerun-of=<runId> --scope=... --ids=... --yes`;
+a case-scoped rerun on a core profile runs through `single` mode, and the report's `rerunOf` block records the link.
+Opening the HTML straight from disk keeps every button disabled with a "需 npm run lab:serve" hint.
+
 ## Verification
 
 For benchmark harness script changes, use the smallest direct run that exercises the changed path. If local frontend/backend are not running, start them carefully and remember backend dev resets the DB.
