@@ -319,6 +319,24 @@ const listDirectory = (directory: string): string[] => {
 	}
 };
 
+/** Recursively list files as POSIX paths relative to `root` (boundary suites live in subdirectories). */
+const listFilesRecursive = (root: string, relativeDir = ""): string[] => {
+	const directory = path.join(root, relativeDir);
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(directory, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const files: string[] = [];
+	for (const entry of entries) {
+		const relative = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
+		if (entry.isDirectory()) files.push(...listFilesRecursive(root, relative));
+		else files.push(relative);
+	}
+	return files.sort();
+};
+
 const relativeSource = (repoRoot: string, value: string): string => {
 	const normalized = toPosix(value);
 	if (!path.isAbsolute(value)) return normalized;
@@ -640,7 +658,9 @@ const parseExternalReport = (payload: unknown, reportPath: string, runDir: strin
 
 const readExternalSuites = (runDir: string): { suites: LabExternalSuite[]; reportFiles: string[] } => {
 	const externalDir = path.join(runDir, "external");
-	const files = listDirectory(externalDir)
+	// Boundary steps keep their reports under external/boundary-<case>/; walk recursively so a
+	// split step is still part of the unified report.
+	const files = listFilesRecursive(externalDir)
 		.filter((name) => name.endsWith("-external-results.json"))
 		.sort();
 	const suites: LabExternalSuite[] = [];
@@ -649,7 +669,7 @@ const readExternalSuites = (runDir: string): { suites: LabExternalSuite[]; repor
 		const parsed = parseExternalReport(readJson(filePath), filePath, runDir);
 		if (parsed) suites.push(parsed);
 	}
-	const summary = { suites, reportFiles: files };
+	const summary = { suites, reportFiles: files.map((name) => `external/${name}`) };
 	return summary;
 };
 
@@ -679,7 +699,7 @@ const readGateBlock = (
 	externalSuites: LabExternalSuite[]
 ): LabGateBlock => {
 	const externalDir = path.join(runDir, "external");
-	const sources = listDirectory(externalDir)
+	const sources = listFilesRecursive(externalDir)
 		.filter((name) => name.endsWith("-lab-gate.json"))
 		.sort()
 		.map((name) => `external/${name}`);
@@ -687,7 +707,6 @@ const readGateBlock = (
 	const scenarios: GateScenario[] = [];
 	const reasons: ValidityReason[] = [];
 	const seenCases = new Set<string>();
-	const seenScenarios = new Set<string>();
 	let policy: LabGateBlock["policy"] = null;
 	let status: LabGateBlock["status"] | null = null;
 	let aborted = false;
@@ -729,16 +748,33 @@ const readGateBlock = (
 		}
 		for (const rawScenario of recordArray(payload.scenarios)) {
 			const scenarioKey = stringValue(rawScenario.scenarioKey);
-			if (!scenarioKey || seenScenarios.has(scenarioKey)) continue;
+			if (!scenarioKey) continue;
 			const verdict: GateScenario["verdict"] =
 				rawScenario.verdict === "invalid" ? "invalid" : rawScenario.verdict === "aborted" ? "aborted" : "passed";
-			seenScenarios.add(scenarioKey);
+			const attempted = finite(rawScenario.attempted) ? Number(rawScenario.attempted) : 0;
+			const valid = finite(rawScenario.valid) ? Number(rawScenario.valid) : 0;
+			const invalid = finite(rawScenario.invalid) ? Number(rawScenario.invalid) : 0;
+			// Split boundary steps each report a one-case scenario with the same suite/caseSet key;
+			// merge their counts instead of dropping all but the first gate file.
+			const existing = scenarios.find((item) => item.scenarioKey === scenarioKey);
+			if (existing) {
+				existing.attempted += attempted;
+				existing.valid += valid;
+				existing.invalid += invalid;
+				existing.verdict =
+					existing.verdict === "aborted" || verdict === "aborted"
+						? "aborted"
+						: existing.verdict === "invalid" || verdict === "invalid"
+							? "invalid"
+							: "passed";
+				continue;
+			}
 			scenarios.push({
 				scenarioKey,
 				suite: stringValue(rawScenario.suite),
-				attempted: finite(rawScenario.attempted) ? Number(rawScenario.attempted) : 0,
-				valid: finite(rawScenario.valid) ? Number(rawScenario.valid) : 0,
-				invalid: finite(rawScenario.invalid) ? Number(rawScenario.invalid) : 0,
+				attempted,
+				valid,
+				invalid,
 				verdict,
 			});
 		}
@@ -1122,9 +1158,9 @@ const buildGallery = (runDir: string, externalSuites: LabExternalSuite[]): LabGa
 		if (exists(absolute)) files.push({ label: relative, path: relative, kind: "file", exists: true });
 	}
 	const externalDir = path.join(runDir, "external");
-	for (const name of listDirectory(externalDir)) {
-		if (!/(external-results\.json|-lab-gate\.json|external-summary\.md)$/.test(name)) continue;
-		const relative = `external/${name}`;
+	for (const relativePath of listFilesRecursive(externalDir)) {
+		if (!/(external-results\.json|-lab-gate\.json|external-summary\.md)$/.test(relativePath)) continue;
+		const relative = `external/${relativePath}`;
 		files.push({ label: relative, path: relative, kind: "file", exists: true });
 	}
 	return [...items.values(), ...files];
