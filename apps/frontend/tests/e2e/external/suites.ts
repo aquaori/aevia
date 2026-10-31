@@ -42,6 +42,26 @@ import { caseKeyOf, isCaseSelected } from "./lab/select";
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Canvas-readback version of "this region is blank". Visible-page screenshots include UI overlays
+ * (remote cursor, hover rings, selection chrome), so a region that is genuinely empty on the canvas
+ * can still report a small non-blank ratio and time out. Readback inspects the canvas pixels only.
+ */
+const waitForCanvasRegionBlank = async (
+	page: Parameters<typeof captureCanvasSample>[0],
+	region: ReturnType<typeof roiAround>,
+	timeoutMs = 12000
+) => {
+	const startedAt = Date.now();
+	let sample = await captureCanvasSample(page, region);
+	while (Date.now() - startedAt < timeoutMs) {
+		if (sample.nonBlankRatio <= 0.002) return sample;
+		await page.waitForTimeout(120);
+		sample = await captureCanvasSample(page, region);
+	}
+	throw new Error(`canvas region still not blank after ${timeoutMs}ms: ratio=${sample.nonBlankRatio}`);
+};
+
 const LAB_POLICY: LabPolicy = resolveLabPolicy();
 
 /** Lab evidence collected for one case (or one sample of a sampled case). */
@@ -1288,8 +1308,8 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 		// Undo the second stroke first: the history.toggle soft delete must reach both peers.
 		await pressUndo(pageA.page);
 		const [secondBlankA, secondBlankB] = await Promise.all([
-			waitForVisibleScreenshotBlank(pageA.page, { roi: secondRegion, timeoutMs: 12000 }),
-			waitForVisibleScreenshotBlank(pageB.page, { roi: secondRegion, timeoutMs: 12000 }),
+			waitForCanvasRegionBlank(pageA.page, secondRegion),
+			waitForCanvasRegionBlank(pageB.page, secondRegion),
 		]);
 		const [firstKeptA] = await Promise.all([
 			waitForVisibleScreenshotContent(pageA.page, { roi: firstRegion, timeoutMs: 5000 }),
@@ -1302,8 +1322,8 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 		// Undo the first stroke too: both peers must converge on an empty page.
 		await pressUndo(pageA.page);
 		const [firstBlankA, firstBlankB] = await Promise.all([
-			waitForVisibleScreenshotBlank(pageA.page, { roi: firstRegion, timeoutMs: 12000 }),
-			waitForVisibleScreenshotBlank(pageB.page, { roi: firstRegion, timeoutMs: 12000 }),
+			waitForCanvasRegionBlank(pageA.page, firstRegion),
+			waitForCanvasRegionBlank(pageB.page, firstRegion),
 		]);
 		const afterSecondUndo = await compareCanvasPages(pageA.page, pageB.page, {
 			diffPath: path.join(dir, "after-second-undo-diff.png"),
@@ -1352,11 +1372,11 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 				afterFirstUndoDiffRatio: afterFirstUndo.diffRatio,
 				afterSecondUndoDiffRatio: afterSecondUndo.diffRatio,
 				afterRedoDiffRatio: afterRedo.diffRatio,
-				undoneSecondStrokeRatioA: secondBlankA.sample.nonBlankRatio,
-				undoneSecondStrokeRatioB: secondBlankB.sample.nonBlankRatio,
+				undoneSecondStrokeRatioA: secondBlankA.nonBlankRatio,
+				undoneSecondStrokeRatioB: secondBlankB.nonBlankRatio,
 				retainedFirstStrokeRatioA: firstKeptA.sample.nonBlankRatio,
-				undoneFirstStrokeRatioA: firstBlankA.sample.nonBlankRatio,
-				undoneFirstStrokeRatioB: firstBlankB.sample.nonBlankRatio,
+				undoneFirstStrokeRatioA: firstBlankA.nonBlankRatio,
+				undoneFirstStrokeRatioB: firstBlankB.nonBlankRatio,
 				restoredSecondStrokeRatioB: secondRestoredB.sample.nonBlankRatio,
 			},
 			artifacts,
@@ -1372,7 +1392,7 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 		await drawLine(pageA.page, 640, 260, 820, 440, 22);
 		await pageA.page.waitForTimeout(1200);
 		await pressUndo(pageA.page);
-		const undoneOnA = await waitForVisibleScreenshotBlank(pageA.page, { roi: undoneRegion, timeoutMs: 12000 });
+		const undoneOnA = await waitForCanvasRegionBlank(pageA.page, undoneRegion);
 		await waitForVisibleScreenshotContent(pageA.page, { roi: keptRegion, timeoutMs: 5000 });
 
 		const lateUser = await joinRoom(context.config, roomId, "LateUndoB");
@@ -1380,7 +1400,7 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 		// One retained stroke covers well under 1% of the canvas, so wait for that
 		// region instead of the generic whole-canvas non-blank threshold.
 		const keptOnB = await waitForVisibleScreenshotContent(pageB.page, { roi: keptRegion, timeoutMs: 15000 });
-		const undoneOnB = await waitForVisibleScreenshotBlank(pageB.page, { roi: undoneRegion, timeoutMs: 12000 });
+		const undoneOnB = await waitForCanvasRegionBlank(pageB.page, undoneRegion);
 		const diff = await compareCanvasPages(pageA.page, pageB.page, {
 			diffPath: path.join(dir, "late-undo-diff.png"),
 			threshold: 0.01,
@@ -1407,8 +1427,8 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			metrics: {
 				diffRatio: diff.diffRatio,
 				passThreshold: diff.passThreshold,
-				undoneRegionRatioOnA: undoneOnA.sample.nonBlankRatio,
-				undoneRegionRatioOnB: undoneOnB.sample.nonBlankRatio,
+				undoneRegionRatioOnA: undoneOnA.nonBlankRatio,
+				undoneRegionRatioOnB: undoneOnB.nonBlankRatio,
 				keptRegionRatioOnB: keptOnB.sample.nonBlankRatio,
 			},
 			artifacts,
