@@ -18,6 +18,17 @@ import {
 	normalizeLoadedPageIds,
 	protocolPageToState,
 } from "@collaborative-whiteboard/shared";
+import { labEnabled, labMark, labSpanEnd, labSpanStart } from "../instrumentation/labMarks";
+import {
+	LAB_MARK_DELTA_COMPLETE,
+	LAB_MARK_DELTA_META,
+	LAB_MARK_INIT_COMMANDS_COMPLETE,
+	LAB_MARK_INIT_FIRST_CHUNK,
+	LAB_MARK_INIT_META,
+	LAB_MARK_INIT_RENDER_COMPLETE,
+	LAB_MARK_PAGE_CHANGE,
+	LAB_SPAN_DELTA_REPLAY,
+} from "../instrumentation/labMarkNames";
 
 interface InitStreamState {
 	snapshotVersion: number;
@@ -238,6 +249,7 @@ interface PageChangeStreamState {
 export const createCollabCommandHandlers = (options: CollabMessageDispatcherOptions) => {
 	const commandStore = useCommandStore();
 	let initStreamState: InitStreamState | null = null;
+	let initFirstRenderChunkMarked = false;
 	let pageChangeStreamState: PageChangeStreamState | null = null;
 	let remoteUpdateFlushFrameId: number | null = null;
 	let renderCommitFrameId: number | null = null;
@@ -494,6 +506,9 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		options.finishInitRenderStream?.();
 		useLamportStore().syncLamport(initStreamState.lastLamport);
 		initStreamState.renderReady = true;
+		if (labEnabled()) {
+			labMark(LAB_MARK_INIT_RENDER_COMPLETE);
+		}
 		tryCompleteInitStream();
 	};
 
@@ -546,10 +561,19 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		useLamportStore().syncLamport(initStreamState.lastLamport);
 		initStreamState.commandsReady = true;
+		if (labEnabled()) {
+			labMark(LAB_MARK_INIT_COMMANDS_COMPLETE, {
+				commands: mergedCommands.length,
+			});
+		}
 		tryCompleteInitStream();
 	};
 
 	const handleInitMeta = (msg: CollabIncomingMessage) => {
+		if (labEnabled()) {
+			labMark(LAB_MARK_INIT_META);
+		}
+		initFirstRenderChunkMarked = false;
 		options.onInitConnectionState();
 		const meta = (msg.data ?? {}) as InitMetaPayload;
 		const currentPageId = protocolPageToState(meta.pageId);
@@ -668,6 +692,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		if (!Number.isFinite(sequence) || sequence < initStreamState.renderNextChunkIndex) {
 			return;
 		}
+		if (labEnabled() && !initFirstRenderChunkMarked) {
+			initFirstRenderChunkMarked = true;
+			labMark(LAB_MARK_INIT_FIRST_CHUNK, { chunkIndex: sequence });
+		}
 		if (!initStreamState.pendingRenderChunkMetas.has(sequence)) {
 			initStreamState.pendingRenderChunkMetas.set(sequence, meta);
 		}
@@ -777,10 +805,18 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	 * delta-resumed reconnect leaves the UI stuck in "reconnecting".
 	 */
 	const handleDeltaReplayMeta = (_msg: CollabIncomingMessage) => {
+		if (labEnabled()) {
+			labMark(LAB_MARK_DELTA_META);
+			labSpanStart(LAB_SPAN_DELTA_REPLAY);
+		}
 		options.onInitConnectionState();
 	};
 
 	const handleDeltaReplayComplete = (_msg: CollabIncomingMessage) => {
+		if (labEnabled()) {
+			labMark(LAB_MARK_DELTA_COMPLETE);
+			labSpanEnd(LAB_SPAN_DELTA_REPLAY);
+		}
 		// Replayed events already went through the normal handlers; the scene is
 		// current once the last one is applied.
 		options.requestSceneRefresh?.();
@@ -965,6 +1001,9 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const unloadPageIds = normalizeLoadedPageIds(meta.unloadPageIds);
 		const mode = meta.mode === "flat-only" ? "flat-only" : "full";
 		const totalPages = Number(meta.totalPages ?? meta.totalPage ?? options.totalPages.value);
+		if (labEnabled()) {
+			labMark(LAB_MARK_PAGE_CHANGE, { pageId, mode });
+		}
 		const renderExpectedChunkCountRaw = Number(meta.chunkSummary?.totalRenderChunks ?? NaN);
 		const commandsExpectedChunkCountRaw = Number(meta.chunkSummary?.totalCommandChunks ?? NaN);
 		const legacyExpectedChunkCountRaw = Number(meta.chunkSummary?.totalChunks ?? NaN);

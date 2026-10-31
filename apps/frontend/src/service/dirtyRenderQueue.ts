@@ -1,5 +1,7 @@
 // File role: batches dirty-rect redraw requests to keep incremental rendering stable.
 import { reRenderDirtyRect } from "../utils/dirtyRedraw";
+import { labEnabled, labMark, labSpanEnd, labSpanStart } from "../instrumentation/labMarks";
+import { LAB_MARK_FRAME_COMMIT, LAB_SPAN_RENDER_FRAME } from "../instrumentation/labMarkNames";
 
 interface DirtyRect {
 	minX: number;
@@ -62,13 +64,25 @@ export const createDirtyRenderQueue = (
 		if (pendingDirtyRects.length > 8) fullRenderPending = true;
 
 		if (!dirtyRafId) {
+			if (labEnabled()) {
+				labSpanStart(LAB_SPAN_RENDER_FRAME);
+			}
 			dirtyRafId = requestAnimationFrame(() => {
+				const committedRectCount = pendingDirtyRects.length;
+				const committedFullRender = fullRenderPending;
 				if (fullRenderPending) renderFull();
 				else if (renderBatch) renderBatch(pendingDirtyRects.map((pending) => ({ ...pending })));
 				else pendingDirtyRects.forEach((pending) => renderer(pending));
 				pendingDirtyRects = [];
 				fullRenderPending = false;
 				dirtyRafId = null;
+				if (labEnabled()) {
+					labSpanEnd(LAB_SPAN_RENDER_FRAME);
+					labMark(LAB_MARK_FRAME_COMMIT, {
+						full: committedFullRender,
+						rects: committedRectCount,
+					});
+				}
 			});
 		}
 	};

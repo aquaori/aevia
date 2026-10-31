@@ -167,19 +167,21 @@
       "kind": "frontend",
       "path": "apps/frontend/src/scene/eraseGeometry.ts",
       "state": "covered",
-      "owner": "apps/frontend/src/scene/sceneEngine.spec.ts"
+      "owner": "apps/frontend/src/scene/eraseGeometry.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/graphemes.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/graphemes.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/graphemes.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/matrix.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/matrix.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/matrix.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/primitiveRenderer.ts",
@@ -191,7 +193,8 @@
       "id": "frontend:apps/frontend/src/scene/renderOrderIndex.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/renderOrderIndex.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/renderOrderIndex.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/sceneEngine.ts",
@@ -205,7 +208,7 @@
       "kind": "frontend",
       "path": "apps/frontend/src/scene/sceneTypes.ts",
       "state": "covered",
-      "owner": "apps/frontend/src/scene/sceneEngine.spec.ts"
+      "owner": "apps/frontend/src/scene/eraseGeometry.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/spatialGridIndex.ts",
@@ -225,7 +228,7 @@
       "kind": "frontend",
       "path": "apps/frontend/src/scene/toolRegistry.ts",
       "state": "covered",
-      "owner": "tests/report/feature-obligations.spec.ts"
+      "owner": "apps/frontend/src/scene/toolRegistry.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/canvas.ts",
@@ -268,7 +271,8 @@
       "id": "frontend:apps/frontend/src/service/collabPressurePolicy.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/collabPressurePolicy.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/collabPressurePolicy.unit.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/collabProtocol.ts",
@@ -288,7 +292,8 @@
       "id": "frontend:apps/frontend/src/service/dirtyPointBus.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/dirtyPointBus.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/store/lamportStore.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/dirtyRenderQueue.ts",
@@ -409,13 +414,15 @@
       "id": "frontend:apps/frontend/src/store/lamportStore.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/store/lamportStore.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/store/lamportStore.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/store/userStore.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/store/userStore.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/store/userStore.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/utils/dirtyRedraw.ts",

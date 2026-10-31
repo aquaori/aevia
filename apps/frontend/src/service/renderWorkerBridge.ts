@@ -4,6 +4,8 @@ import type {
 	InitRenderChunkCommandDictionaryEntry,
 	InitRenderChunkMetaPayload,
 } from "./collabDispatcherTypes";
+import { labEnabled, labMark, mergeWorkerMarks, type LabMark } from "../instrumentation/labMarks";
+import { LAB_MARK_WORKER_ACK } from "../instrumentation/labMarkNames";
 
 interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
@@ -228,8 +230,28 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			type: "module",
 		});
 
+		// Workers cannot see the harness-injected `window.__AEVIA_LAB__`; tell the
+		// worker once whether lab mode is on. Message order guarantees this lands
+		// before any init/render traffic.
+		if (labEnabled()) {
+			worker.postMessage({ type: "lab-configure", data: { enabled: true } });
+		}
+
 		worker.onmessage = (event) => {
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
+
+			if (type === "lab:marks") {
+				if (labEnabled()) {
+					mergeWorkerMarks((event.data.marks as LabMark[]) ?? []);
+				}
+				return;
+			}
+
+			if (labEnabled()) {
+				labMark(LAB_MARK_WORKER_ACK, {
+					type: typeof type === "string" ? type : "unknown",
+				});
+			}
 
 			if (type === "scene-operation-rendered") {
 				const callback = typeof opId === "string" ? pendingSceneOperationRenders.get(opId) : undefined;

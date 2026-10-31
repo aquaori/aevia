@@ -32,6 +32,13 @@ import {
 	type RawPointerSample,
 	type StrokeInputSample,
 } from "../service/strokeInputSampler";
+import { labEnabled, labMark, labSpanEnd, labSpanStart } from "../instrumentation/labMarks";
+import {
+	LAB_MARK_LOCAL_PAINT_DONE,
+	LAB_MARK_NET_FLUSH,
+	LAB_MARK_POINTER_DOWN,
+	LAB_SPAN_POINTER_STROKE,
+} from "../instrumentation/labMarkNames";
 
 type Tool = EditorTool;
 type InteractionMode = "none" | "box-selecting" | "dragging" | "resizing" | "rotating";
@@ -148,6 +155,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 	let eraseProcessedPointCount = 0;
 	let eraseFlushRequested = false;
 	let eraseFlushPromise: Promise<void> | null = null;
+	let strokePaintSpanOpen = false;
 	const rasterTool = (tool: EditorTool) =>
 		tool === "pencil" || tool === "highlighter" ? tool : tool === "eraser" ? "eraser" : "pen";
 
@@ -532,6 +540,9 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		});
 		const startResult = pushSceneCreate(id, descriptor, [p0]);
 		if (!startResult?.ok) {
+			// The stroke never reached a local paint: drop the span flag without
+			// emitting an end mark so we do not fabricate a duration.
+			strokePaintSpanOpen = false;
 			pendingStrokeStart = null;
 			pendingStrokeSamples = [];
 			strokeInputSampler.reset();
@@ -547,6 +558,13 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		currentStrokeSourceIndex = 1;
 		lastCommandUpdateSentAt = performance.now();
 		pendingStrokeStart = null;
+		if (labEnabled()) {
+			labMark(LAB_MARK_LOCAL_PAINT_DONE, { cmdId: id, points: 1 });
+			if (strokePaintSpanOpen) {
+				strokePaintSpanOpen = false;
+				labSpanEnd(LAB_SPAN_POINTER_STROKE);
+			}
+		}
 		return true;
 	};
 
@@ -657,6 +675,12 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				currentStrokeSourceIndex += pendingPoints.length;
 				options.pointerHotState.pendingPoints = [];
 				lastCommandUpdateSentAt = now;
+				if (labEnabled()) {
+					labMark(LAB_MARK_NET_FLUSH, {
+						cmdId: localCmdId,
+						points: pendingPoints.length,
+					});
+				}
 			}
 		} else if (options.pointerHotState.pendingPoints.length > 0) {
 			schedulePendingCommandUpdate(policy.updateMinIntervalMs - elapsedMs);
@@ -712,6 +736,10 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 	const startDrawing = async (e: PointerEvent) => {
 		if (!canvasRef.value) return;
 		if (options.isDrawing.value) return;
+
+		if (labEnabled()) {
+			labMark(LAB_MARK_POINTER_DOWN, { tool: options.currentTool.value });
+		}
 
 		if (options.currentTool.value === "cursor") {
 			options.previewTransform.value = null;
@@ -804,6 +832,11 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		options.isDrawing.value = true;
 		options.activePointerId.value = e.pointerId;
 		options.activeMenu.value = null;
+
+		if (labEnabled()) {
+			labSpanStart(LAB_SPAN_POINTER_STROKE);
+			strokePaintSpanOpen = true;
+		}
 
 		const initialSample = strokeInputSampler.start(toRawPointerSample(e));
 		lastCanonicalSample = initialSample;
