@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -33,11 +35,21 @@ type WALMetrics struct {
 	LastCheckpointMode atomic.Value
 }
 
+// sqliteDSN keeps the busy timeout attached to every pooled connection. A plain path works
+// directly; a DSN that already carries query parameters gets the pragma appended.
+func sqliteDSN(cfg config.Config) string {
+	separator := "?"
+	if strings.Contains(cfg.DBPath, "?") {
+		separator = "&"
+	}
+	return fmt.Sprintf("%s%s_pragma=busy_timeout(%d)", cfg.DBPath, separator, cfg.DBBusyTimeout.Milliseconds())
+}
+
 func Open(cfg config.Config) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", cfg.DBPath)
+	db, err := sql.Open("sqlite", sqliteDSN(cfg))
 	if err != nil {
 		return nil, err
 	}

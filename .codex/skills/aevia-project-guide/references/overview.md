@@ -74,6 +74,7 @@ Backend defaults from `apps/backend/internal/config/config.go`:
 - `HOST=0.0.0.0`
 - `DEFAULT_ROOM_ID=123123`
 - `DB_PATH=<repo>/data/whiteboard-go.sqlite`
+- `DB_BUSY_TIMEOUT_MS=15000` (per-connection SQLite busy timeout; keeps room creation from failing with HTTP 500 while the batch writer is flushing)
 - `INIT_PRELOAD_PAGE_COUNT=2`
 - `PAGE_CACHE_RADIUS=1`
 - `INIT_COMMAND_CHUNK_SIZE=100`
