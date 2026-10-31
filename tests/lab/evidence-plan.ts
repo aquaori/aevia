@@ -1,7 +1,7 @@
 // File role: managed evidence plans for the lab runner modes that extend the core quick/ci/full profiles.
 import path from "node:path";
 import type { ExpectedArtifact } from "../report/contract";
-import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "../catalog/external-cases";
+import { CORRECTNESS_FULL_EXTERNAL_CASE_IDS } from "../catalog/external-cases";
 import type { LabResolveResult } from "./resolve-only";
 
 export type LabEvidenceStep = {
@@ -221,7 +221,7 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			stepId: "external-e2e",
 			kind: "external",
 			path: "external/correctness-full-external-results.json",
-			expectedCases: CI_REQUIRED_EXTERNAL_CASE_IDS,
+			expectedCases: CORRECTNESS_FULL_EXTERNAL_CASE_IDS,
 		},
 		{
 			id: "performance-external-gate",

@@ -838,8 +838,8 @@ const managedEvidencePlan = (profile: "quick" | "ci" | "full", runDir: string, r
 			{
 				id: "external-e2e",
 				title: "External correctness E2E",
-				description: "Running the full correctness suite in the selected browser against isolated services.",
-				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=correctness-full --mode=headless --reporter=json --report-dir=${shellQuote(externalDir)}`,
+				description: "Running the CI-required correctness subset in the selected browser against isolated services.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=correctness-full --case-ids=${CI_REQUIRED_EXTERNAL_CASE_IDS.join(",")} --mode=headless --reporter=json --report-dir=${shellQuote(externalDir)}`,
 				cwd: frontendDir,
 				requiresServices: true,
 				timeoutMs: 600000,

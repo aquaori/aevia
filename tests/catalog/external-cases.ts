@@ -79,11 +79,35 @@ export const EXTERNAL_CASES = {
 		oracle: "the browser completes the configured redraw trial without exceeding its freeze limit",
 		ciRequired: false,
 	},
+	undoRedoConvergence: {
+		id: "undo-redo-convergence",
+		capability: "multi-client history toggle convergence",
+		oracle:
+			"after two undo and two redo operations on one client, both client canvases stay pixel-identical at every step and the undone regions really become blank",
+		ciRequired: false,
+	},
+	lateJoinerUndoConsistency: {
+		id: "late-joiner-undo-consistency",
+		capability: "initial state replay after a history toggle",
+		oracle:
+			"a client joining after an undo sees the same canvas as the original client: the undone stroke is absent and the retained stroke is present",
+		ciRequired: false,
+	},
 } as const satisfies Record<string, ExternalCaseDefinition>;
 
 export const CI_REQUIRED_EXTERNAL_CASE_IDS = Object.values(EXTERNAL_CASES)
 	.filter((testCase) => testCase.ciRequired)
 	.map((testCase) => testCase.id);
+
+/**
+ * Everything the full correctness suite runs: the CI-required set plus deeper
+ * convergence cases that are too slow for every PR but belong to the nightly gate.
+ */
+export const CORRECTNESS_FULL_EXTERNAL_CASE_IDS = [
+	...CI_REQUIRED_EXTERNAL_CASE_IDS,
+	EXTERNAL_CASES.undoRedoConvergence.id,
+	EXTERNAL_CASES.lateJoinerUndoConsistency.id,
+];
 
 export const validateExternalCaseCatalog = () => {
 	const errors: string[] = [];

@@ -1269,6 +1269,151 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			artifacts: [page0Path, page1Path, page0ReturnPath],
 		};
 	})),
+	...(await optionalCase(context, EXTERNAL_CASES.undoRedoConvergence.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.undoRedoConvergence.id);
+		const { users } = await createRoomWithUsers(context.config, ["UndoA", "UndoB"]);
+		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
+		const pageB = await openRoomPage(context.browser, context.config, users[1]!);
+		const firstRegion = roiAround(320, 290);
+		const secondRegion = roiAround(730, 350);
+		await drawLine(pageA.page, 220, 220, 420, 360, 16);
+		await drawLine(pageA.page, 640, 260, 820, 440, 16);
+		await pageA.page.waitForTimeout(1800);
+		await pageB.page.waitForTimeout(1800);
+		const beforeUndo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "before-undo-diff.png"),
+			threshold: 0.012,
+		});
+
+		// Undo the second stroke first: the history.toggle soft delete must reach both peers.
+		await pressUndo(pageA.page);
+		const [secondBlankA, secondBlankB] = await Promise.all([
+			waitForVisibleScreenshotBlank(pageA.page, { roi: secondRegion, timeoutMs: 12000 }),
+			waitForVisibleScreenshotBlank(pageB.page, { roi: secondRegion, timeoutMs: 12000 }),
+		]);
+		const [firstKeptA] = await Promise.all([
+			waitForVisibleScreenshotContent(pageA.page, { roi: firstRegion, timeoutMs: 5000 }),
+		]);
+		const afterFirstUndo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "after-first-undo-diff.png"),
+			threshold: 0.012,
+		});
+
+		// Undo the first stroke too: both peers must converge on an empty page.
+		await pressUndo(pageA.page);
+		const [firstBlankA, firstBlankB] = await Promise.all([
+			waitForVisibleScreenshotBlank(pageA.page, { roi: firstRegion, timeoutMs: 12000 }),
+			waitForVisibleScreenshotBlank(pageB.page, { roi: firstRegion, timeoutMs: 12000 }),
+		]);
+		const afterSecondUndo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "after-second-undo-diff.png"),
+			threshold: 0.012,
+		});
+
+		// Redo both strokes in order; convergence must hold again.
+		await pressRedo(pageA.page);
+		await waitForVisibleScreenshotContent(pageA.page, { roi: firstRegion, timeoutMs: 12000 });
+		await waitForVisibleScreenshotContent(pageB.page, { roi: firstRegion, timeoutMs: 12000 });
+		await pressRedo(pageA.page);
+		await waitForVisibleScreenshotContent(pageA.page, { roi: secondRegion, timeoutMs: 12000 });
+		const [secondRestoredB] = await Promise.all([
+			waitForVisibleScreenshotContent(pageB.page, { roi: secondRegion, timeoutMs: 12000 }),
+		]);
+		const afterRedo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "after-redo-diff.png"),
+			threshold: 0.012,
+		});
+		const artifacts = [
+			await saveCanvasPng(pageA.page, path.join(dir, "page-a.png")),
+			await saveCanvasPng(pageB.page, path.join(dir, "page-b.png")),
+			path.join(dir, "before-undo-diff.png"),
+			path.join(dir, "after-first-undo-diff.png"),
+			path.join(dir, "after-second-undo-diff.png"),
+			path.join(dir, "after-redo-diff.png"),
+		];
+		await pageA.close();
+		await pageB.close();
+		const diffs = [beforeUndo, afterFirstUndo, afterSecondUndo, afterRedo];
+		const failedDiff = diffs.find((diff) => diff.diffRatio > diff.passThreshold);
+		if (failedDiff) {
+			return {
+				status: "failed",
+				failureType: "correctness",
+				metrics: { finalDiffRatio: failedDiff.diffRatio, passThreshold: failedDiff.passThreshold },
+				error: `undo/redo canvas divergence: diffRatio=${failedDiff.diffRatio}`,
+				artifacts,
+			};
+		}
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				beforeUndoDiffRatio: beforeUndo.diffRatio,
+				afterFirstUndoDiffRatio: afterFirstUndo.diffRatio,
+				afterSecondUndoDiffRatio: afterSecondUndo.diffRatio,
+				afterRedoDiffRatio: afterRedo.diffRatio,
+				undoneSecondStrokeRatioA: secondBlankA.sample.nonBlankRatio,
+				undoneSecondStrokeRatioB: secondBlankB.sample.nonBlankRatio,
+				retainedFirstStrokeRatioA: firstKeptA.sample.nonBlankRatio,
+				undoneFirstStrokeRatioA: firstBlankA.sample.nonBlankRatio,
+				undoneFirstStrokeRatioB: firstBlankB.sample.nonBlankRatio,
+				restoredSecondStrokeRatioB: secondRestoredB.sample.nonBlankRatio,
+			},
+			artifacts,
+		};
+	})),
+	...(await optionalCase(context, EXTERNAL_CASES.lateJoinerUndoConsistency.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.lateJoinerUndoConsistency.id);
+		const { roomId, users } = await createRoomWithUsers(context.config, ["LateUndoA"]);
+		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
+		const keptRegion = roiAround(300, 280);
+		const undoneRegion = roiAround(730, 350);
+		await drawLine(pageA.page, 220, 220, 400, 360, 22);
+		await drawLine(pageA.page, 640, 260, 820, 440, 22);
+		await pageA.page.waitForTimeout(1200);
+		await pressUndo(pageA.page);
+		const undoneOnA = await waitForVisibleScreenshotBlank(pageA.page, { roi: undoneRegion, timeoutMs: 12000 });
+		await waitForVisibleScreenshotContent(pageA.page, { roi: keptRegion, timeoutMs: 5000 });
+
+		const lateUser = await joinRoom(context.config, roomId, "LateUndoB");
+		const pageB = await openRoomPage(context.browser, context.config, lateUser);
+		// One retained stroke covers well under 1% of the canvas, so wait for that
+		// region instead of the generic whole-canvas non-blank threshold.
+		const keptOnB = await waitForVisibleScreenshotContent(pageB.page, { roi: keptRegion, timeoutMs: 15000 });
+		const undoneOnB = await waitForVisibleScreenshotBlank(pageB.page, { roi: undoneRegion, timeoutMs: 12000 });
+		const diff = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "late-undo-diff.png"),
+			threshold: 0.01,
+		});
+		const artifacts = [
+			await saveCanvasPng(pageA.page, path.join(dir, "page-a.png")),
+			await saveCanvasPng(pageB.page, path.join(dir, "page-b.png")),
+			path.join(dir, "late-undo-diff.png"),
+		];
+		await pageA.close();
+		await pageB.close();
+		if (diff.diffRatio > diff.passThreshold) {
+			return {
+				status: "failed",
+				failureType: "correctness",
+				metrics: { diffRatio: diff.diffRatio, passThreshold: diff.passThreshold },
+				error: `late joiner replay after undo diverged: diffRatio=${diff.diffRatio}`,
+				artifacts,
+			};
+		}
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				diffRatio: diff.diffRatio,
+				passThreshold: diff.passThreshold,
+				undoneRegionRatioOnA: undoneOnA.sample.nonBlankRatio,
+				undoneRegionRatioOnB: undoneOnB.sample.nonBlankRatio,
+				keptRegionRatioOnB: keptOnB.sample.nonBlankRatio,
+			},
+			artifacts,
+		};
+	})),
 ];
 
 export const runPerformanceExternal = async (context: SuiteContext): Promise<CaseResult[]> => {
