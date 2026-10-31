@@ -43,6 +43,12 @@ const vitestRun = (ctx: LabPlanContext, args: string) =>
 const externalRun = (ctx: LabPlanContext, suite: string, extra = "") =>
 	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=json --report-dir=${q(ctx, path.join(ctx.runDir, "external"))} --lab=on${extra}`;
 
+/** Optional local/nightly-run shortcut; production nightly keeps the full default ladder. */
+const boundaryScalesOverride = () => {
+	const scales = (process.env.AEVIA_NIGHTLY_BOUNDARY_SCALES || "").trim();
+	return scales ? ` --boundary-scales=${scales}` : "";
+};
+
 const sourceCheckStep = (): LabEvidenceStep => ({
 	id: "source-check",
 	title: "Source identity check",
@@ -179,7 +185,11 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			title: "Boundary stress E2E (fresh database)",
 			description:
 				"Running the multi-million-point boundary suite on a freshly reset SQLite store so accumulated rows cannot turn create-room into HTTP 500.",
-			command: externalRun(ctx, "performance-external", " --case-set=boundary --matrix=false --runs=1 --warmup=0"),
+			command: externalRun(
+				ctx,
+				"performance-external",
+				` --case-set=boundary --matrix=false --runs=1 --warmup=0${boundaryScalesOverride()}`
+			),
 			cwd: ctx.frontendDir,
 			requiresServices: true,
 			freshServices: true,
