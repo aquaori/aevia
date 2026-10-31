@@ -770,6 +770,12 @@ const managedEvidencePlan = (profile: "quick" | "ci" | "full", runDir: string, r
 				path: "external/correctness-full-external-results.json",
 				expectedCases: CI_REQUIRED_EXTERNAL_CASE_IDS,
 			},
+			{
+				id: "external-correctness-gate",
+				stepId: "external-e2e",
+				kind: "lab-gate",
+				path: "external/correctness-full-lab-gate.json",
+			},
 		];
 	const steps: EvidenceStep[] = quick
 		? [
@@ -1273,36 +1279,42 @@ const resolveRerunSelection = (scope: "run" | "scenario" | "case", ids: string[]
 	return selectors.length > 0 ? resolveOnlySelectors(selectors, canonicalRootDir) : undefined;
 };
 
+const resolveSingleSelection = (): LabResolveResult => {
+	const only = argValues("only");
+	const since = argValue("since");
+	const resolved = only.length > 0
+		? resolveOnlySelectors(only, canonicalRootDir)
+		: since
+			? resolveSinceRef(since, canonicalRootDir)
+			: undefined;
+	if (!resolved) throw new Error("single mode requires --only=<selector> or --since=<git-ref>");
+	for (const unresolved of resolved.unresolved) print(`[lab] unresolved selector: ${unresolved}`);
+	if (resolved.selections.length === 0) {
+		throw new Error(
+			`single mode resolved no executable targets${
+				resolved.unresolved.length > 0 ? ` (unresolved: ${resolved.unresolved.join(", ")})` : ""
+			}`
+		);
+	}
+	return resolved;
+};
+
 const buildManagedRunOptions = (profile: ManagedProfile): ManagedRunOptions & { effectiveProfile: ManagedProfile } => {
 	let selection: LabResolveResult | undefined;
-	if (profile === "single") {
-		const only = argValues("only");
-		const since = argValue("since");
-		const resolved = only.length > 0
-			? resolveOnlySelectors(only, canonicalRootDir)
-			: since
-				? resolveSinceRef(since, canonicalRootDir)
-				: undefined;
-		if (!resolved) throw new Error("single mode requires --only=<selector> or --since=<git-ref>");
-		for (const unresolved of resolved.unresolved) print(`[lab] unresolved selector: ${unresolved}`);
-		if (resolved.selections.length === 0) {
-			throw new Error(
-				`single mode resolved no executable targets${
-					resolved.unresolved.length > 0 ? ` (unresolved: ${resolved.unresolved.join(", ")})` : ""
-				}`
-			);
-		}
-		selection = resolved;
-	}
 	const rerunId = argValue("rerun-of");
-	if (!rerunId) return { selection, effectiveProfile: profile };
-	if (!/^[0-9a-f-]{36}$/i.test(rerunId)) throw new Error("--rerun-of must be a run UUID");
-	const scope = argValue("scope") || "run";
-	if (scope !== "run" && scope !== "scenario" && scope !== "case") throw new Error("--scope must be run|scenario|case");
-	const ids = (argValue("ids") || "").split(",").map((item) => item.trim()).filter(Boolean);
-	selection = selection ?? resolveRerunSelection(scope, ids);
-	const effectiveProfile = selection && scope === "case" ? "single" : profile;
-	return { selection, rerunOf: { ofRunId: rerunId, scope, ids }, effectiveProfile };
+	let rerunOf: ManagedRunOptions["rerunOf"];
+	if (rerunId) {
+		if (!/^[0-9a-f-]{36}$/i.test(rerunId)) throw new Error("--rerun-of must be a run UUID");
+		const scope = argValue("scope") || "run";
+		if (scope !== "run" && scope !== "scenario" && scope !== "case") throw new Error("--scope must be run|scenario|case");
+		const ids = (argValue("ids") || "").split(",").map((item) => item.trim()).filter(Boolean);
+		rerunOf = { ofRunId: rerunId, scope, ids };
+		selection = resolveRerunSelection(scope, ids);
+	}
+	if (profile === "single" && !selection) selection = resolveSingleSelection();
+	if (!rerunOf) return { selection, effectiveProfile: profile };
+	const effectiveProfile = selection && rerunOf.scope === "case" ? "single" : profile;
+	return { selection, rerunOf, effectiveProfile };
 };
 
 const main = async () => {

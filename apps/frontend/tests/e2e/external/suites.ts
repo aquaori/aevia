@@ -29,8 +29,150 @@ import {
 } from "./cdp-observer";
 import { logCaseEnd, logCaseStart, logStep } from "./cli-progress";
 import { EXTERNAL_CASES } from "../../../../../tests/catalog/external-cases";
+import {
+	aggregateMedians,
+	deriveInstrumentedMetrics,
+	deriveWitness,
+} from "./lab/contracts";
+import { evaluateCase, labScenarioKey, neutralCaseEvaluation } from "./lab/evaluate";
+import { beginLabScope, collectLabSnapshots, endLabScope, waitForLabSentinel } from "./lab/install";
+import { resolveLabPolicy } from "./lab/policy";
+import type { LabCaseEvaluation, LabPageSnapshot, LabPolicy, LabSpanViolation } from "./lab/types";
+import { caseKeyOf, isCaseSelected } from "./lab/select";
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const LAB_POLICY: LabPolicy = resolveLabPolicy();
+
+/** Lab evidence collected for one case (or one sample of a sampled case). */
+type LabCaseEvidence = {
+	snapshots: LabPageSnapshot[];
+	instrumented: MetricMap;
+	witnessDeltaMs: MetricMap;
+	violations: LabSpanViolation[];
+	pageErrors: string[];
+	invalidSampleCount: number;
+};
+
+const deriveCaseEvidence = (
+	caseId: string,
+	snapshots: LabPageSnapshot[],
+	externalMetrics: MetricMap,
+	invalidSampleCount = 0
+): LabCaseEvidence => {
+	const instrumented: MetricMap = {};
+	const violations: LabSpanViolation[] = [];
+	for (const snapshot of snapshots) {
+		const derived = deriveInstrumentedMetrics(caseId, snapshot.marks, LAB_POLICY);
+		for (const [key, value] of Object.entries(derived.instrumented)) {
+			if (!(key in instrumented)) instrumented[key] = value;
+		}
+		violations.push(...derived.violations);
+	}
+	const witness = deriveWitness(caseId, instrumented, externalMetrics, LAB_POLICY);
+	violations.push(...witness.violations);
+	const pageErrors: string[] = [];
+	for (const snapshot of snapshots) {
+		for (const error of snapshot.pageErrors) {
+			if (!pageErrors.includes(error.message)) pageErrors.push(error.message);
+		}
+	}
+	return {
+		snapshots,
+		instrumented,
+		witnessDeltaMs: witness.witnessDeltaMs,
+		violations,
+		pageErrors,
+		invalidSampleCount,
+	};
+};
+
+const scenarioKeyOf = (context: SuiteContext) => labScenarioKey(context.config.suite, context.config.caseSet);
+
+const caseKeyOfCase = (context: SuiteContext, id: string, scale?: number) =>
+	caseKeyOf(id, context.config.environment, scale);
+
+/**
+ * Runs the measurement gate for a finished case and applies the harness-failure
+ * policy: an invalid measurement becomes a `harness` case failure (never a
+ * product failure) and is reported immediately on stderr.
+ */
+const applyLabEvidence = (
+	context: SuiteContext,
+	id: string,
+	result: CaseResult,
+	evidence: LabCaseEvidence,
+	sampleCount: number,
+	expectedSampleCount: number,
+	scale?: number
+): CaseResult => {
+	if (!context.config.labEnabled) return result;
+	if (result.status !== "passed") {
+		// A product failure already fails the run; the measurement gate only
+		// certifies collection, so it stays neutral instead of masking the cause.
+		result.lab = neutralCaseEvaluation({
+			caseId: id,
+			caseKey: caseKeyOfCase(context, id, scale),
+			scenarioKey: scenarioKeyOf(context),
+			detail: "case failed before the measurement gate judged collection",
+		});
+		return result;
+	}
+	const evaluation: LabCaseEvaluation = evaluateCase({
+		caseId: id,
+		caseKey: caseKeyOfCase(context, id, scale),
+		scenarioKey: scenarioKeyOf(context),
+		snapshots: evidence.snapshots,
+		instrumented: evidence.instrumented,
+		external: result.metrics,
+		sampleCount,
+		expectedSampleCount,
+		invalidSampleCount: evidence.invalidSampleCount,
+		sampleViolations: evidence.violations,
+		witnessDeltaMs: evidence.witnessDeltaMs,
+		pageErrors: evidence.pageErrors,
+		policy: LAB_POLICY,
+		labEnabled: true,
+	});
+	result.lab = evaluation;
+	if (Object.keys(evidence.instrumented).length > 0) {
+		result.instrumented = evidence.instrumented;
+		result.measurementSource = evaluation.measurementSource;
+		result.witnessDeltaMs = evidence.witnessDeltaMs;
+	}
+	if (evaluation.status === "invalid") {
+		const codes = evaluation.codes.join(",");
+		const detail = evaluation.details.join("; ").slice(0, 800);
+		console.error(
+			`[lab][invalid-case] scenario=${evaluation.scenarioKey} case=${evaluation.caseKey} codes=${codes} detail=${detail}`
+		);
+		if (result.status === "passed") {
+			result.status = "failed";
+			result.failureType = "harness";
+			result.error = `[lab] invalid measurement (${codes}): ${detail}`;
+		} else {
+			result.error = `${result.error ? `${result.error}; ` : ""}[lab] invalid measurement (${codes}): ${detail}`;
+		}
+	}
+	return result;
+};
+
+const isSelected = (context: SuiteContext, id: string, scale?: number) =>
+	isCaseSelected(context.config, id, context.config.environment, scale ?? null);
+
+const optionalCase = async (
+	context: SuiteContext,
+	id: string,
+	fn: () => Promise<Omit<CaseResult, "id" | "durationMs">>
+): Promise<CaseResult[]> => (isSelected(context, id) ? [await runCase(context, id, fn)] : []);
+
+const optionalSampledCase = async (
+	context: SuiteContext,
+	id: string,
+	fn: (sampleIndex: number, warmup: boolean) => Promise<MetricMap>,
+	options: { scale?: number } = {}
+): Promise<CaseResult[]> =>
+	isSelected(context, id, options.scale) ? [await runSampledCase(context, id, fn, options)] : [];
 
 const CASE_META: Record<string, { title: string; description: string; category: CaseCategory }> = {
 	[EXTERNAL_CASES.harnessHealth.id]: {
@@ -118,9 +260,16 @@ const runCase = async (
 	const fullRenderPrefix = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
 	const meta = CASE_META[id.startsWith(fullRenderPrefix) ? EXTERNAL_CASES.fullRenderPerformance.id : id];
 	logCaseStart(id, meta?.title || id, meta?.description);
+	const labOn = context.config.labEnabled;
+	if (labOn) beginLabScope();
 	try {
 		const result = await fn();
-		const finalResult = withMeta(context, id, { id, durationMs: performance.now() - startedAt, ...result });
+		let finalResult = withMeta(context, id, { id, durationMs: performance.now() - startedAt, ...result });
+		if (labOn) {
+			const snapshots = await collectLabSnapshots();
+			const evidence = deriveCaseEvidence(id, snapshots, finalResult.metrics);
+			finalResult = applyLabEvidence(context, id, finalResult, evidence, 1, 1);
+		}
 		logCaseEnd(finalResult);
 		return finalResult;
 	} catch (error: unknown) {
@@ -144,6 +293,8 @@ const runCase = async (
 		});
 		logCaseEnd(finalResult);
 		return finalResult;
+	} finally {
+		if (labOn) endLabScope();
 	}
 };
 
@@ -271,20 +422,34 @@ const runSampledCase = async (
 			`warmup=${context.config.warmup}`,
 		].filter(Boolean).join(" ")
 	);
+	const labOn = context.config.labEnabled;
+	const measuredLabEvidence: LabCaseEvidence[] = [];
 	for (let index = 0; index < context.config.warmup + context.config.runs; index += 1) {
 		const warmup = index < context.config.warmup;
 		const run = warmup ? index + 1 : index - context.config.warmup + 1;
 		const sampleStartedAt = performance.now();
 		logStep(`${id}: ${warmup ? "warmup" : "run"} ${run}/${warmup ? context.config.warmup : context.config.runs}`);
+		if (labOn) beginLabScope();
 		try {
 			const metrics = await fn(run, warmup);
-			samples.push({
+			const snapshots = labOn ? await collectLabSnapshots() : [];
+			const sample: CaseSample = {
 				run,
 				warmup,
 				status: "passed",
 				durationMs: performance.now() - sampleStartedAt,
 				metrics,
-			});
+			};
+			if (labOn && !warmup) {
+				const evidence = deriveCaseEvidence(id, snapshots, metrics);
+				sample.instrumented = evidence.instrumented;
+				sample.witnessDeltaMs = evidence.witnessDeltaMs;
+				sample.measurementSource = Object.keys(evidence.instrumented).length > 0 ? "hybrid" : "external";
+				sample.labCodes = [...new Set(evidence.violations.map((violation) => violation.code))];
+				sample.pageErrors = evidence.pageErrors;
+				measuredLabEvidence.push(evidence);
+			}
+			samples.push(sample);
 		} catch (error: unknown) {
 			samples.push({
 				run,
@@ -294,6 +459,8 @@ const runSampledCase = async (
 				metrics: {},
 				error: errorMessage(error),
 			});
+		} finally {
+			if (labOn) endLabScope();
 		}
 	}
 	assessSampleQuality(id, samples);
@@ -305,6 +472,16 @@ const runSampledCase = async (
 	const invalidSamples = measuredSamples.filter(
 		(sample) => sample.status === "passed" && sample.qualityStatus && sample.qualityStatus !== "valid"
 	);
+	const caseEvidence: LabCaseEvidence = {
+		snapshots: measuredLabEvidence.flatMap((evidence) => evidence.snapshots),
+		instrumented: aggregateMedians(measuredLabEvidence.map((evidence) => evidence.instrumented)),
+		witnessDeltaMs: aggregateMedians(measuredLabEvidence.map((evidence) => evidence.witnessDeltaMs)),
+		violations: measuredLabEvidence.flatMap((evidence) => evidence.violations),
+		pageErrors: [...new Set(measuredLabEvidence.flatMap((evidence) => evidence.pageErrors))],
+		invalidSampleCount: measuredLabEvidence.filter(
+			(evidence) => evidence.violations.length > 0 || evidence.pageErrors.length > 0
+		).length,
+	};
 	if (!failedSample && validSamples.length === 0) {
 		const finalResult = withMeta(context, id, {
 			id,
@@ -324,8 +501,17 @@ const runSampledCase = async (
 			aggregate: {},
 			error: invalidSamples.map((sample) => sample.qualityReason || "invalid sample").join("；"),
 		});
-		logCaseEnd(finalResult);
-		return finalResult;
+		const gatedResult = applyLabEvidence(
+			context,
+			id,
+			finalResult,
+			caseEvidence,
+			measuredSamples.length,
+			context.config.runs,
+			options.scale
+		);
+		logCaseEnd(gatedResult);
+		return gatedResult;
 	}
 	const aggregate = aggregateSamples(validSamples);
 	const finalResult = withMeta(context, id, {
@@ -347,8 +533,17 @@ const runSampledCase = async (
 		aggregate,
 		error: failedSample?.error,
 	});
-	logCaseEnd(finalResult);
-	return finalResult;
+	const gatedResult = applyLabEvidence(
+		context,
+		id,
+		finalResult,
+		caseEvidence,
+		measuredSamples.length,
+		context.config.runs,
+		options.scale
+	);
+	logCaseEnd(gatedResult);
+	return gatedResult;
 };
 
 const artifactDir = (context: SuiteContext, name: string) => {
@@ -791,8 +986,8 @@ const runNetworkRecovery = async (context: SuiteContext) =>
 		};
 	});
 
-export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResult[]> => [
-	await runCase(context, EXTERNAL_CASES.harnessHealth.id, async () => {
+export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResult[]> =>
+	optionalCase(context, EXTERNAL_CASES.harnessHealth.id, async () => {
 		await assertFrontendReachable(context.config);
 		const { users } = await createRoomWithUsers(context.config, ["HealthObserver", "HealthBot"]);
 		const observer = await openRoomPage(context.browser, context.config, users[0]!);
@@ -810,6 +1005,11 @@ export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResul
 			minDiffRatio: 0.005,
 			sampleSize: 72,
 		});
+		if (context.config.labEnabled) {
+			// Sentinel round-trip: proves the product instrumentation is alive on this
+			// document before the gate certifies the external measurement.
+			await waitForLabSentinel(observer.page);
+		}
 		bot.close();
 		await observer.close();
 		return {
@@ -821,12 +1021,11 @@ export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResul
 				roiDiffRatio: changed.diffRatio,
 			},
 		};
-	}),
-];
+	});
 
 export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseResult[]> => [
 	...(await runHarnessHealth(context)),
-	await runCase(context, EXTERNAL_CASES.correctnessSmoke.id, async () => {
+	...(await optionalCase(context, EXTERNAL_CASES.correctnessSmoke.id, async () => {
 		const dir = artifactDir(context, EXTERNAL_CASES.correctnessSmoke.id);
 		const { users } = await createRoomWithUsers(context.config, ["SmokeA", "SmokeB"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
@@ -931,12 +1130,12 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 			},
 			artifacts,
 		};
-	}),
+	})),
 ];
 
 export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseResult[]> => [
 	...(await runCorrectnessSmoke(context)),
-	await runCase(context, EXTERNAL_CASES.concurrentCrossing.id, async () => {
+	...(await optionalCase(context, EXTERNAL_CASES.concurrentCrossing.id, async () => {
 		const dir = artifactDir(context, EXTERNAL_CASES.concurrentCrossing.id);
 		const { users } = await createRoomWithUsers(context.config, ["CrossA", "CrossB"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
@@ -969,8 +1168,8 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			error: diff.diffRatio <= diff.passThreshold ? undefined : `concurrent crossing mismatch: ${diff.diffRatio}`,
 			artifacts,
 		};
-	}),
-	await runCase(context, EXTERNAL_CASES.lateJoiner.id, async () => {
+	})),
+	...(await optionalCase(context, EXTERNAL_CASES.lateJoiner.id, async () => {
 		const dir = artifactDir(context, EXTERNAL_CASES.lateJoiner.id);
 		const { roomId, users } = await createRoomWithUsers(context.config, ["LateA"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
@@ -998,8 +1197,8 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			error: diff.diffRatio <= diff.passThreshold ? undefined : `late joiner mismatch: ${diff.diffRatio}`,
 			artifacts,
 		};
-	}),
-	await runCase(context, EXTERNAL_CASES.multipageIsolation.id, async () => {
+	})),
+	...(await optionalCase(context, EXTERNAL_CASES.multipageIsolation.id, async () => {
 		const dir = artifactDir(context, EXTERNAL_CASES.multipageIsolation.id);
 		const { roomId, users } = await createRoomWithUsers(context.config, ["PageObserver", "PageBot"]);
 		const bot = new ProtocolClient(context.config, users[1]!);
@@ -1069,14 +1268,14 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			},
 			artifacts: [page0Path, page1Path, page0ReturnPath],
 		};
-	}),
+	})),
 ];
 
 export const runPerformanceExternal = async (context: SuiteContext): Promise<CaseResult[]> => {
 	const results: CaseResult[] = [];
 	if (context.config.caseSet === "standard" || context.config.caseSet === "all") {
 		for (const scale of context.config.scales) {
-			results.push(await runSampledCase(context, `${EXTERNAL_CASES.fullRenderPerformance.id}-${scale}`, async (run, warmup) => {
+			results.push(...(await optionalSampledCase(context, `${EXTERNAL_CASES.fullRenderPerformance.id}-${scale}`, async (run, warmup) => {
 				const dir = artifactDir(
 					context,
 					`${EXTERNAL_CASES.fullRenderPerformance.id}-${scale}-${context.config.environment}-${warmup ? "warmup" : "run"}-${run}`
@@ -1114,10 +1313,10 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 					longTaskCount: perf.longTaskCount,
 					longTaskTotalMs: perf.longTaskTotalMs,
 				};
-			}, { scale }));
+			}, { scale })));
 		}
 
-		results.push(await runSampledCase(context, EXTERNAL_CASES.remoteFirstPixelPerformance.id, async () => {
+		results.push(...(await optionalSampledCase(context, EXTERNAL_CASES.remoteFirstPixelPerformance.id, async () => {
 			const { users } = await createRoomWithUsers(context.config, ["IncObserver", "IncBot"]);
 			const observer = await openRoomPage(context.browser, context.config, users[0]!);
 			const bot = new ProtocolClient(context.config, users[1]!);
@@ -1147,9 +1346,9 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 				roiDiffRatio: changed.diffRatio,
 				longTaskCount: perf.longTaskCount,
 			};
-		}));
+		})));
 
-		results.push(await runSampledCase(context, EXTERNAL_CASES.localFirstPixelPerformance.id, async () => {
+		results.push(...(await optionalSampledCase(context, EXTERNAL_CASES.localFirstPixelPerformance.id, async () => {
 			const { users } = await createRoomWithUsers(context.config, ["RealtimeUser"]);
 			const page = await openRoomPage(context.browser, context.config, users[0]!);
 			const roi = roiAround(360, 330, 280);
@@ -1172,17 +1371,17 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 				inputDelayMs: perf.eventDelayMaxMs,
 				longTaskCount: perf.longTaskCount,
 			};
-		}));
+		})));
 	}
 
 	if (context.config.caseSet === "resilience" || context.config.caseSet === "all") {
-		results.push(await runNetworkRecovery(context));
+		if (isSelected(context, EXTERNAL_CASES.networkRecovery.id)) results.push(await runNetworkRecovery(context));
 	}
 
 	if (context.config.caseSet === "boundary" || context.config.caseSet === "all") {
-		results.push(await runBoundaryFullRender(context));
-		results.push(await runBoundaryHeapGrowth(context));
-		results.push(await runBoundaryIncrementalFreeze(context));
+		if (isSelected(context, EXTERNAL_CASES.fullRenderBoundary.id)) results.push(await runBoundaryFullRender(context));
+		if (isSelected(context, EXTERNAL_CASES.heapGrowthBoundary.id)) results.push(await runBoundaryHeapGrowth(context));
+		if (isSelected(context, EXTERNAL_CASES.redrawFreezeBoundary.id)) results.push(await runBoundaryIncrementalFreeze(context));
 	}
 
 	return results;

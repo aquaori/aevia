@@ -10,6 +10,7 @@ import type {
 	ValidityReason,
 } from "./contract";
 import { isLabMode, isRerunScope, isValidityCode, isValidityStatus } from "./contract";
+import { writeLabReport } from "./lab-report";
 
 export type ArtifactResult = {
 	id: string;
@@ -714,16 +715,18 @@ export const buildAggregate = (manifest: RunManifest, runDir: string): Aggregate
 			failures.push(`${artifact.id}: ${artifact.error || artifact.status}`);
 		}
 	}
-	const externalArtifact = artifacts.find((artifact) => artifact.kind === "external" && artifact.status === "passed");
-	const gateArtifact = artifacts.find((artifact) => artifact.kind === "lab-gate" && artifact.status === "passed");
-	if (externalArtifact?.caseIds && gateArtifact?.caseIds) {
+	const externalArtifacts = artifacts.filter((artifact) => artifact.kind === "external" && artifact.status === "passed");
+	const gateArtifacts = artifacts.filter((artifact) => artifact.kind === "lab-gate" && artifact.status === "passed");
+	for (const externalArtifact of externalArtifacts) {
+		const gateArtifact = gateArtifacts.find((artifact) => artifact.stepId === externalArtifact.stepId);
+		if (!externalArtifact.caseIds || !gateArtifact?.caseIds) continue;
 		const externalIds = new Set(externalArtifact.caseIds);
 		const gateIds = new Set(gateArtifact.caseIds);
 		const onlyExternal = [...externalIds].filter((id) => !gateIds.has(id));
 		const onlyGate = [...gateIds].filter((id) => !externalIds.has(id));
 		if (onlyExternal.length > 0 || onlyGate.length > 0) {
 			failures.push(
-				`lab-gate case coverage does not match external results: ${[
+				`lab-gate case coverage does not match external results for step ${externalArtifact.stepId}: ${[
 					onlyExternal.length ? `missing in gate: ${onlyExternal.join(", ")}` : "",
 					onlyGate.length ? `unexpected in gate: ${onlyGate.join(", ")}` : "",
 				].filter(Boolean).join("; ")}`
@@ -835,6 +838,13 @@ export const writeAggregateReport = (manifestPath: string) => {
 	const report = buildAggregate(manifest, runDir);
 	atomicWrite(path.join(runDir, "test-report.json"), JSON.stringify(report, null, 2));
 	atomicWrite(path.join(runDir, "test-report.html"), reportHtml(report));
+	try {
+		writeLabReport({ runDir, manifest, aggregate: report });
+	} catch (error) {
+		console.error(
+			`[test-report] unified lab report generation failed: ${error instanceof Error ? error.message : String(error)}`
+		);
+	}
 	if (manifest.finishedAt && shouldPublishLatest(manifest, report)) {
 		publishLatestPointer(process.cwd(), manifest.runId, manifest.finishedAt);
 	}

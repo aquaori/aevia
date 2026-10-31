@@ -1,4 +1,6 @@
 import type { Browser, Page } from "playwright";
+import type { GateCase, GateScenario, ValidityReason, ValidityStatus } from "../../../../../tests/report/contract";
+import type { LabCaseEvaluation } from "./lab/types";
 
 export type RunMode = "headless" | "headed";
 export type EnvironmentId = "gpu_cpuHigh" | "gpu_cpuLow" | "noGpu_cpuHigh" | "noGpu_cpuLow";
@@ -58,6 +60,12 @@ export interface ExternalConfig {
 	boundaryPointsPerStroke: number;
 	freezeMs: number;
 	heapSnapshot: boolean;
+	/** Only run cases whose case id is in this list (empty = no id filter). */
+	caseIds: string[];
+	/** Only run cases whose `<id>|<environment>|<scale>` key is in this list. */
+	caseKeys: string[];
+	/** Lab instrumentation collection (`--lab=on|off`, default on). */
+	labEnabled: boolean;
 }
 
 export interface MetricMap {
@@ -82,6 +90,13 @@ export interface CaseResult {
 	learning?: CaseLearning;
 	error?: string;
 	artifacts?: string[];
+	/** Instrumented metrics (same names as external metrics when comparable). */
+	instrumented?: MetricMap;
+	measurementSource?: "instrumented" | "external" | "hybrid";
+	/** instrumented - external deltas for witness metrics. */
+	witnessDeltaMs?: MetricMap;
+	/** Measurement gate judgement; consumed by runner.ts to build lab-gate.json. */
+	lab?: LabCaseEvaluation;
 }
 
 export interface CaseSample {
@@ -93,6 +108,12 @@ export interface CaseSample {
 	qualityStatus?: "valid" | "invalid_quality" | "outlier";
 	qualityReason?: string;
 	error?: string;
+	instrumented?: MetricMap;
+	measurementSource?: "instrumented" | "external" | "hybrid";
+	witnessDeltaMs?: MetricMap;
+	/** Measurement validity codes raised while collecting this sample. */
+	labCodes?: string[];
+	pageErrors?: string[];
 }
 
 export interface MetricStats {
@@ -295,9 +316,25 @@ export interface ExternalObservability {
 	errors: string[];
 }
 
+export interface ExternalValidity {
+	/** Whether lab instrumentation collection was enabled for this run. */
+	enabled: boolean;
+	status: ValidityStatus;
+	aborted: boolean;
+	cases: GateCase[];
+	scenarios: GateScenario[];
+	instrumentation: {
+		enabled: boolean;
+		contractVersion: number | null;
+		missingMarks: string[];
+	};
+	reasons: ValidityReason[];
+}
+
 export interface ExternalReport {
 	version: 1;
 	generatedAt: string;
+	validity?: ExternalValidity;
 	run?: {
 		id: string;
 		sourceRevision: string;
@@ -339,6 +376,9 @@ export interface ExternalReport {
 		| "boundaryPointsPerStroke"
 		| "freezeMs"
 		| "heapSnapshot"
+		| "caseIds"
+		| "caseKeys"
+		| "labEnabled"
 	>;
 	summary: ExternalRunSummary;
 	results: CaseResult[];

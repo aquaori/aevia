@@ -63,7 +63,7 @@ const perfRequestStep = (ctx: LabPlanContext): LabEvidenceStep => ({
 	id: "perf-request",
 	title: "Performance gate request",
 	description: "Recording that this run asks for a separate performance gate instead of running it inline.",
-	command: `node tests/lab/write-perf-request.mjs ${q(ctx, path.join(ctx.runDir, "perf-request.json"))}`,
+	command: `node scripts/write-perf-request.mjs ${q(ctx, path.join(ctx.runDir, "perf-request.json"))}`,
 	cwd: ctx.canonicalRootDir,
 	timeoutMs: 30000,
 });
@@ -98,6 +98,7 @@ export const buildSmokePlan = (ctx: LabPlanContext): LabEvidencePlan => {
 		{ id: "feature-obligations", stepId: "catalog-check", kind: "feature-catalog", path: "catalog/feature-obligations.json" },
 		{ id: "frontend-vitest", stepId: "frontend-test", kind: "vitest", path: "frontend/vitest.json" },
 		{ id: "correctness-smoke-external", stepId: "external-smoke", kind: "external", path: "external/correctness-smoke-external-results.json" },
+		{ id: "correctness-smoke-gate", stepId: "external-smoke", kind: "lab-gate", path: "external/correctness-smoke-lab-gate.json" },
 	];
 	return { steps, artifacts };
 };
@@ -222,6 +223,18 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			path: "external/correctness-full-external-results.json",
 			expectedCases: CI_REQUIRED_EXTERNAL_CASE_IDS,
 		},
+		{
+			id: "performance-external-gate",
+			stepId: "external-performance",
+			kind: "lab-gate",
+			path: "external/performance-external-all-lab-gate.json",
+		},
+		{
+			id: "external-correctness-gate",
+			stepId: "external-e2e",
+			kind: "lab-gate",
+			path: "external/correctness-full-lab-gate.json",
+		},
 		{ id: "lab-inventory", stepId: "lab-inventory", kind: "lab-inventory", path: "catalog/lab-inventory.json" },
 	];
 	return { steps, artifacts };
@@ -283,6 +296,12 @@ export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResul
 			kind: "external",
 			path: "external/correctness-full-external-results.json",
 			expectedCases: external.caseIds,
+		});
+		artifacts.push({
+			id: "external-focused-gate",
+			stepId: "external-focused",
+			kind: "lab-gate",
+			path: "external/correctness-full-lab-gate.json",
 		});
 	}
 	steps.push(sourceCheckStep());

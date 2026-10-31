@@ -2,6 +2,7 @@ import type { Browser, CDPSession, Page } from "playwright";
 import type { BrowserPage, ExternalConfig, RoomUser } from "./types";
 import { CANVAS_OBSERVER_INIT_SCRIPT, installCanvasObserver } from "./canvas-observer";
 import { installPerformanceObserver } from "./performance-observer";
+import { captureLabSnapshot, installLabRuntime, trackLabPage } from "./lab/install";
 
 const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
 	timeoutMs: number;
@@ -69,6 +70,12 @@ const createRoomPage = async (browser: Browser, config: ExternalConfig) => {
 		recordVideo: undefined,
 	});
 	const page = await launchContext.newPage();
+	if (config.labEnabled) {
+		// Must be registered before the first navigation so the lab runtime exists
+		// before any application script runs.
+		await installLabRuntime(page);
+		trackLabPage(page);
+	}
 	await installPerformanceObserver(page);
 
 	let client: CDPSession | null = null;
@@ -81,6 +88,9 @@ const createRoomPage = async (browser: Browser, config: ExternalConfig) => {
 		page,
 		client,
 		close: async () => {
+			if (config.labEnabled) {
+				await captureLabSnapshot(page).catch(() => undefined);
+			}
 			await client?.detach().catch(() => undefined);
 			await launchContext.close();
 		},

@@ -161,6 +161,63 @@ only compare a run against a baseline produced the same way on the same machine.
 Re-baseline with `benchmark:external:set-baseline`, then regenerate budgets with
 `node scripts/regen-budgets.mjs`.
 
+## Lab Runner Modes
+
+`tests/run-system.ts` owns both the legacy interactive profiles and the managed lab profiles.
+Lab profiles always write a v2 run manifest, fail-closed evidence, and a lab report.
+
+| Profile | Command | Intent | Performance |
+| --- | --- | --- | --- |
+| `single` | `npm run test:single -- --only=file:<path>` / `--since=<git-ref>` | 单点：只跑刚改动的测试目标，不写基线/历史/latest | off |
+| `smoke` | `npm run test:smoke` | catalog-check + 四个 vitest project + correctness-smoke external | off |
+| `ci` | `npm run test:ci` | 与旧 CI 证据链一致（build/vet/go test/coverage/browser/correctness-full）+ 采集门禁 | `--perf=request` 可选，只产 `perf-request.json` |
+| `nightly` | `npm run test:nightly` | ci 全量 + 4 环境性能矩阵 + race/fuzz + 模块债务清单 | on |
+
+`single` selectors: `case:<external-case-id>[,<id>]`、`file:<path>`、`test:<substring>`、`go:<pkg>[#TestName]`；
+`--since=<ref>` 会用 `git diff --name-only <ref>...HEAD` 加未跟踪文件，经 `tests/lab/resolve-only.ts` 映射到 owner test。
+重跑入口：`--rerun-of=<runId> --scope=run|scenario|case --ids=<csv>`，由 `scripts/lab-serve.mjs` 调用。
+
+## Run Manifest v2 and Measurement Validity
+
+`tests/report/contract.ts` schemaVersion 2 adds `mode`, `validity {status:"valid"|"degraded"|"invalid", aborted, reasons[]}`,
+`recorded`, `rerun`, `measurement`, and three artifact kinds: `lab-gate`, `lab-inventory`, `perf-request`.
+
+Validity codes are defined in `VALIDITY_CODES` (MISSING_MARK, EXTERNAL_DISAGREEMENT, PAGE_CONSOLE_ERROR, LAB_RUNTIME_MISSING, ...).
+They describe **measurement** failures; a product failure stays an ordinary failed test. The rules:
+
+- one invalid case → printed as `[lab][invalid-case]`, case becomes failed, run continues (collect every problem);
+- one scenario whose every case is invalid → the run aborts, the report is still written, `validity.aborted=true`, and nothing is recorded;
+- `recorded=false` (single mode, rerun, dirty nightly) never moves `tests/reports/summary/latest.json`;
+- baseline/history are only written for valid, clean-tree runs (`apps/frontend/tests/e2e/external/runner.ts`).
+
+Exit codes: `0` passed, `1` test/gate failure, `2` harness or usage error, `3` measurement aborted, `130` interrupted.
+
+## Runtime Instrumentation Contract
+
+`apps/frontend/src/instrumentation/labMarks.ts` owns `window.__AEVIA_LAB__`
+(`{contractVersion, enabled, marks[], counters, dropped}`) and `labMark/labCounter/labSpanStart/labSpanEnd/mergeWorkerMarks`.
+It is disabled unless the harness injects `window.__AEVIA_LAB__.enabled = true` **before application scripts run**
+(`page.addInitScript`), so production behaviour is unchanged; disabled calls cost one boolean check.
+
+Mark vocabulary (single source: `labMarkNames.ts`): `aevia.init.meta`, `aevia.init.first-chunk`,
+`aevia.init.render-complete`, `aevia.init.commands-complete`, `aevia.worker.first-paint`, `aevia.page.change`,
+`aevia.delta.meta`, `aevia.delta.complete`, `aevia.ws.open/message/send`, `aevia.pointer.down`,
+`aevia.local.paint-done`, `aevia.frame.commit`, plus session/render events mapped through `labPlugin.ts`.
+
+**Never compute a duration across threads.** worker marks carry worker-local time; cross-thread spans are settled on the
+main thread at the moment it receives the worker message (`lab:marks` batches are merged by `renderWorkerBridge.ts`).
+`tests/lab/instrumentation-guard.spec.ts` fails if `performance.mark(` appears outside `src/instrumentation/` or if the
+name table drifts (duplicates, missing `aevia.` prefix).
+
+## Module Test-Debt Inventory
+
+`tests/catalog/module-obligations.json` lists every frontend source module and every Go source file exactly once with
+`state: covered|partial|uncovered|excluded`. `scripts/lab-inventory.mjs` regenerates it (`--check` fails on a stale
+catalog, `--out <path>` writes a run-scoped snapshot). `tests/report/module-obligations.spec.ts` enforces:
+complete coverage of the source tree, honest owners (frontend spec files / same-package Go test files), excluded entries
+with a reason, and catalog freshness. Nightly records the snapshot as `lab-inventory` evidence; new uncovered files fail
+the evidence check instead of silently growing debt.
+
 ## Verification
 
 For benchmark harness script changes, use the smallest direct run that exercises the changed path. If local frontend/backend are not running, start them carefully and remember backend dev resets the DB.
