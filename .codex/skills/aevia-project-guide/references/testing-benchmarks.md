@@ -173,6 +173,10 @@ Lab profiles always write a v2 run manifest, fail-closed evidence, and a lab rep
 | `ci` | `npm run test:ci` | 与旧 CI 证据链一致（build/vet/go test/coverage/browser/correctness-full）+ 采集门禁 | `--perf=request` 可选，只产 `perf-request.json` |
 | `nightly` | `npm run test:nightly` | ci 全量 + 性能（standard/resilience/boundary 分三轮，boundary 前重置隔离库）+ race/fuzz + 模块债务清单 | on |
 
+Nightly probes `go test -race` once while building the plan: hosts without a usable CGO toolchain omit that step with a
+printed note instead of failing the run (the failure is an environment problem, not a product regression).
+`AEVIA_NIGHTLY_BOUNDARY_SCALES=100000,250000` shortens the boundary ladder for a local smoke of the nightly shape.
+
 `single` selectors: `case:<external-case-id>[,<id>]`、`file:<path>`、`test:<substring>`、`go:<pkg>[#TestName]`；
 `--since=<ref>` 会用 `git diff --name-only <ref>...HEAD` 加未跟踪文件，经 `tests/lab/resolve-only.ts` 映射到 owner test。
 重跑入口：`--rerun-of=<runId> --scope=run|scenario|case --ids=<csv>`，由 `scripts/lab-serve.mjs` 调用。

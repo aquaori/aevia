@@ -1201,6 +1201,9 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 	const { steps, artifacts } = isCoreProfile(profile)
 		? managedEvidencePlan(profile, runDir, runId, source)
 		: buildLabEvidencePlan(profile, planContext, options.selection);
+	if (profile === "nightly" && !steps.some((step) => step.id === "go-race")) {
+		print("[lab] go-race skipped: this host cannot build the race detector (usable CGO toolchain unavailable)");
+	}
 	const mode = managedModeOf(profile);
 	const recorded = profile !== "single" && options.rerunOf === undefined && (profile !== "nightly" || cleanTree);
 	const manifest: RunManifest = {
