@@ -32,7 +32,7 @@ import { logEnvironment, logReport, logRunHeader } from "./cli-progress";
 import { readSourceIdentity } from "../../../../../tests/report/provenance";
 import { resolveChromiumLaunchOptions, selectedBrowser, selectedBrowserType } from "../../../../../tests/browser-launch";
 import type { LabGateReport, ValidityReason } from "../../../../../tests/report/contract";
-import { contractMarkNames } from "./lab/contracts";
+import { contractMarksForCase } from "./lab/contracts";
 import { buildGateReport, evaluationReason, labScenarioKey, LabAbortError, neutralCaseEvaluation } from "./lab/evaluate";
 import { labInstrumentationSummary, resetLabAccumulator } from "./lab/install";
 import { resolveLabPolicy } from "./lab/policy";
@@ -186,6 +186,10 @@ const detectAbort = (
 	return null;
 };
 
+const requiredMarkNames = (results: CaseResult[]): string[] => [
+	...new Set(results.flatMap((result) => contractMarksForCase(result.id))),
+].sort();
+
 const buildGate = (
 	config: ExternalConfig,
 	results: CaseResult[],
@@ -196,7 +200,7 @@ const buildGate = (
 		caseSet: config.caseSet,
 		evaluations: evaluationsOf(config, results),
 		instrumentation: config.labEnabled
-			? labInstrumentationSummary(contractMarkNames())
+			? labInstrumentationSummary(requiredMarkNames(results))
 			: { enabled: false, contractVersion: null, missingMarks: [] },
 		policy: resolveLabPolicy(),
 		aborted,
