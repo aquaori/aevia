@@ -13,7 +13,6 @@ import {
 	captureCanvasSample,
 	roiAround,
 	saveCanvasPng,
-	waitForVisibleScreenshotBlank,
 	waitForVisibleScreenshotContent,
 	waitForCanvasChange,
 	waitForNonBlankCanvas,
@@ -1073,8 +1072,8 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 		const secondStrokeRegion = roiAround(730, 350);
 		await pressUndo(pageB.page);
 		const [undoneA, undoneB, preservedA, preservedB] = await Promise.all([
-			waitForVisibleScreenshotBlank(pageA.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
-			waitForVisibleScreenshotBlank(pageB.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
+			waitForCanvasRegionBlank(pageA.page, secondStrokeRegion),
+			waitForCanvasRegionBlank(pageB.page, secondStrokeRegion),
 			waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
 			waitForVisibleScreenshotContent(pageB.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
 		]);
@@ -1100,7 +1099,7 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 		await pageA.page.locator('button[title="上一页"]').click();
 		await waitForPageIndicator(pageA.page, "1/2");
 		const revisit = await waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 5000 });
-		const pageIsolation = await waitForVisibleScreenshotBlank(pageA.page, { roi: newPageRegion, timeoutMs: 5000 });
+		const pageIsolation = await waitForCanvasRegionBlank(pageA.page, newPageRegion, 5000);
 		const diff = await compareCanvasPages(pageA.page, pageB.page, {
 			diffPath: path.join(dir, "final-diff.png"),
 			threshold: 0.01,
@@ -1138,14 +1137,14 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 				remoteFirstPixelMsBtoA: aChanged.elapsedMs,
 				framesToFirstPixelBtoA: aChanged.frames,
 				finalConsistencyDiffRatio: diff.diffRatio,
-				undoTargetBlankRatioA: undoneA.sample.nonBlankRatio,
-				undoTargetBlankRatioB: undoneB.sample.nonBlankRatio,
+				undoTargetBlankRatioA: undoneA.nonBlankRatio,
+				undoTargetBlankRatioB: undoneB.nonBlankRatio,
 				undoOtherStrokeRatioA: preservedA.sample.nonBlankRatio,
 				undoOtherStrokeRatioB: preservedB.sample.nonBlankRatio,
 				redoTargetVisibleRatioA: redoneA.sample.nonBlankRatio,
 				redoTargetVisibleRatioB: redoneB.sample.nonBlankRatio,
 				pageReturnVisibleRatio: revisit.sample.nonBlankRatio,
-				pageTwoLeakRatioAfterReturn: pageIsolation.sample.nonBlankRatio,
+				pageTwoLeakRatioAfterReturn: pageIsolation.nonBlankRatio,
 				visibleScreenshotOracle: true,
 			},
 			artifacts,
@@ -1259,7 +1258,7 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 		logStep(`multipage regions: canvas=${canvasBounds.width}x${canvasBounds.height} p0=${JSON.stringify(page0Region)} p1=${JSON.stringify(page1Region)}`);
 		const page0Path = await saveCanvasPng(observer.page, path.join(dir, "page-0.png"));
 		const page0Own = await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page0Region });
-		const page0Leak = await waitForVisibleScreenshotBlank(observer.page, { timeoutMs: 1500, roi: page1Region });
+		const page0Leak = await waitForCanvasRegionBlank(observer.page, page1Region, 1500);
 		await saveCanvasPng(observer.page, page0Path);
 		const pageSwitchStartedAt = performance.now();
 		await observer.page.locator('button[title="下一页"]').click();
@@ -1267,7 +1266,7 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 		const page1Path = await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
 		const page1 = await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page1Region });
 		const page1ClickToObservedScreenshotMs = performance.now() - pageSwitchStartedAt;
-		const page1Leak = await waitForVisibleScreenshotBlank(observer.page, { timeoutMs: 1500, roi: page0Region });
+		const page1Leak = await waitForCanvasRegionBlank(observer.page, page0Region, 1500);
 		await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
 		await observer.page.locator('button[title="上一页"]').click();
 		await waitForPageIndicator("1/2");
@@ -1280,11 +1279,11 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			failureType: "none",
 			metrics: {
 				page0ExpectedRegionRatio: page0Own.sample.nonBlankRatio,
-				page0OtherPageRegionRatio: page0Leak.sample.nonBlankRatio,
+				page0OtherPageRegionRatio: page0Leak.nonBlankRatio,
 				page1ClickToObservedScreenshotMs,
 				page1ExpectedRegionRatio: page1.sample.nonBlankRatio,
-				page1OtherPageRegionRatio: page1Leak.sample.nonBlankRatio,
-				pixelOracleSource: "visible-screenshot",
+				page1OtherPageRegionRatio: page1Leak.nonBlankRatio,
+				pixelOracleSource: "canvas-readback-leak+visible-content",
 			},
 			artifacts: [page0Path, page1Path, page0ReturnPath],
 		};

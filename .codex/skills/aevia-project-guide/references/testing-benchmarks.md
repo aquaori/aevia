@@ -130,7 +130,7 @@ Run direct runner commands from `apps/frontend`, because `config.ts` builds path
 - Keep report output changes aligned with `tests/report/aggregate.ts` if root summary generation consumes them.
 - Protocol-driver V2 commands must use the trusted `userId` received in `init-meta`, not a locally invented join-response fallback, or strict gateway validation will reject them.
 - Scene correctness lives primarily in `src/scene/sceneEngine.spec.ts`: arrival-order convergence, point/glyph interleaving, transform and erase history, page clear, RGA siblings, exact hit testing, and grid locality.
-- Blank-region assertions in convergence cases use **canvas readback** (`captureCanvasSample`), not full-page screenshots: screenshots include UI overlays (remote cursor, hover) that can keep a genuinely empty canvas region above the non-blank threshold and cause flaky timeouts.
+- Blank-region assertions in convergence cases use **canvas readback** (`captureCanvasSample`), not full-page screenshots: screenshots include UI overlays (remote cursor, hover) that can keep a genuinely empty canvas region above the non-blank threshold and cause flaky timeouts. The same applies to `correctness-smoke`'s undo-target blank check and the multipage isolation leak checks; visible-screenshot checks remain for "the expected region has content" only.
 
 ## Benchmark Database Hygiene
 
