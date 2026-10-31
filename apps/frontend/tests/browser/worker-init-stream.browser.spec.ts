@@ -98,6 +98,19 @@ const countPaintedPixels = async (canvas: HTMLCanvasElement) => {
 	return painted;
 };
 
+const waitForPaintedPixels = async (
+	canvas: HTMLCanvasElement,
+	predicate: (painted: number) => boolean
+): Promise<number> => {
+	const deadline = Date.now() + 3000;
+	let painted = await countPaintedPixels(canvas);
+	while (!predicate(painted) && Date.now() < deadline) {
+		await waitForFrames();
+		painted = await countPaintedPixels(canvas);
+	}
+	return painted;
+};
+
 const flatPointsFromScene = (worker: Worker) =>
 	request<{ points: Array<{ cmdId: string; x: number; y: number }> }>(
 		worker,
@@ -184,8 +197,9 @@ describe("canvas worker init render stream", () => {
 		);
 		const afterChunk = await flatPointsFromScene(worker);
 		expect(afterChunk.points).toHaveLength(3);
-		await waitForFrames();
-		expect(await countPaintedPixels(canvas)).toBeGreaterThan(0);
+		// Worker painting happens on a later animation frame; under load two fixed frames are
+		// not enough, so wait for the first painted pixel with a bounded deadline instead.
+		expect(await waitForPaintedPixels(canvas, (painted) => painted > 0)).toBeGreaterThan(0);
 
 		// init completion settles the scene: the worker keeps the ingested points.
 		worker.postMessage({ type: "finish-init-stream" });
