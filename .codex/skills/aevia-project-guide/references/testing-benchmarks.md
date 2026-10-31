@@ -197,6 +197,10 @@ They describe **measurement** failures; a product failure stays an ordinary fail
 
 Exit codes: `0` passed, `1` test/gate failure, `2` harness or usage error, `3` measurement aborted, `130` interrupted.
 
+`source-check` re-hashes the working tree at the end of a managed run. When it moved it now names the files that became
+dirty, became clean, or changed in place, plus a hint: editing files while a run executes is indistinguishable from a
+reproducibility bug otherwise. The run also warns at start when the tree is already dirty.
+
 ## Runtime Instrumentation Contract
 
 `apps/frontend/src/instrumentation/labMarks.ts` owns `window.__AEVIA_LAB__`

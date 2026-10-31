@@ -14,6 +14,7 @@ import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
 import { resolveOnlySelectors, resolveSinceRef, type LabResolveResult } from "./lab/resolve-only";
 import { buildLabEvidencePlan, type LabPlanContext } from "./lab/evidence-plan";
 import { isLiveConsoleEnabled, startLiveConsole, type LiveConsole } from "./lab/live-console";
+import { describeSourceDrift, describeSourceDriftLines } from "./lab/source-drift";
 
 type Step = {
 	title: string;
@@ -1082,18 +1083,21 @@ const runEvidenceStep = async (
 	try {
 		if (step.action === "source-check") {
 			const source = readSourceIdentity(canonicalRootDir);
-			const addedUntracked = (source.untrackedFiles || []).filter((item) => !(manifest.source.untrackedFiles || []).includes(item));
-			const removedUntracked = (manifest.source.untrackedFiles || []).filter((item) => !(source.untrackedFiles || []).includes(item));
-			if (
-				source.revision !== manifest.source.revision ||
-				source.dirtyPatchSha256 !== manifest.source.dirtyPatchSha256
-			) throw new Error([
-				"Source revision or dirty-file fingerprint changed during the test run",
-				`expected=${manifest.source.revision}/${manifest.source.dirtyPatchSha256}`,
-				`actual=${source.revision}/${source.dirtyPatchSha256}`,
-				addedUntracked.length ? `new untracked files: ${addedUntracked.join(", ")}` : "",
-				removedUntracked.length ? `removed untracked files: ${removedUntracked.join(", ")}` : "",
-			].filter(Boolean).join("; "));
+			const before = {
+				revision: manifest.source.revision,
+				dirtyPatchSha256: manifest.source.dirtyPatchSha256,
+				trackedChanges: manifest.source.trackedChanges,
+				untrackedFiles: manifest.source.untrackedFiles,
+			};
+			const drift = describeSourceDrift(before, source);
+			if (drift.revisionChanged || drift.fingerprintChanged) {
+				throw new Error([
+					"Source revision or dirty-file fingerprint changed during the test run",
+					`expected=${manifest.source.revision}/${manifest.source.dirtyPatchSha256}`,
+					`actual=${source.revision}/${source.dirtyPatchSha256}`,
+					...describeSourceDriftLines(drift, before),
+				].filter(Boolean).join("\n"));
+			}
 		} else {
 			if (step.freshServices) await resetExternalServices();
 			else if (step.requiresServices && !activeExternalServices) await startExternalServices();
@@ -1181,6 +1185,11 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 		"utf8"
 	);
 	const cleanTree = source.dirtyPatchSha256 === createHash("sha256").update("").digest("hex");
+	if (!cleanTree) {
+		print(
+			`[lab] working tree is dirty at start (${(source.trackedChanges || []).length} tracked, ${(source.untrackedFiles || []).length} untracked); source-check fails if anything changes before the run ends`
+		);
+	}
 	const planContext: LabPlanContext = {
 		runDir,
 		rootDir,
