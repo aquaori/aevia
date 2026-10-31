@@ -246,6 +246,29 @@ Rerun spawns `tsx tests/run-system.ts --profile=<manifest.profile> --rerun-of=<r
 a case-scoped rerun on a core profile runs through `single` mode, and the report's `rerunOf` block records the link.
 Opening the HTML straight from disk keeps every button disabled with a "需 npm run lab:serve" hint.
 
+## Live Console (temporary pipeline page)
+
+Every managed mode except `ci` starts a temporary loopback console at run start and prints its URL
+(`[lab-live] console: http://127.0.0.1:<port>/?token=...`). It is not the report page: it is a live
+pipeline view served from the runner process itself.
+
+- HTTP + WebSocket on `127.0.0.1` only (random port). The WebSocket and the cancel message require a
+  per-process random token, so another local page cannot drive the run.
+- Streams: step status/durations, the current step's log tail, and E2E case results parsed from the
+  external runner's `✓/✕ [..] <case> passed|failed` lines. A connected viewer also makes the run
+  cancellable from the browser (kills the step process, stops services, exits `130` with status
+  `cancelled`).
+- On finish it pushes `done {status, validity, recorded, reportUrl, reportPath, exitCode}`, where
+  `reportUrl` points at the report served from the same console (`/report/<runId>/test-report.html`).
+  The server stays alive for the grace period only when a viewer is connected; otherwise it closes
+  immediately so scripted local runs do not hang. `file://` report links are never used.
+- Flags: `--live=on|off` (default: on for every mode except `ci`), `--live-open` (best-effort browser
+  launch), `--live-port`, `--live-grace-ms` (default 30000). Env equivalents: `AEVIA_LIVE`,
+  `AEVIA_LIVE_OPEN`, `AEVIA_LIVE_PORT`, `AEVIA_LIVE_GRACE_MS`. `npm run test:ci` therefore prints no
+  console URL; set `AEVIA_LIVE=on` only when debugging a CI-shaped run locally.
+- Protocol/security checks live in `tests/lab/live-console.spec.ts` (buffered WebSocket frames,
+  token rejection, report traversal, cancellation forwarding).
+
 ## Verification
 
 For benchmark harness script changes, use the smallest direct run that exercises the changed path. If local frontend/backend are not running, start them carefully and remember backend dev resets the DB.

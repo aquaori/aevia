@@ -13,6 +13,7 @@ import { browserAvailability, selectedBrowser } from "./browser-launch";
 import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
 import { resolveOnlySelectors, resolveSinceRef, type LabResolveResult } from "./lab/resolve-only";
 import { buildLabEvidencePlan, type LabPlanContext } from "./lab/evidence-plan";
+import { isLiveConsoleEnabled, startLiveConsole, type LiveConsole } from "./lab/live-console";
 
 type Step = {
 	title: string;
@@ -101,6 +102,7 @@ const spinnerFrames = ["-", "\\", "|", "/"];
 let activeExternalServices: ExternalServices | undefined;
 let activeTestProcess: ChildProcess | undefined;
 let interruptedSignal: "SIGINT" | "SIGTERM" | undefined;
+let activeLiveConsole: LiveConsole | undefined;
 
 const dateTag = () => new Date().toISOString().replace(/[:.]/g, "-");
 const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
@@ -405,6 +407,19 @@ const argValues = (name: string) => {
 	return process.argv.filter((arg) => arg.startsWith(prefix)).map((arg) => arg.slice(prefix.length));
 };
 
+const liveConsoleRequested = (mode: string) => {
+	const raw = (argValue("live") || "").trim().toLowerCase();
+	if (raw === "off" || raw === "false" || raw === "0" || raw === "no") return false;
+	if (raw === "on" || raw === "true" || raw === "1" || raw === "yes") return true;
+	return isLiveConsoleEnabled(mode);
+};
+
+const liveConsoleOptions = () => ({
+	port: Math.max(0, Number(argValue("live-port") || process.env.AEVIA_LIVE_PORT || 0)) || 0,
+	open: hasArg("live-open") || process.env.AEVIA_LIVE_OPEN === "1",
+	graceMs: Math.max(0, Number(argValue("live-grace-ms") || process.env.AEVIA_LIVE_GRACE_MS || 30_000)) || 0,
+});
+
 const hasArg = (name: string) => process.argv.includes(`--${name}`);
 
 const argBoolean = (name: string, defaultValue: boolean) => {
@@ -550,6 +565,7 @@ const runStep = (step: Step, index: number, total: number) =>
 		print("");
 		print(`[${index}/${total}] ${step.title}`);
 		print(`    ${step.description}`);
+		activeLiveConsole?.stepStart(`legacy-${index}`);
 		const timer = setInterval(() => {
 			const frame = spinnerFrames[spinnerIndex % spinnerFrames.length];
 			spinnerIndex += 1;
@@ -574,6 +590,7 @@ const runStep = (step: Step, index: number, total: number) =>
 				}
 				tail.push(`${isError ? "stderr" : "stdout"}: ${line}`);
 				if (tail.length > 30) tail.shift();
+				activeLiveConsole?.log(`legacy-${index}`, line, isError ? "stderr" : "stdout");
 			}
 		};
 
@@ -583,6 +600,12 @@ const runStep = (step: Step, index: number, total: number) =>
 			clearInterval(timer);
 			if (activeTestProcess === child) activeTestProcess = undefined;
 			process.stdout.write(`\r${" ".repeat(100)}\r`);
+			activeLiveConsole?.stepEnd({
+				id: `legacy-${index}`,
+				status: "failed",
+				durationMs: Date.now() - stepStartedAt,
+				error: error.message,
+			});
 			reject(error);
 		});
 		child.on("close", (code) => {
@@ -591,10 +614,21 @@ const runStep = (step: Step, index: number, total: number) =>
 			process.stdout.write(`\r${" ".repeat(100)}\r`);
 			if (code === 0) {
 				print(`    ✓ completed in ${formatDuration(Date.now() - stepStartedAt)}`);
+				activeLiveConsole?.stepEnd({
+					id: `legacy-${index}`,
+					status: "passed",
+					durationMs: Date.now() - stepStartedAt,
+				});
 				resolve();
 				return;
 			}
 			print(`    ✕ failed in ${formatDuration(Date.now() - stepStartedAt)} (exit ${code})`);
+			activeLiveConsole?.stepEnd({
+				id: `legacy-${index}`,
+				status: "failed",
+				durationMs: Date.now() - stepStartedAt,
+				error: `exited with code ${code}`,
+			});
 			if (step.failureReport) printVitestFailures(step.failureReport);
 			if (!step.streamOutput && tail.length > 0) {
 				print("    last output:");
@@ -1010,6 +1044,7 @@ const runEvidenceStep = async (
 	record.status = "running";
 	record.startedAt = startedAt.toISOString();
 	persistManifest(manifestPath, manifest);
+	activeLiveConsole?.stepStart(step.id);
 	const logPath = path.join(runDir, "logs", `${step.id}.log`);
 	record.logPath = path.relative(runDir, logPath).replaceAll("\\", "/");
 	let stdout = "";
@@ -1050,8 +1085,16 @@ const runEvidenceStep = async (
 				timedOut = true;
 				stopProcessTree(child);
 			}, step.timeoutMs || 300000);
-			child.stdout?.on("data", (chunk) => { stdout += chunk.toString(); });
-			child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
+			child.stdout?.on("data", (chunk) => {
+				const text = chunk.toString();
+				stdout += text;
+				activeLiveConsole?.log(step.id, text, "stdout");
+			});
+			child.stderr?.on("data", (chunk) => {
+				const text = chunk.toString();
+				stderr += text;
+				activeLiveConsole?.log(step.id, text, "stderr");
+			});
 			try {
 				exitCode = await new Promise<number | null>((resolve, reject) => {
 					child.once("error", reject);
@@ -1080,6 +1123,12 @@ const runEvidenceStep = async (
 	record.status = interruptedSignal ? "cancelled" : errorMessage ? "failed" : "passed";
 	if (errorMessage) record.error = errorMessage;
 	persistManifest(manifestPath, manifest);
+	activeLiveConsole?.stepEnd({
+		id: step.id,
+		status: record.status,
+		durationMs: record.durationMs,
+		error: record.error,
+	});
 	print(`    ${record.status === "passed" ? "✓" : "✕"} ${step.title} (${formatDuration(record.durationMs)})`);
 	if (record.status !== "passed" && errorMessage) {
 		for (const line of errorMessage.split(/\r?\n/)) print(`      ${line}`);
@@ -1146,6 +1195,29 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 	const manifestPath = path.join(runDir, "run-manifest.json");
 	persistManifest(manifestPath, manifest);
 	print(`Run ${runId} · profile=${profile} · source=${source.revision}`);
+	if (liveConsoleRequested(mode)) {
+		try {
+			activeLiveConsole = await startLiveConsole({
+				runId,
+				mode,
+				profile,
+				steps: steps.map((step) => ({ id: step.id, title: step.title })),
+				runDir,
+				print,
+				...liveConsoleOptions(),
+				onCancel: () => {
+					if (interruptedSignal) return;
+					interruptedSignal = "SIGTERM";
+					print("[lab-live] cancellation requested from the live console");
+					if (activeTestProcess) stopProcessTree(activeTestProcess);
+					void stopExternalServices();
+				},
+			});
+		} catch (error) {
+			print(`[lab-live] console disabled: ${error instanceof Error ? error.message : String(error)}`);
+			activeLiveConsole = undefined;
+		}
+	}
 	let failed = false;
 	try {
 		for (const step of steps) {
@@ -1197,8 +1269,24 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 				print(`[lab][abort] ${reason.scope}:${reason.id} ${reason.code}${reason.detail ? ` (${reason.detail})` : ""}`);
 			}
 		}
+		const liveExitCode = report.status === "passed" ? 0 : manifest.validity.aborted ? 3 : interruptedSignal ? 130 : 1;
+		const liveConsole = activeLiveConsole;
+		activeLiveConsole = undefined;
+		liveConsole?.finish({
+			status: manifest.status === "cancelled" ? "cancelled" : report.status === "passed" ? "passed" : "failed",
+			validity: manifest.validity.status,
+			recorded: manifest.recorded,
+			reportPath: path.join(runDir, "test-report.html"),
+			exitCode: liveExitCode,
+		});
 		if (report.status !== "passed") process.exitCode = manifest.validity.aborted ? 3 : interruptedSignal ? 130 : 1;
 	} catch (error) {
+		activeLiveConsole?.finish({
+			status: interruptedSignal ? "cancelled" : "failed",
+			validity: manifest.validity.status,
+			recorded: manifest.recorded,
+		});
+		activeLiveConsole = undefined;
 		print(`Report generation failed: ${error instanceof Error ? error.message : String(error)}`);
 		process.exitCode = 1;
 	}
@@ -1344,6 +1432,30 @@ const main = async () => {
 	print(`steps=${steps.length}`);
 	print("Detailed build/test tool output is hidden unless a step fails.");
 
+	if (liveConsoleRequested("custom")) {
+		try {
+			activeLiveConsole = await startLiveConsole({
+				runId: `legacy-${Date.now().toString(36)}`,
+				mode: "custom",
+				profile: answers.profile,
+				steps: steps.map((step, index) => ({ id: `legacy-${index + 1}`, title: step.title })),
+				runDir: canonicalRootDir,
+				print,
+				...liveConsoleOptions(),
+				onCancel: () => {
+					if (interruptedSignal) return;
+					interruptedSignal = "SIGTERM";
+					print("[lab-live] cancellation requested from the live console");
+					if (activeTestProcess) stopProcessTree(activeTestProcess);
+					void stopExternalServices();
+				},
+			});
+		} catch (error) {
+			print(`[lab-live] console disabled: ${error instanceof Error ? error.message : String(error)}`);
+			activeLiveConsole = undefined;
+		}
+	}
+
 	try {
 		for (const [index, step] of steps.entries()) {
 			if (step.requiresServices && !activeExternalServices) {
@@ -1364,6 +1476,11 @@ const main = async () => {
 		process.exitCode = 1;
 	} finally {
 		await stopExternalServices();
+		const liveConsole = activeLiveConsole;
+		activeLiveConsole = undefined;
+		liveConsole?.finish({
+			status: interruptedSignal ? "cancelled" : process.exitCode ? "failed" : "passed",
+		});
 	}
 };
 
