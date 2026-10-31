@@ -283,6 +283,7 @@ describe("lab measurement gate aggregation", () => {
 			total: 3,
 			covered: 1,
 			partial: 1,
+			uncovered: 0,
 			excluded: 1,
 			unresolvedIds: ["go:internal/console", "frontend:src/foo.ts"],
 		});

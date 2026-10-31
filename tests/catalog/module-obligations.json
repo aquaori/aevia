@@ -1,0 +1,840 @@
+{
+  "schemaVersion": 1,
+  "scope": "Every frontend source module and every Go source file must be either owned by a test or explicitly excluded with a reason.",
+  "obligations": [
+    {
+      "id": "frontend:apps/frontend/src/App.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/App.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomConnectionOverlays.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomConnectionOverlays.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomHeader.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomHeader.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomMemberList.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomMemberList.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomPageOverview.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomPageOverview.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomPagination.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomPagination.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomShortcutsDialog.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomShortcutsDialog.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomSizePreview.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomSizePreview.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomTextEditor.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomTextEditor.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/components/RoomToolbar.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomToolbar.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/config/endpoints.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/config/endpoints.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/interactionController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/interactionController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomCommandController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomCommandController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomEditorController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomEditorController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomHeaderController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomHeaderController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomKeyboardController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomKeyboardController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomLifecycleController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomLifecycleController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomPanelController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomPanelController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomPointerController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomPointerController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/controllers/roomToolController.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/controllers/roomToolController.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/instrumentation/labMarkNames.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/instrumentation/labMarkNames.ts",
+      "state": "covered",
+      "owner": "tests/lab/instrumentation-guard.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/instrumentation/labMarks.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/instrumentation/labMarks.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/instrumentation/labPlugin.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/instrumentation/labPlugin.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/main.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/main.ts",
+      "state": "excluded",
+      "reason": "Vue 应用装配入口，只有副作用式 bootstrap，由 e2e 间接覆盖"
+    },
+    {
+      "id": "frontend:apps/frontend/src/router/index.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/router/index.ts",
+      "state": "covered",
+      "owner": "tests/report/feature-obligations.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/dirtyRegionSet.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/dirtyRegionSet.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneEngine.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/eraseGeometry.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/eraseGeometry.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneEngine.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/graphemes.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/graphemes.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/matrix.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/matrix.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/primitiveRenderer.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/primitiveRenderer.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/renderOrderIndex.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/renderOrderIndex.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/sceneEngine.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/sceneEngine.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneEngine.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/sceneTypes.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/sceneTypes.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneEngine.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/spatialGridIndex.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/spatialGridIndex.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/spatialGridIndex.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/strokeCompiler.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/strokeCompiler.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/toolRegistry.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/toolRegistry.ts",
+      "state": "covered",
+      "owner": "tests/report/feature-obligations.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/canvas.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/canvas.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/commandDirtyRect.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/canvasRuntime.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/canvasRuntime.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/collabCommandHandlers.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/collabCommandHandlers.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/collabDispatcherTypes.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/collabDispatcherTypes.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/collabMessageDispatcher.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/collabMessageDispatcher.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/collabPresenceHandlers.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/collabPresenceHandlers.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/collabPressurePolicy.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/collabPressurePolicy.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/collabProtocol.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/collabProtocol.ts",
+      "state": "covered",
+      "owner": "packages/shared/src/protocol/collabProtocol.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/commandDirtyRect.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/commandDirtyRect.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/commandDirtyRect.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/dirtyPointBus.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/dirtyPointBus.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/dirtyRenderQueue.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/dirtyRenderQueue.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/dirtyRenderQueue.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/localCommandService.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/localCommandService.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/localCommandService.unit.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/pageOverviewService.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/pageOverviewService.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/realtimeBinary.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/realtimeBinary.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/realtimeBinary.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/renderWorkerBridge.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/renderWorkerBridge.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/renderWorkerBridge.unit.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/roomCanvasOverlay.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/roomCanvasOverlay.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/roomCollabTransport.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/roomCollabTransport.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/roomPageService.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/roomPageService.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/roomSessionContext.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/roomSessionContext.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/sessionApi.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/sessionApi.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/strokeInputSampler.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/strokeInputSampler.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/strokeInputSampler.unit.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/strokeRasterizer.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/strokeRasterizer.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/strokeRasterizer.unit.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/whiteboardSession.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/whiteboardSession.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/states/roomEditorState.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/states/roomEditorState.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/states/roomInteractionState.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/states/roomInteractionState.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/states/roomSessionState.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/states/roomSessionState.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/states/roomUiState.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/states/roomUiState.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/store/commandStore.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/store/commandStore.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/store/commandStore.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/store/lamportStore.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/store/lamportStore.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/store/userStore.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/store/userStore.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/utils/dirtyRedraw.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/utils/dirtyRedraw.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/utils/editorEventBus.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/utils/editorEventBus.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/utils/editorTypes.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/utils/editorTypes.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/utils/geometry.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/utils/geometry.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/utils/geometry.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/utils/type.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/utils/type.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/utils/geometry.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/views/HomeView.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/views/HomeView.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/views/InviteView.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/views/InviteView.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/views/RoomView.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/views/RoomView.vue",
+      "state": "uncovered"
+    },
+    {
+      "id": "frontend:apps/frontend/src/workers/canvasWorker.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/workers/canvasWorker.ts",
+      "state": "uncovered"
+    },
+    {
+      "id": "go:apps/backend/cmd/aevia-backend/main.go",
+      "kind": "go",
+      "path": "apps/backend/cmd/aevia-backend/main.go",
+      "state": "uncovered"
+    },
+    {
+      "id": "go:apps/backend/internal/auth/password.go",
+      "kind": "go",
+      "path": "apps/backend/internal/auth/password.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/auth/legacy_hash_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/auth/token.go",
+      "kind": "go",
+      "path": "apps/backend/internal/auth/token.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/auth/legacy_hash_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/config/config.go",
+      "kind": "go",
+      "path": "apps/backend/internal/config/config.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/config/config_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/console/color.go",
+      "kind": "go",
+      "path": "apps/backend/internal/console/color.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/console/handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/console/handler.go",
+      "kind": "go",
+      "path": "apps/backend/internal/console/handler.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/console/handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/console/panel.go",
+      "kind": "go",
+      "path": "apps/backend/internal/console/panel.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/console/handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/domain/types.go",
+      "kind": "go",
+      "path": "apps/backend/internal/domain/types.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/domain/types_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/health_handlers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/health_handlers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/http_helpers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/http_helpers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/metrics_handler.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/metrics_handler.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/middleware.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/middleware.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/origin.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/origin.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/page_review_handler.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/page_review_handler.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/random.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/random.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/rate_limiter.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/rate_limiter.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/room_handlers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/room_handlers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/scene_validation.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/scene_validation.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/server.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/server.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/session_tokens.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/session_tokens.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/v2_placeholders.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/v2_placeholders.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/ws_handler.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/ws_handler.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/ws_limits.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/ws_limits.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/ws_messages.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/ws_messages.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/protocol/realtime.go",
+      "kind": "go",
+      "path": "apps/backend/internal/protocol/realtime.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/protocol/realtime_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/protocol/render_chunk.go",
+      "kind": "go",
+      "path": "apps/backend/internal/protocol/render_chunk.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/protocol/realtime_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/actor.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/actor.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/batch_events.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/batch_events.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/delta_buffer.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/delta_buffer.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/event_decode.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/event_decode.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/events.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/events.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/index.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/index.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/messages.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/messages.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/metrics.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/metrics.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/persistence.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/persistence.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/pressure.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/pressure.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/registry.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/registry.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/sequencing.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/sequencing.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/snapshot_builder.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/snapshot_builder.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/snapshot.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/snapshot.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/state.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/state.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/stream_send.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/stream_send.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/types.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/types.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/room/window.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/window.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/checkpoint.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/checkpoint.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/commands.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/commands.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/migrations.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/migrations.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/rooms.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/rooms.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/server_state.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/server_state.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/store.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/store.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/write_ops.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/write_ops.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/writer.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/writer.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    }
+  ]
+}

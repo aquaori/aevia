@@ -121,7 +121,7 @@ export type LabInventoryObligation = {
 	id: string;
 	kind: "frontend" | "go";
 	path: string;
-	state: "covered" | "partial" | "excluded";
+	state: "covered" | "partial" | "uncovered" | "excluded";
 	owner?: string;
 	reason?: string;
 };

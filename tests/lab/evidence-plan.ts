@@ -185,6 +185,14 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			cwd: ctx.backendDir,
 			timeoutMs: 180000,
 		},
+		{
+			id: "lab-inventory",
+			title: "Module test-debt inventory",
+			description: "Recording every frontend module and Go source file with its owning test or its uncovered status.",
+			command: `node scripts/lab-inventory.mjs --out ${q(ctx, path.join(ctx.runDir, "catalog", "lab-inventory.json"))}`,
+			cwd: ctx.canonicalRootDir,
+			timeoutMs: 60000,
+		},
 		sourceCheckStep(),
 	];
 	const artifacts: ExpectedArtifact[] = [
@@ -214,6 +222,7 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			path: "external/correctness-full-external-results.json",
 			expectedCases: CI_REQUIRED_EXTERNAL_CASE_IDS,
 		},
+		{ id: "lab-inventory", stepId: "lab-inventory", kind: "lab-inventory", path: "catalog/lab-inventory.json" },
 	];
 	return { steps, artifacts };
 };

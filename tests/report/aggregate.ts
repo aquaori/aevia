@@ -39,6 +39,7 @@ export type ArtifactResult = {
 		total: number;
 		covered: number;
 		partial: number;
+		uncovered: number;
 		excluded: number;
 		unresolvedIds: string[];
 	};
@@ -480,13 +481,14 @@ const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): Art
 	}
 	const obligations: LabInventoryObligation[] = [];
 	const ids = new Set<string>();
-	const stateCounts = { covered: 0, partial: 0, excluded: 0 };
+	const stateCounts = { covered: 0, partial: 0, uncovered: 0, excluded: 0 };
 	const unresolvedIds: string[] = [];
 	for (const rawObligation of payload.obligations) {
 		if (!isRecord(rawObligation) || typeof rawObligation.id !== "string" || !rawObligation.id.trim() ||
 			(rawObligation.kind !== "frontend" && rawObligation.kind !== "go") ||
 			typeof rawObligation.path !== "string" || !rawObligation.path.trim() ||
-			(rawObligation.state !== "covered" && rawObligation.state !== "partial" && rawObligation.state !== "excluded")) {
+			(rawObligation.state !== "covered" && rawObligation.state !== "partial" &&
+				rawObligation.state !== "uncovered" && rawObligation.state !== "excluded")) {
 			return missingResult(expected, "invalid", "Lab inventory contains a malformed obligation");
 		}
 		if (ids.has(rawObligation.id)) {
@@ -495,7 +497,10 @@ const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): Art
 		if (rawObligation.state === "excluded" && (typeof rawObligation.reason !== "string" || !rawObligation.reason.trim())) {
 			return missingResult(expected, "invalid", `Lab inventory obligation ${rawObligation.id} is excluded without a reason`);
 		}
-		if (rawObligation.state !== "excluded" && (typeof rawObligation.owner !== "string" || !rawObligation.owner.trim())) {
+		if (
+			(rawObligation.state === "covered" || rawObligation.state === "partial") &&
+			(typeof rawObligation.owner !== "string" || !rawObligation.owner.trim())
+		) {
 			return missingResult(expected, "invalid", `Lab inventory obligation ${rawObligation.id} has no owning test`);
 		}
 		ids.add(rawObligation.id);
@@ -522,6 +527,7 @@ const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): Art
 			total: obligations.length,
 			covered: stateCounts.covered,
 			partial: stateCounts.partial,
+			uncovered: stateCounts.uncovered,
 			excluded: stateCounts.excluded,
 			unresolvedIds,
 		},
