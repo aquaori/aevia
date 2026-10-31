@@ -975,16 +975,20 @@ const runEvidenceProfile = async (profile: "quick" | "ci" | "full") => {
 		"utf8"
 	);
 	const { steps, artifacts } = managedEvidencePlan(profile, runDir, runId, source);
+	const mode = profile === "quick" ? "smoke" : profile === "ci" ? "ci" : "nightly";
 	const manifest: RunManifest = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		runId,
 		profile,
+		mode,
 		status: "running",
 		source,
 		startedAt: new Date().toISOString(),
 		expectedSteps: steps.map((step) => step.id),
 		steps: steps.map((step) => ({ id: step.id, title: step.title, status: "pending" })),
 		expectedArtifacts: artifacts,
+		validity: { status: "valid", aborted: false, reasons: [] },
+		recorded: true,
 	};
 	const manifestPath = path.join(runDir, "run-manifest.json");
 	persistManifest(manifestPath, manifest);

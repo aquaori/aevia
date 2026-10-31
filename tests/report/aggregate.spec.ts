@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildAggregate } from "./aggregate";
-import type { RunManifest } from "./contract";
+import { buildAggregate, shouldPublishLatest } from "./aggregate";
+import type { LabGateReport, LabInventoryReport, RunManifest } from "./contract";
 
 const temporaryDirs: string[] = [];
 
@@ -16,13 +16,16 @@ const createFixture = () => {
 	temporaryDirs.push(runDir);
 	const coverageSource = path.join(runDir, "src", "room.ts");
 	const manifest: RunManifest = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		runId: "run-123",
 		profile: "ci",
+		mode: "ci",
 		status: "passed",
 		source: { revision: "a".repeat(40), dirtyPatchSha256: "b".repeat(64) },
 		startedAt: "2026-10-07T00:00:00.000Z",
 		finishedAt: "2026-10-07T00:01:00.000Z",
+		validity: { status: "valid", aborted: false, reasons: [] },
+		recorded: true,
 		expectedSteps: ["verification"],
 		steps: [{ id: "verification", title: "Verification", status: "passed" }],
 		expectedArtifacts: [
@@ -208,5 +211,150 @@ describe("run evidence aggregation", () => {
 		const emptyReport = buildAggregate(manifest, runDir);
 		expect(emptyReport.status).toBe("failed");
 		expect(emptyReport.failures.some((failure) => failure.includes("empty denominator"))).toBe(true);
+	});
+});
+
+const validGatePayload = (): LabGateReport => ({
+	schemaVersion: 1,
+	policy: { warnRatio: 0.25, abortRatio: 1 },
+	status: "valid",
+	aborted: false,
+	cases: [
+		{
+			scenarioKey: "correctness-full/standard",
+			caseKey: "room-create",
+			id: "room-create",
+			suite: "correctness-full",
+			status: "valid",
+			codes: [],
+			details: [],
+		},
+	],
+	scenarios: [
+		{ scenarioKey: "correctness-full/standard", suite: "correctness-full", attempted: 1, valid: 1, invalid: 0, verdict: "passed" },
+	],
+	instrumentation: { enabled: true, contractVersion: 1, missingMarks: [] },
+	reasons: [],
+});
+
+const validInventoryPayload = (): LabInventoryReport => ({
+	schemaVersion: 1,
+	scope: "frontend and Go source modules",
+	obligations: [
+		{
+			id: "frontend:src/scene/sceneEngine.ts",
+			kind: "frontend",
+			path: "apps/frontend/src/scene/sceneEngine.ts",
+			state: "covered",
+			owner: "apps/frontend/src/scene/sceneEngine.spec.ts",
+		},
+		{
+			id: "go:internal/console",
+			kind: "go",
+			path: "apps/backend/internal/console",
+			state: "partial",
+			owner: "apps/backend/internal/console/handler_test.go",
+		},
+		{ id: "frontend:src/foo.ts", kind: "frontend", path: "apps/frontend/src/foo.ts", state: "excluded", reason: "generated fixture" },
+	],
+});
+
+const createLabFixture = () => {
+	const fixture = createFixture();
+	fixture.manifest.expectedArtifacts.push(
+		{ id: "lab-gate", stepId: "verification", kind: "lab-gate", path: "lab-gate.json" },
+		{ id: "lab-inventory", stepId: "verification", kind: "lab-inventory", path: "lab-inventory.json" }
+	);
+	fixture.write("lab-gate.json", validGatePayload());
+	fixture.write("lab-inventory.json", validInventoryPayload());
+	return fixture;
+};
+
+describe("lab measurement gate aggregation", () => {
+	it("accepts a valid gate and cross-checks its cases against external results", () => {
+		const { manifest, runDir } = createLabFixture();
+		const report = buildAggregate(manifest, runDir);
+		expect(report.status).toBe("passed");
+		const gate = report.artifacts.find((artifact) => artifact.id === "lab-gate");
+		expect(gate?.status).toBe("passed");
+		expect(gate?.caseIds).toEqual(["room-create"]);
+		const inventory = report.artifacts.find((artifact) => artifact.id === "lab-inventory");
+		expect(inventory?.inventory).toEqual({
+			total: 3,
+			covered: 1,
+			partial: 1,
+			excluded: 1,
+			unresolvedIds: ["go:internal/console", "frontend:src/foo.ts"],
+		});
+	});
+
+	it("fails closed when any case measurement is invalid", () => {
+		const { manifest, runDir, write } = createLabFixture();
+		const gate = validGatePayload();
+		gate.status = "degraded";
+		gate.cases[0]!.status = "invalid";
+		gate.cases[0]!.codes = ["MISSING_MARK"];
+		gate.scenarios[0] = { ...gate.scenarios[0]!, valid: 0, invalid: 1, verdict: "invalid" };
+		write("lab-gate.json", gate);
+		const report = buildAggregate(manifest, runDir);
+		expect(report.status).toBe("failed");
+		expect(report.failures.some((failure) => failure.includes("invalid measurements"))).toBe(true);
+		expect(report.failures.some((failure) => failure.includes("MISSING_MARK"))).toBe(true);
+	});
+
+	it("rejects aborted runs and keeps them out of the recorded evidence", () => {
+		const { manifest, runDir } = createLabFixture();
+		manifest.validity = {
+			status: "invalid",
+			aborted: true,
+			reasons: [{ scope: "run", id: manifest.runId, code: "LAB_RUNTIME_MISSING" }],
+		};
+		manifest.recorded = false;
+		const report = buildAggregate(manifest, runDir);
+		expect(report.status).toBe("failed");
+		expect(report.failures.some((failure) => failure.includes("aborted"))).toBe(true);
+		expect(report.failures.some((failure) => failure.includes("LAB_RUNTIME_MISSING"))).toBe(true);
+		expect(shouldPublishLatest(manifest, report)).toBe(false);
+	});
+
+	it("accepts degraded validity when the run itself was not aborted", () => {
+		const { manifest, runDir } = createFixture();
+		manifest.validity = {
+			status: "degraded",
+			aborted: false,
+			reasons: [{ scope: "case", id: "room-create", code: "EXTERNAL_DISAGREEMENT" }],
+		};
+		expect(buildAggregate(manifest, runDir).status).toBe("passed");
+	});
+
+	it("rejects a gate whose case coverage does not match external results", () => {
+		const { manifest, runDir, write } = createLabFixture();
+		const gate = validGatePayload();
+		gate.cases[0] = { ...gate.cases[0]!, id: "other-case", caseKey: "other-case" };
+		write("lab-gate.json", gate);
+		const report = buildAggregate(manifest, runDir);
+		expect(report.status).toBe("failed");
+		expect(report.failures.some((failure) => failure.includes("does not match external results"))).toBe(true);
+	});
+
+	it("validates the module inventory snapshot", () => {
+		const { manifest, runDir, write } = createLabFixture();
+		const inventory = validInventoryPayload();
+		delete inventory.obligations[2]!.reason;
+		write("lab-inventory.json", inventory);
+		const report = buildAggregate(manifest, runDir);
+		expect(report.status).toBe("failed");
+		expect(report.failures.some((failure) => failure.includes("excluded without a reason"))).toBe(true);
+	});
+
+	it("only publishes the latest pointer for valid, recorded, passing runs", () => {
+		const { manifest, runDir } = createLabFixture();
+		const report = buildAggregate(manifest, runDir);
+		expect(shouldPublishLatest(manifest, report)).toBe(true);
+		expect(shouldPublishLatest({ ...manifest, recorded: false }, report)).toBe(false);
+		expect(
+			shouldPublishLatest({ ...manifest, validity: { status: "invalid", aborted: false, reasons: [] } }, report)
+		).toBe(false);
+		expect(shouldPublishLatest(manifest, { ...report, status: "failed" })).toBe(false);
 	});
 });
