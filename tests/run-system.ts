@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -6,10 +6,13 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import path from "node:path";
 import { writeAggregateReport } from "./report/aggregate";
-import type { RunManifest, RunStep } from "./report/contract";
+import { VALIDITY_CODES } from "./report/contract";
+import type { LabMode, RunManifest, RunStep, ValidityReason } from "./report/contract";
 import { readSourceIdentity } from "./report/provenance";
 import { browserAvailability, selectedBrowser } from "./browser-launch";
 import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
+import { resolveOnlySelectors, resolveSinceRef, type LabResolveResult } from "./lab/resolve-only";
+import { buildLabEvidencePlan, type LabPlanContext } from "./lab/evidence-plan";
 
 type Step = {
 	title: string;
@@ -35,7 +38,23 @@ type ExternalServices = {
 };
 
 type ExternalMode = "headless" | "headed";
-type Profile = "quick" | "ci" | "full" | "standard" | "boundary-small" | "boundary-full" | "nightly" | "custom";
+type ManagedProfile = "quick" | "ci" | "full" | "smoke" | "nightly" | "single";
+type Profile = ManagedProfile | "standard" | "boundary-small" | "boundary-full" | "custom";
+
+type CoreProfile = "quick" | "ci" | "full";
+const CORE_PROFILES: readonly CoreProfile[] = ["quick", "ci", "full"];
+const MANAGED_PROFILES: readonly ManagedProfile[] = ["quick", "ci", "full", "smoke", "nightly", "single"];
+const isManagedProfile = (value: Profile): value is ManagedProfile =>
+	(MANAGED_PROFILES as readonly string[]).includes(value);
+const isCoreProfile = (value: ManagedProfile): value is CoreProfile =>
+	(CORE_PROFILES as readonly string[]).includes(value);
+
+const managedModeOf = (profile: ManagedProfile): LabMode => {
+	if (profile === "single") return "single";
+	if (profile === "quick" || profile === "smoke") return "smoke";
+	if (profile === "ci") return "ci";
+	return "nightly";
+};
 
 type EvidenceStep = {
 	id: string;
@@ -381,6 +400,11 @@ const argValue = (name: string) => {
 	return [...process.argv].reverse().find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
 };
 
+const argValues = (name: string) => {
+	const prefix = `--${name}=`;
+	return process.argv.filter((arg) => arg.startsWith(prefix)).map((arg) => arg.slice(prefix.length));
+};
+
 const hasArg = (name: string) => process.argv.includes(`--${name}`);
 
 const argBoolean = (name: string, defaultValue: boolean) => {
@@ -404,18 +428,9 @@ const askNumber = async (rl: readline.Interface, question: string, defaultValue:
 };
 
 const normalizeProfile = (value: string | undefined): Profile => {
-	if (
-		value === "quick" ||
-		value === "ci" ||
-		value === "full" ||
-		value === "standard" ||
-		value === "boundary-small" ||
-		value === "boundary-full" ||
-		value === "nightly" ||
-		value === "custom"
-	) {
-		return value;
-	}
+	if (!value) return "standard";
+	if ((MANAGED_PROFILES as readonly string[]).includes(value)) return value as ManagedProfile;
+	if (value === "standard" || value === "boundary-small" || value === "boundary-full" || value === "custom") return value;
 	return "standard";
 };
 
@@ -874,6 +889,110 @@ const stopProcessTree = (child: ChildProcess) => {
 	forceTimer.unref();
 };
 
+type RawGate = {
+	status?: unknown;
+	aborted?: unknown;
+	cases?: unknown;
+	reasons?: unknown;
+};
+
+const GATE_FILE_BY_STEP: Record<string, string> = {
+	"external-smoke": "correctness-smoke-lab-gate.json",
+	"external-e2e": "correctness-full-lab-gate.json",
+	"external-performance": "performance-external-all-lab-gate.json",
+	"external-focused": "correctness-full-lab-gate.json",
+};
+
+const readGateForStep = (runDir: string, stepId: string): RawGate | null => {
+	const externalDir = path.join(runDir, "external");
+	const expected = GATE_FILE_BY_STEP[stepId];
+	const candidates = expected
+		? [path.join(externalDir, expected)]
+		: existsSync(externalDir)
+			? readdirSync(externalDir).filter((name) => name.endsWith("-lab-gate.json")).map((name) => path.join(externalDir, name))
+			: [];
+	for (const filePath of candidates) {
+		if (!existsSync(filePath)) continue;
+		try {
+			return JSON.parse(readFileSync(filePath, "utf8")) as RawGate;
+		} catch {
+			return null;
+		}
+	}
+	return null;
+};
+
+const validityCodeOf = (value: unknown, fallback: ValidityReason["code"]): ValidityReason["code"] =>
+	typeof value === "string" && (VALIDITY_CODES as readonly string[]).includes(value) ? (value as ValidityReason["code"]) : fallback;
+
+const applyGateValidity = (runDir: string, manifest: RunManifest, stepId: string, exitCode: number | null) => {
+	const gate = readGateForStep(runDir, stepId);
+	const aborted = gate?.aborted === true || gate?.status === "invalid" || exitCode === 3;
+	if (!gate) {
+		if (aborted) {
+			manifest.validity = {
+				status: "invalid",
+				aborted: true,
+				reasons: [{ scope: "run", id: manifest.runId, code: "GATE_ABORTED", detail: "external harness aborted without a gate artifact" }],
+			};
+			manifest.recorded = false;
+		}
+		return;
+	}
+	const reasons: ValidityReason[] = [];
+	if (Array.isArray(gate.reasons)) {
+		for (const raw of gate.reasons) {
+			if (!raw || typeof raw !== "object") continue;
+			const reason = raw as Record<string, unknown>;
+			reasons.push({
+				scope: reason.scope === "case" || reason.scope === "scenario" ? reason.scope : "run",
+				id: typeof reason.id === "string" ? reason.id : manifest.runId,
+				code: validityCodeOf(reason.code, "GATE_ABORTED"),
+				detail: typeof reason.detail === "string" ? reason.detail : undefined,
+			});
+		}
+	}
+	const invalidCases = Array.isArray(gate.cases)
+		? gate.cases.filter(
+				(item): item is Record<string, unknown> =>
+					Boolean(item) && typeof item === "object" && (item as Record<string, unknown>).status === "invalid"
+			)
+		: [];
+	if (aborted) {
+		if (reasons.length === 0) {
+			for (const invalidCase of invalidCases.slice(0, 50)) {
+				reasons.push({
+					scope: "case",
+					id: typeof invalidCase.caseKey === "string" ? invalidCase.caseKey : manifest.runId,
+					code: validityCodeOf(Array.isArray(invalidCase.codes) ? invalidCase.codes[0] : undefined, "GATE_ABORTED"),
+					detail: Array.isArray(invalidCase.details) ? invalidCase.details.join("; ") : undefined,
+				});
+			}
+		}
+		manifest.validity = {
+			status: "invalid",
+			aborted: true,
+			reasons: reasons.length > 0
+				? reasons.slice(0, 50)
+				: [{ scope: "run", id: manifest.runId, code: "GATE_ABORTED", detail: "external harness aborted" }],
+		};
+		manifest.recorded = false;
+		return;
+	}
+	if (invalidCases.length > 0) {
+		manifest.validity = {
+			status: "degraded",
+			aborted: false,
+			reasons: invalidCases.slice(0, 50).map((invalidCase) => ({
+				scope: "case" as const,
+				id: typeof invalidCase.caseKey === "string" ? invalidCase.caseKey : manifest.runId,
+				code: validityCodeOf(Array.isArray(invalidCase.codes) ? invalidCase.codes[0] : undefined, "MISSING_MARK"),
+				detail: Array.isArray(invalidCase.details) ? invalidCase.details.join("; ") : undefined,
+			})),
+		};
+	}
+};
+
 const runEvidenceStep = async (
 	step: EvidenceStep,
 	record: RunStep,
@@ -962,7 +1081,12 @@ const runEvidenceStep = async (
 	}
 };
 
-const runEvidenceProfile = async (profile: "quick" | "ci" | "full") => {
+type ManagedRunOptions = {
+	selection?: LabResolveResult;
+	rerunOf?: { ofRunId: string; scope: "run" | "scenario" | "case"; ids: string[] };
+};
+
+const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOptions = {}) => {
 	const runId = randomUUID();
 	const runDir = path.join(canonicalRootDir, "tests", "reports", "summary", "runs", runId);
 	mkdirSync(runDir, { recursive: true });
@@ -974,8 +1098,29 @@ const runEvidenceProfile = async (profile: "quick" | "ci" | "full") => {
 		readFileSync(path.join(canonicalRootDir, "tests", "catalog", "feature-obligations.json"), "utf8"),
 		"utf8"
 	);
-	const { steps, artifacts } = managedEvidencePlan(profile, runDir, runId, source);
-	const mode = profile === "quick" ? "smoke" : profile === "ci" ? "ci" : "nightly";
+	const cleanTree = source.dirtyPatchSha256 === createHash("sha256").update("").digest("hex");
+	const planContext: LabPlanContext = {
+		runDir,
+		rootDir,
+		frontendDir,
+		backendDir,
+		canonicalRootDir,
+		shellQuote,
+		listCoverageSources,
+		externalEnv: {
+			AEVIA_TEST_RUN_ID: runId,
+			AEVIA_TEST_SOURCE_REVISION: source.revision || "",
+			AEVIA_TEST_DIRTY_SHA256: source.dirtyPatchSha256,
+			AEVIA_LAB: "on",
+		},
+		cleanTree,
+		perfRequest: argValue("perf") === "request",
+	};
+	const { steps, artifacts } = isCoreProfile(profile)
+		? managedEvidencePlan(profile, runDir, runId, source)
+		: buildLabEvidencePlan(profile, planContext, options.selection);
+	const mode = managedModeOf(profile);
+	const recorded = profile !== "single" && options.rerunOf === undefined && (profile !== "nightly" || cleanTree);
 	const manifest: RunManifest = {
 		schemaVersion: 2,
 		runId,
@@ -988,7 +1133,9 @@ const runEvidenceProfile = async (profile: "quick" | "ci" | "full") => {
 		steps: steps.map((step) => ({ id: step.id, title: step.title, status: "pending" })),
 		expectedArtifacts: artifacts,
 		validity: { status: "valid", aborted: false, reasons: [] },
-		recorded: true,
+		recorded,
+		rerun: options.rerunOf,
+		measurement: { policy: "prefer-instrumented" },
 	};
 	const manifestPath = path.join(runDir, "run-manifest.json");
 	persistManifest(manifestPath, manifest);
@@ -1000,6 +1147,7 @@ const runEvidenceProfile = async (profile: "quick" | "ci" | "full") => {
 			await runEvidenceStep(step, record, manifest, manifestPath, runDir);
 			if (record.status !== "passed") {
 				failed = true;
+				applyGateValidity(runDir, manifest, step.id, record.exitCode);
 				break;
 			}
 			if (step.id === "go-package-list") {
@@ -1036,8 +1184,14 @@ const runEvidenceProfile = async (profile: "quick" | "ci" | "full") => {
 			report = writeAggregateReport(manifestPath);
 		}
 		print(`Report: ${path.join(runDir, "test-report.html")}`);
+		print(`Measurement: ${manifest.validity.status}${manifest.validity.aborted ? " (aborted)" : ""}${manifest.recorded ? "" : " · not recorded"}`);
 		print(`Result: ${report.status}; ${report.failures.length} evidence issue(s)`);
-		if (report.status !== "passed") process.exitCode = interruptedSignal ? 130 : 1;
+		if (manifest.validity.aborted) {
+			for (const reason of manifest.validity.reasons.slice(0, 10)) {
+				print(`[lab][abort] ${reason.scope}:${reason.id} ${reason.code}${reason.detail ? ` (${reason.detail})` : ""}`);
+			}
+		}
+		if (report.status !== "passed") process.exitCode = manifest.validity.aborted ? 3 : interruptedSignal ? 130 : 1;
 	} catch (error) {
 		print(`Report generation failed: ${error instanceof Error ? error.message : String(error)}`);
 		process.exitCode = 1;
@@ -1097,11 +1251,58 @@ const runReplay = async () => {
 		manifest.source.revision !== source.revision ||
 		manifest.source.dirtyPatchSha256 !== source.dirtyPatchSha256
 	) throw new Error("Replay refused: current source identity differs from the recorded run");
-	if (manifest.profile !== "quick" && manifest.profile !== "ci" && manifest.profile !== "full") {
+	const replayProfile = manifest.profile as Profile;
+	if (!isManagedProfile(replayProfile) || replayProfile === "single") {
 		throw new Error(`Replay is not supported for profile: ${manifest.profile}`);
 	}
-	print(`Re-running profile=${manifest.profile} from source-matched run=${runId}`);
-	await runEvidenceProfile(manifest.profile);
+	print(`Re-running profile=${replayProfile} from source-matched run=${runId}`);
+	await runEvidenceProfile(replayProfile);
+};
+
+const resolveRerunSelection = (scope: "run" | "scenario" | "case", ids: string[]): LabResolveResult | undefined => {
+	if (scope === "run" || ids.length === 0) return undefined;
+	const selectors: string[] = [];
+	for (const id of ids) {
+		if (id.includes(".ts") || id.includes(".vue")) {
+			selectors.push(`file:${id}`);
+			continue;
+		}
+		const caseId = id.includes("|") ? id.split("|")[0]! : id;
+		selectors.push(`case:${caseId}`);
+	}
+	return selectors.length > 0 ? resolveOnlySelectors(selectors, canonicalRootDir) : undefined;
+};
+
+const buildManagedRunOptions = (profile: ManagedProfile): ManagedRunOptions & { effectiveProfile: ManagedProfile } => {
+	let selection: LabResolveResult | undefined;
+	if (profile === "single") {
+		const only = argValues("only");
+		const since = argValue("since");
+		const resolved = only.length > 0
+			? resolveOnlySelectors(only, canonicalRootDir)
+			: since
+				? resolveSinceRef(since, canonicalRootDir)
+				: undefined;
+		if (!resolved) throw new Error("single mode requires --only=<selector> or --since=<git-ref>");
+		for (const unresolved of resolved.unresolved) print(`[lab] unresolved selector: ${unresolved}`);
+		if (resolved.selections.length === 0) {
+			throw new Error(
+				`single mode resolved no executable targets${
+					resolved.unresolved.length > 0 ? ` (unresolved: ${resolved.unresolved.join(", ")})` : ""
+				}`
+			);
+		}
+		selection = resolved;
+	}
+	const rerunId = argValue("rerun-of");
+	if (!rerunId) return { selection, effectiveProfile: profile };
+	if (!/^[0-9a-f-]{36}$/i.test(rerunId)) throw new Error("--rerun-of must be a run UUID");
+	const scope = argValue("scope") || "run";
+	if (scope !== "run" && scope !== "scenario" && scope !== "case") throw new Error("--scope must be run|scenario|case");
+	const ids = (argValue("ids") || "").split(",").map((item) => item.trim()).filter(Boolean);
+	selection = selection ?? resolveRerunSelection(scope, ids);
+	const effectiveProfile = selection && scope === "case" ? "single" : profile;
+	return { selection, rerunOf: { ofRunId: rerunId, scope, ids }, effectiveProfile };
 };
 
 const main = async () => {
@@ -1114,8 +1315,9 @@ const main = async () => {
 		return;
 	}
 	const answers = await collectAnswers();
-	if (answers.profile === "quick" || answers.profile === "ci" || answers.profile === "full") {
-		await runEvidenceProfile(answers.profile);
+	if (isManagedProfile(answers.profile)) {
+		const options = buildManagedRunOptions(answers.profile);
+		await runEvidenceProfile(options.effectiveProfile, options);
 		return;
 	}
 	const steps = buildSteps(answers);

@@ -1,0 +1,50 @@
+name: Aevia nightly lab
+# Nightly runs are the only place the performance gate and the learned base line run.
+# They target a self-hosted machine because GitHub-hosted runner variance is larger than
+# the 20%% relative regression threshold, which would make the gate random.
+on:
+  schedule:
+    - cron: "0 18 * * *" # 02:00 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nightly:
+    name: nightly / ${{ matrix.browser }}
+    runs-on: [self-hosted, aevia-nightly]
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - run: npm ci
+      - name: Install browser engines
+        run: npx playwright install chromium
+      - name: Check test environment
+        run: npm run test:doctor
+        env:
+          AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+          AEVIA_TEST_JSON: "1"
+      - name: Run managed nightly suite
+        run: npm run test:nightly
+        env:
+          AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aevia-nightly-evidence-${{ matrix.browser }}
+          path: tests/reports/summary/runs/
+          if-no-files-found: warn
+          retention-days: 30

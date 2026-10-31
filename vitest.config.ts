@@ -84,7 +84,7 @@ export default defineConfig({
 					name: "harness-unit",
 					globals: true,
 					environment: "node",
-					include: ["tests/report/**/*.spec.ts"],
+					include: ["tests/report/**/*.spec.ts", "tests/lab/**/*.spec.ts"],
 				},
 			},
 			{
