@@ -5,6 +5,7 @@
 // scripts and later reads marks/counters/page errors back out of the page. When
 // lab mode is off nothing is injected and no page is touched.
 import type { Page } from "playwright";
+import { withDeadline } from "../deadline";
 import type {
 	LabInstrumentationSummary,
 	LabMark,
@@ -54,6 +55,10 @@ const LAB_INSTALL_SCRIPT = `
 				try {
 					if (typeof value === "string") return value;
 					if (value instanceof Error) return value.message;
+					if (value instanceof Event && value.target instanceof WebSocket) {
+						var endpoint = new URL(value.target.url);
+						return JSON.stringify({ type: value.type, endpoint: endpoint.origin + endpoint.pathname, readyState: value.target.readyState });
+					}
 					return JSON.stringify(value);
 				} catch (ignored) {
 					return String(value);
@@ -382,8 +387,13 @@ export const beginLabScope = (): void => {
 	scopeStack.push({ pages: [], snapshots: new Map() });
 };
 
-export const endLabScope = (): void => {
-	scopeStack.pop();
+export const endLabScope = async (): Promise<void> => {
+	const scope = scopeStack.pop();
+	if (!scope) return;
+	const contexts = new Set(scope.pages.map(page => page.context()));
+	const outcomes = await Promise.allSettled([...contexts].map(context => withDeadline(context.close(), 5000, "sample page cleanup")));
+	const timedOut = outcomes.find(outcome => outcome.status === "rejected" && String(outcome.reason).includes("host deadline"));
+	if (timedOut?.status === "rejected") throw timedOut.reason;
 };
 
 export const trackLabPage = (page: Page): void => {

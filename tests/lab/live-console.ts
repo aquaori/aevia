@@ -124,6 +124,7 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 	let runStatus: "running" | "passed" | "failed" | "cancelled" = "running";
 	let done: LiveDonePayload | undefined;
 	let closed = false;
+	let cancellationRequested = false;
 	let closeTimer: NodeJS.Timeout | undefined;
 	let logTimer: NodeJS.Timeout | undefined;
 	let publishBaseUrl = "";
@@ -179,12 +180,16 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 		const legacy = `/report/${options.runId}`;
 		let relative: string;
 		if (urlPath === legacy || urlPath === `${legacy}/`) relative = "test-report.html";
-		else if (urlPath.startsWith(prefix)) relative = decodeURIComponent(urlPath.slice(prefix.length));
+		else if (urlPath.startsWith(prefix)) { try { relative = decodeURIComponent(urlPath.slice(prefix.length)); } catch { return null; } }
 		else return null;
 		const target = path.resolve(options.runDir, relative.replace(/^\/+/, ""));
 		const root = path.resolve(options.runDir);
 		if (target !== path.join(root, "test-report.html") && !target.startsWith(`${root}${path.sep}`)) return null;
-		return target;
+		try {
+			const relativeReal = path.relative(fs.realpathSync(root), fs.realpathSync(target));
+			if (relativeReal === ".." || relativeReal.startsWith(`..${path.sep}`) || path.isAbsolute(relativeReal)) return null;
+			return target;
+		} catch { return null; }
 	};
 
 	const serveFile = (response: ServerResponse, filePath: string, status = 200) => {
@@ -194,6 +199,8 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 				"Content-Type": CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? "application/octet-stream",
 				"Content-Length": body.length,
 				"Cache-Control": "no-store",
+				"Referrer-Policy": "no-referrer",
+				"X-Content-Type-Options": "nosniff",
 			});
 			response.end(body);
 		} catch {
@@ -207,11 +214,14 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 			"Content-Type": "application/json; charset=utf-8",
 			"Content-Length": body.length,
 			"Cache-Control": "no-store",
+			"Referrer-Policy": "no-referrer",
+			"X-Content-Type-Options": "nosniff",
 		});
 		response.end(body);
 	};
 
 	const handler = (request: IncomingMessage, response: ServerResponse) => {
+		if (request.headers.host !== new URL(publishBaseUrl).host) { writeJson(response, 403, { error: "invalid host" }); return; }
 		const url = new URL(request.url || "/", publishBaseUrl || `http://${LOOPBACK}`);
 		if (request.method !== "GET" && request.method !== "HEAD") {
 			writeJson(response, 405, { error: "method not allowed" });
@@ -233,6 +243,8 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 				"Content-Type": "text/html; charset=utf-8",
 				"Content-Length": body.length,
 				"Cache-Control": "no-store",
+				"Referrer-Policy": "no-referrer",
+				"X-Content-Type-Options": "nosniff",
 			});
 			response.end(body);
 			return;
@@ -263,7 +275,7 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 	server.on("upgrade", (request, socket, head) => {
 		try {
 			const url = new URL(request.url || "/", `http://${LOOPBACK}`);
-			if (url.pathname !== "/ws" || url.searchParams.get("token") !== token) {
+			if (request.headers.host !== new URL(publishBaseUrl).host || (request.headers.origin && request.headers.origin !== publishBaseUrl) || url.pathname !== "/ws" || url.searchParams.get("token") !== token) {
 				socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
 				socket.destroy();
 				return;
@@ -281,7 +293,8 @@ export const startLiveConsole = async (options: LiveConsoleOptions): Promise<Liv
 					if (!parsed || typeof parsed !== "object") return;
 					const message = parsed as { type?: unknown };
 					if (message.type !== "cancel") return;
-					if (closed || done) return;
+					if (closed || done || cancellationRequested) return;
+					cancellationRequested = true;
 					broadcast({ type: "cancel-requested" });
 					try {
 						options.onCancel();

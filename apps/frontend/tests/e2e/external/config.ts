@@ -1,4 +1,5 @@
 import path from "path";
+import { fileURLToPath } from "node:url";
 import type {
 	CaseSet,
 	EnvironmentId,
@@ -93,7 +94,7 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 		budgetsFile: args.get("budgets-file") || path.join(externalRoot, "budgets.json"),
 		historyFile:
 			args.get("history-file") ||
-			path.join(externalRoot, "history", `${suite}.history.jsonl`),
+			fileURLToPath(new URL(`../../../../../tests/reports/lab-history/${suite}.history.jsonl`, import.meta.url)),
 		noisePercent: Math.max(0, Number(args.get("noise-percent") || "10")),
 		regressionPercent: Math.max(0, Number(args.get("regression-percent") || "20")),
 		regressionAbsoluteMs: Math.max(0, Number(args.get("regression-absolute-ms") || "8")),

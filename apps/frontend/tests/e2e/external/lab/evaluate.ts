@@ -25,7 +25,10 @@ import type {
 import { DEFAULT_LAB_POLICY } from "./policy";
 import { caseLabContract } from "./contracts";
 
-export const labScenarioKey = (suite: string, caseSet: string): string => `${suite}/${caseSet}`;
+export const labScenarioKey = (suite: string, caseSet: string, caseId?: string): string => {
+	const family = caseId?.startsWith("full-render-") ? "full-render" : caseId;
+	return suite === "performance-external" && caseSet === "standard" && family ? `${suite}/${caseSet}/${family}` : `${suite}/${caseSet}`;
+};
 
 export type EvaluateCaseInput = {
 	caseId: string;
@@ -75,11 +78,13 @@ export const evaluateCase = (input: EvaluateCaseInput): LabCaseEvaluation => {
 	};
 
 	const measurementSource = measurementSourceOf(instrumented, external);
+	let contractKind: "span" | "external" | "sentinel" | "none" = "none";
 	const base = (): LabCaseEvaluation => ({
 		caseId: input.caseId,
 		caseKey: input.caseKey,
 		scenarioKey: input.scenarioKey,
 		status: codes.length > 0 ? "invalid" : "valid",
+		contractKind,
 		codes,
 		details,
 		witnessDeltaMs: input.witnessDeltaMs ?? {},
@@ -97,16 +102,21 @@ export const evaluateCase = (input: EvaluateCaseInput): LabCaseEvaluation => {
 
 	const contract = caseLabContract(input.caseId);
 	if (!contract) {
-		addDetail(`no lab measurement contract for case ${input.caseId}: measurement gate skipped`);
+		addCode("MISSING_CONTRACT");
+		addDetail(`no lab measurement contract for case ${input.caseId}`);
 		return base();
 	}
 
+	for (const metric of contract.requiredExternalMetrics ?? []) {
+		if (!isFiniteNumber(external[metric])) { addCode("EMPTY_METRICS"); addDetail(`required external metric missing: ${metric}`); }
+	}
+	contractKind = contract.requiredSpans.length > 0 ? "span" : contract.requiredExternalMetrics?.length ? "external" : "sentinel";
 	// --- runtime presence and contract version -------------------------------
-	if (input.snapshots.length === 0) {
+	if (contract.runtimeRequired !== false && input.snapshots.length === 0) {
 		addCode("LAB_RUNTIME_MISSING");
 		addDetail("no page snapshot was collected for this case");
 	}
-	for (const snapshot of input.snapshots) {
+	for (const snapshot of contract.runtimeRequired === false ? [] : input.snapshots) {
 		if (!snapshot.present) {
 			addCode("LAB_RUNTIME_MISSING");
 			addDetail(`window.__AEVIA_LAB__ missing in ${snapshot.url || "page"}`);
@@ -284,6 +294,7 @@ export const buildGateReport = (input: BuildGateReportInput): LabGateReport => {
 		id: evaluation.caseId,
 		suite: input.suite,
 		status: evaluation.status,
+		contractKind: evaluation.contractKind,
 		codes: [...evaluation.codes],
 		details: [...evaluation.details],
 	}));
@@ -330,6 +341,7 @@ export const neutralCaseEvaluation = (input: {
 	caseKey: input.caseKey,
 	scenarioKey: input.scenarioKey,
 	status: "valid",
+	contractKind: "none",
 	codes: [],
 	details: [input.detail],
 	witnessDeltaMs: {},
@@ -338,6 +350,12 @@ export const neutralCaseEvaluation = (input: {
 	sampleCount: 0,
 	expectedSampleCount: 0,
 	invalidSampleCount: 0,
+});
+
+export const failedCollectionEvaluation = (input: Parameters<typeof neutralCaseEvaluation>[0]): LabCaseEvaluation => ({
+	...neutralCaseEvaluation(input),
+	status: "invalid",
+	codes: ["COLLECTION_FAILED"],
 });
 
 export class LabAbortError extends Error {

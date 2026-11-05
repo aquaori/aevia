@@ -1,3 +1,5 @@
+import { sameConditions } from "./conditions";
+import { assertReportEligible } from "./report-eligibility";
 import fs from "fs";
 import path from "path";
 import type {
@@ -112,6 +114,7 @@ const loadReportPayload = (inputPath: string) => {
 		throw new Error(`external-results.json not found: ${reportPath}`);
 	}
 	const payload = readJson<unknown>(reportPath);
+	assertReportEligible(payload, reportPath);
 	return {
 		filePath: reportPath,
 		generatedAt: extractGeneratedAt(payload, reportPath),
@@ -248,6 +251,7 @@ export const importHistoryFromReport = (
 					reportGeneratedAt: report.generatedAt,
 					importedAt,
 					channel: "normal",
+					conditionHash: result.conditions?.fingerprint,
 					caseKey: caseKeyOf(result),
 					id: result.id,
 					environment: result.environment,
@@ -260,7 +264,7 @@ export const importHistoryFromReport = (
 				});
 			}
 		}
-		incoming.push(...caseAnomalyEntries(config, report, importedAt, result));
+		incoming.push(...caseAnomalyEntries(config, report, importedAt, result).map(entry => ({ ...entry, conditionHash: result.conditions?.fingerprint })));
 	}
 
 	const existing = loadHistoryEntries(config.historyFile);
@@ -495,8 +499,10 @@ export const buildLearningArtifacts = (
 	learning: LearningSummary;
 	baselineRecommendations: BaselineRecommendation[];
 } => {
-	const historyIndex = buildHistoryIndex(historyEntries, "normal");
-	const anomalyIndex = buildHistoryIndex(historyEntries, "anomaly");
+	const conditionByCase = new Map(results.map(result => [caseKeyOf(result), result.conditions?.fingerprint]));
+	const comparableHistory = historyEntries.filter(entry => Boolean(entry.conditionHash) && entry.conditionHash === conditionByCase.get(entry.caseKey));
+	const historyIndex = buildHistoryIndex(comparableHistory, "normal");
+	const anomalyIndex = buildHistoryIndex(comparableHistory, "anomaly");
 	const learnedRegressions: CaseLearning[] = [];
 	const baselineRecommendations: BaselineRecommendation[] = [];
 
@@ -564,7 +570,8 @@ export const buildLearningArtifacts = (
 							: `${metricLabel(metric)} 落在学习到的正常波动范围内`,
 			});
 
-			const baselineValue = baseline?.cases[caseKey]?.metrics?.[metric];
+			const reference = baseline?.cases[caseKey];
+			const baselineValue = sameConditions(result.conditions, reference?.conditions) ? reference?.metrics?.[metric] : undefined;
 			const baselineHealth = detectBaselineHealth(
 				metric,
 				typeof baselineValue === "number" ? baselineValue : undefined,
@@ -614,7 +621,7 @@ export const buildLearningArtifacts = (
 	}
 
 	const learningSummary: LearningSummary = {
-		historyEntries: historyEntries.length,
+		historyEntries: comparableHistory.length,
 		learnedChecks: learnedRegressions.reduce((sum, item) => sum + item.checks.length, 0),
 		insufficientHistory: learnedRegressions.reduce(
 			(sum, item) => sum + item.checks.filter((check) => check.status === "insufficient_history").length,

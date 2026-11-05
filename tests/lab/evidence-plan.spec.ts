@@ -1,12 +1,10 @@
 // File role: deterministic checks for the lab evidence plans behind smoke/nightly/single modes.
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildLabEvidencePlan,
 	buildNightlyPlan,
 	buildSinglePlan,
 	buildSmokePlan,
-	supportsGoRaceDetector,
 	type LabPlanContext,
 } from "./evidence-plan";
 import { CORRECTNESS_FULL_EXTERNAL_CASE_IDS } from "../catalog/external-cases";
@@ -46,7 +44,7 @@ describe("lab evidence plans", () => {
 
 	it("builds a nightly plan with the performance matrix, fuzz/race and all gates", () => {
 		const plan = buildNightlyPlan(context());
-		const raceSteps = supportsGoRaceDetector(path.resolve("apps/backend")) ? ["go-race"] : [];
+		const raceSteps: string[] = [];
 		expect(stepIds(plan)).toEqual([
 			"build",
 			"go-vet",
@@ -77,9 +75,10 @@ describe("lab evidence plans", () => {
 			])
 		);
 		const standard = plan.steps.find((step) => step.id === "external-performance-standard");
+		expect(plan.steps.find(step => step.id === "go-fuzz")?.env?.GOCACHE).toContain("go-fuzz-cache");
 		expect(standard?.command).toContain("--case-set=standard");
 		expect(standard?.command).toContain("--matrix=true");
-		expect(standard?.command).toContain("--import-current-to-history=true");
+		expect(standard?.command).not.toContain("--import-current-to-history=true");
 		const boundarySteps = plan.steps.filter((step) => step.id.startsWith("external-performance-boundary-"));
 		expect(boundarySteps).toHaveLength(3);
 		for (const boundary of boundarySteps) {
@@ -117,6 +116,7 @@ describe("lab evidence plans", () => {
 		});
 		expect(stepIds(goPlan)).toEqual(["go-test", "source-check"]);
 		expect(goPlan.steps[0]?.command).toContain("-run");
+		expect(goPlan.steps[0]?.command).toContain("go test -json");
 
 		const externalPlan = buildSinglePlan(context(), {
 			selections: [{ kind: "external", caseIds: ["harness-health"] }],
@@ -134,4 +134,33 @@ describe("lab evidence plans", () => {
 		);
 		expect(() => buildLabEvidencePlan("single", context(), undefined)).toThrow();
 	});
+});
+
+it("includes race only from an explicit capability and requires every matrix key", () => {
+	const plan = buildNightlyPlan(context({ goRaceSupported: true }));
+	expect(stepIds(plan)).toContain("go-race");
+	expect(plan.artifacts.find(item => item.id === "performance-external-standard")?.expectedCaseKeys).toHaveLength(20);
+});
+it("routes focused performance cases to their owning suite and preserves dimensional keys", () => {
+	const plan = buildSinglePlan(context(), { selections: [{ kind: "external", caseIds: ["full-render-10000"], caseKeys: ["full-render-10000|gpu_cpuLow|10000"] }], unresolved: [] });
+	expect(plan.steps[0]!.command).toContain("--suite=performance-external");
+	expect(plan.steps[0]!.command).toContain("--case-keys=");
+	expect(plan.artifacts[0]?.expectedCaseKeys).toEqual(["full-render-10000|gpu_cpuLow|10000"]);
+});
+
+it("does not omit a required race step when capability probing fails", () => {
+	expect(stepIds(buildNightlyPlan(context({ goRaceSupported: false, goRaceRequired: true })))).toContain("go-race");
+});
+
+it("partitions Windows performance and Linux quality without dropping required evidence", () => {
+	const quality = buildNightlyPlan(context({ lane: "quality", goRaceRequired: true }));
+	expect(stepIds(quality)).toContain("go-race");
+	expect(stepIds(quality)).toContain("go-fuzz");
+	expect(stepIds(quality).some(id => id.startsWith("external-performance"))).toBe(false);
+	expect(quality.artifacts.some(item => item.kind === "external" && item.id === "external-correctness")).toBe(true);
+	const performance = buildNightlyPlan(context({ lane: "performance", goRaceSupported: true }));
+	expect(stepIds(performance)).toContain("external-performance-standard");
+	expect(stepIds(performance)).not.toContain("go-race");
+	expect(stepIds(performance)).not.toContain("go-fuzz");
+	for (const plan of [quality, performance]) expect(plan.artifacts.every(item => stepIds(plan).includes(item.stepId))).toBe(true);
 });

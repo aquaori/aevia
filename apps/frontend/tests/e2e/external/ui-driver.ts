@@ -4,15 +4,18 @@ import { CANVAS_OBSERVER_INIT_SCRIPT, installCanvasObserver } from "./canvas-obs
 import { installPerformanceObserver } from "./performance-observer";
 import { captureLabSnapshot, installLabRuntime, trackLabPage } from "./lab/install";
 
-const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
+export const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
 	timeoutMs: number;
 	minNonBlankRatio: number;
 	sampleSize: number;
 	stableFrames: number;
+	quietWindowMs: number;
+	waitForCollectionStop: boolean;
 	maxDiffRatio: number;
 }) => `
 (() => {
 	const measurementConfig = ${JSON.stringify(config)};
+	window.__externalRenderCollectionStopped = false;
 	window.__externalRoomRenderMeasurement = (async () => {
 		const startedAt = performance.now();
 		const timeoutAt = startedAt + measurementConfig.timeoutMs;
@@ -33,6 +36,7 @@ const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
 		let firstNonBlankMs = null;
 		let previous = observer.sample({ sampleSize: measurementConfig.sampleSize });
 		let stableCount = 0;
+		let stableSince = performance.now();
 		let frames = 0;
 		while (performance.now() < timeoutAt) {
 			await waitFrame();
@@ -40,21 +44,24 @@ const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
 			const current = observer.sample({ sampleSize: measurementConfig.sampleSize });
 			if (firstNonBlankMs === null && current.nonBlankRatio >= measurementConfig.minNonBlankRatio) {
 				firstNonBlankMs = performance.now() - startedAt;
+				stableSince = performance.now();
 			}
 			if (firstNonBlankMs !== null) {
 				const diff = observer.diffRatio(previous.pixels, current.pixels, 8);
 				if (diff <= measurementConfig.maxDiffRatio) {
 					stableCount += 1;
-					if (stableCount >= measurementConfig.stableFrames) {
+					if (stableCount >= measurementConfig.stableFrames && performance.now() - stableSince >= measurementConfig.quietWindowMs && (!measurementConfig.waitForCollectionStop || window.__externalRenderCollectionStopped)) {
 						return {
 							firstNonBlankMs,
-							visuallyStableMs: performance.now() - startedAt,
+							visuallyStableMs: stableSince - startedAt,
+							stabilityConfirmedMs: performance.now() - startedAt,
 							frames,
 							nonBlankRatio: current.nonBlankRatio,
 						};
 					}
 				} else {
 					stableCount = 0;
+					stableSince = performance.now();
 				}
 			}
 			previous = current;
@@ -126,7 +133,7 @@ export const openMeasuredRoomPage = async (
 	browser: Browser,
 	config: ExternalConfig,
 	user: RoomUser
-): Promise<BrowserPage & { initialRender: { firstNonBlankMs: number; visuallyStableMs: number; frames: number; nonBlankRatio: number } }> => {
+): Promise<BrowserPage & { initialRender: { firstNonBlankMs: number; visuallyStableMs: number; stabilityConfirmedMs: number; frames: number; nonBlankRatio: number } }> => {
 	const roomPage = await createRoomPage(browser, config);
 	const { page } = roomPage;
 
@@ -141,9 +148,18 @@ export const openMeasuredRoomPage = async (
 		minNonBlankRatio: 0.0015,
 		sampleSize: 96,
 		stableFrames: 2,
+		quietWindowMs: 500,
+		waitForCollectionStop: config.labEnabled,
 		maxDiffRatio: 0.0001,
 	}) });
 	await page.goto(`${config.frontendUrl}/room`);
+	if (config.labEnabled) {
+		await page.waitForFunction(() => {
+			const marks = (window as unknown as { __AEVIA_LAB__?: { marks: { name: string; detail?: { reason?: string } }[] } }).__AEVIA_LAB__?.marks ?? [];
+			return marks.some(mark => mark.name === "aevia.frame.first-paint") && marks.some(mark => mark.name === "aevia.frame.render-complete" && mark.detail?.reason === "init-stream-final");
+		}, undefined, { timeout: config.caseTimeoutMs });
+		await page.evaluate(() => { (window as unknown as { __externalRenderCollectionStopped: boolean }).__externalRenderCollectionStopped = true; });
+	}
 	const initialRender = await page.evaluate(
 		() => (window as Window & { __externalRoomRenderMeasurement?: unknown }).__externalRoomRenderMeasurement
 	);

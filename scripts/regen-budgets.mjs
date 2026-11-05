@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 // Regenerates apps/frontend/tests/e2e/external/budgets.json from the committed
 // performance baseline.
 //
@@ -65,6 +66,7 @@ fs.writeFileSync(
 	`${JSON.stringify(
 		{
 			version: 1,
+			sourceBaselineSha256: createHash("sha256").update(JSON.stringify(baseline.cases)).digest("hex"),
 			note: `Absolute ceilings derived from performance-external.baseline.json with ${percent}% headroom. Regenerate with scripts/regen-budgets.mjs after re-baselining.`,
 			cases,
 		},

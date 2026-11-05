@@ -100,6 +100,8 @@ const sendJson = (response, status, payload) => {
 		"Content-Type": "application/json; charset=utf-8",
 		"Content-Length": Buffer.byteLength(body),
 		"Cache-Control": "no-store",
+		"Referrer-Policy": "no-referrer",
+		"X-Content-Type-Options": "nosniff",
 	});
 	response.end(body);
 };
@@ -109,6 +111,8 @@ const sendText = (response, status, text, contentType = "text/plain; charset=utf
 		"Content-Type": contentType,
 		"Content-Length": Buffer.byteLength(text),
 		"Cache-Control": "no-store",
+		"Referrer-Policy": "no-referrer",
+		"X-Content-Type-Options": "nosniff",
 	});
 	response.end(text);
 };
@@ -119,7 +123,13 @@ const safeResolve = (baseDirectory, relativePath) => {
 	const base = path.resolve(baseDirectory);
 	const target = path.resolve(base, relativePath);
 	if (target !== base && !target.startsWith(`${base}${path.sep}`)) return null;
-	return target;
+	try {
+		const realBase = fs.realpathSync(base);
+		const realTarget = fs.realpathSync(target);
+		const relative = path.relative(realBase, realTarget);
+		if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+		return realTarget;
+	} catch { return null; }
 };
 
 const tokenMatches = (candidate) => {
@@ -160,8 +170,8 @@ const runEntries = () => {
 	}
 	for (const name of names) {
 		if (!RUN_ID_PATTERN.test(name)) continue;
-		const runDir = path.join(RUNS_ROOT, name);
-		if (!isDirectory(runDir)) continue;
+		const runDir = safeResolve(RUNS_ROOT, name);
+		if (!runDir || !isDirectory(runDir)) continue;
 		const labReport = readJson(path.join(runDir, "lab-report.json"));
 		const manifest = readJson(path.join(runDir, "run-manifest.json"));
 		if (labReport && typeof labReport === "object") {
@@ -261,8 +271,8 @@ const injectLabServe = (html) => {
 };
 
 const serveRunFile = (response, runId, rawRelative) => {
-	const runDir = path.join(RUNS_ROOT, runId);
-	if (!isDirectory(runDir)) return sendError(response, 404, `run 不存在: ${runId}`);
+	const runDir = safeResolve(RUNS_ROOT, runId);
+	if (!runDir || !isDirectory(runDir)) return sendError(response, 404, `run 不存在: ${runId}`);
 	let relative = rawRelative.replace(/^\/+/, "");
 	if (relative.startsWith("artifacts/")) relative = relative.slice("artifacts/".length);
 	if (relative === "" || relative.endsWith("/")) {
@@ -374,9 +384,9 @@ const startRerunJob = ({ runId, profile, scope, ids }) => {
 	activeJobId = job.id;
 	let child;
 	try {
-		child = spawn("npx", args, {
+		child = spawn(process.execPath, [path.join(ROOT, "node_modules/tsx/dist/cli.mjs"), ...args.slice(1)], {
 			cwd: ROOT,
-			shell: process.platform === "win32",
+			shell: false,
 			detached: process.platform !== "win32",
 			windowsHide: true,
 			env: { ...process.env, FORCE_COLOR: "0" },
@@ -417,6 +427,7 @@ const validCaseIdsOf = (labReport) => {
 		for (const item of rerun.cases) {
 			const id = typeof item?.id === "string" ? item.id : typeof item?.caseKey === "string" ? item.caseKey : "";
 			if (id) ids.add(id);
+			if (typeof item.selector === "string") ids.add(item.selector);
 		}
 	}
 	const suites = labReport && typeof labReport === "object" && labReport.suites && typeof labReport.suites === "object" ? labReport.suites : null;
@@ -477,8 +488,8 @@ const handleRerun = async (request, response) => {
 	for (const id of ids) {
 		if (!id || !ID_PATTERN.test(id)) return sendError(response, 400, `非法 id: ${id}`);
 	}
-	const runDir = path.join(RUNS_ROOT, runId);
-	if (!isDirectory(runDir)) return sendError(response, 404, `run 不存在: ${runId}`);
+	const runDir = safeResolve(RUNS_ROOT, runId);
+	if (!runDir || !isDirectory(runDir)) return sendError(response, 404, `run 不存在: ${runId}`);
 	const manifest = readJson(path.join(runDir, "run-manifest.json"));
 	if (!manifest || typeof manifest !== "object") return sendError(response, 404, `run 缺少 run-manifest.json: ${runId}`);
 	const labReport = readJson(path.join(runDir, "lab-report.json"));
@@ -500,7 +511,13 @@ const handleRerun = async (request, response) => {
 
 	if (profile === "single" && scope === "run") {
 		const rerun = manifest.rerun && typeof manifest.rerun === "object" ? manifest.rerun : null;
-		const previousIds = rerun && Array.isArray(rerun.ids) ? rerun.ids.filter((id) => typeof id === "string" && id) : [];
+		const previousIds = rerun && Array.isArray(rerun.ids) ? rerun.ids.filter(id => typeof id === "string" && id) : [];
+		if (previousIds.length === 0) for (const selection of manifest.selection?.selections ?? []) {
+			if (selection.kind === "go") previousIds.push(...selection.packages.map(pkg => `go:${pkg}${selection.runPattern ? `#${selection.runPattern}` : ""}`));
+			if (selection.kind === "vitest") previousIds.push(...selection.files.map(file => `file:${file}`), ...(selection.testNamePattern ? [`test:${selection.testNamePattern}`] : []));
+			if (selection.kind === "external") previousIds.push(...(selection.caseKeys?.length ? selection.caseKeys : selection.caseIds));
+		}
+		if (previousIds.some(id => !ID_PATTERN.test(id))) return sendError(response, 400, "Saved selection cannot be safely rerun");
 		if (previousIds.length === 0) {
 			return sendError(response, 400, "single profile 的整轮重跑需要原始 --only 选择，请使用 case scope");
 		}
@@ -523,6 +540,7 @@ const handleRerun = async (request, response) => {
 // ---------------------------------------------------------------------------
 
 const route = async (request, response) => {
+	if (request.headers.host !== `${HOST}:${PORT}` || (request.headers.origin && request.headers.origin !== `http://${HOST}:${PORT}`)) return sendError(response, 403, "Invalid Host or Origin");
 	const url = new URL(request.url ?? "/", `http://${HOST}:${PORT}`);
 	let pathname;
 	try {
@@ -552,7 +570,7 @@ const route = async (request, response) => {
 	if (runApiMatch && method === "GET") {
 		const runId = runApiMatch[1];
 		if (!RUN_ID_PATTERN.test(runId)) return sendError(response, 400, "非法 runId");
-		const labReport = readJson(path.join(RUNS_ROOT, runId, "lab-report.json"));
+		const labReport = readJson(safeResolve(RUNS_ROOT, `${runId}/lab-report.json`) ?? "");
 		if (!labReport) return sendError(response, 404, `run ${runId} 没有 lab-report.json（先由 runner 写出）`);
 		return sendJson(response, 200, labReport);
 	}

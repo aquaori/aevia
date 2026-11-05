@@ -1,3 +1,4 @@
+import { mergeGoCoverageBlocks } from "./go-coverage";
 // File role: fail-closed aggregation of current-run evidence plus the lab measurement gate.
 import fs from "node:fs";
 import path from "node:path";
@@ -30,6 +31,7 @@ export type ArtifactResult = {
 		unresolvedIds: string[];
 	};
 	caseIds?: string[];
+	caseKeys?: string[];
 	gate?: {
 		status: string;
 		aborted: boolean;
@@ -74,7 +76,7 @@ const readJson = (filePath: string): unknown => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-const finiteNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+const finiteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
 const stringArray = (value: unknown): value is string[] =>
 	Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -100,10 +102,14 @@ const validateVitest = (expected: ExpectedArtifact, payload: unknown): ArtifactR
 	}
 	const total = payload.numTotalTests;
 	const failed = payload.numFailedTests;
+	const reportedPassed = payload.numPassedTests;
 	const skipped = Number(payload.numPendingTests ?? 0) + Number(payload.numTodoTests ?? 0);
 	if (!finiteNumber(total) || !finiteNumber(failed) || !finiteNumber(skipped) || total <= 0) {
 		return missingResult(expected, "invalid", "Vitest report has missing or empty test counts");
 	}
+	if (!finiteNumber(reportedPassed) || reportedPassed + failed + skipped !== total || !Array.isArray(payload.testResults)) return missingResult(expected, "invalid", "Vitest report has incomplete or inconsistent case counts");
+	const assertions = payload.testResults.flatMap(result => isRecord(result) && Array.isArray(result.assertionResults) ? result.assertionResults : []);
+	if (assertions.length !== total || assertions.filter(item => isRecord(item) && item.status === "passed").length !== reportedPassed || assertions.filter(item => isRecord(item) && item.status === "failed").length !== failed || assertions.some(item => !isRecord(item) || !["passed", "failed", "pending", "todo", "skipped"].includes(String(item.status)))) return missingResult(expected, "invalid", "Vitest assertions do not match completed test counts");
 	return {
 		id: expected.id,
 		stepId: expected.stepId,
@@ -303,17 +309,20 @@ const validateExternal = (
 	const seen = new Set(ids);
 	const missing = expectedCases.filter((id) => !seen.has(id));
 	const unexpected = expectedCases.length > 0 ? uniqueIds.filter((id) => !expectedCases.includes(id)) : [];
+	const expectedKeys = expected.expectedCaseKeys;
+	const keyMismatch = expectedKeys !== undefined && (expectedKeys.length !== caseKeys.length || expectedKeys.some(key => !caseKeys.includes(key)));
 	const failed = results.filter((result) => result.status !== "passed").length;
 	const total = Number(payload.summary.total);
 	const summaryPassed = Number(payload.summary.passed);
 	const summaryFailed = Number(payload.summary.failed);
 	if (
-		!finiteNumber(total) || total !== results.length || duplicateKeys || failed > 0 ||
+		!finiteNumber(total) || total !== results.length || total === 0 || keyMismatch || duplicateKeys || failed > 0 ||
 		missing.length > 0 || unexpected.length > 0 || ids.length !== results.length ||
 		summaryPassed !== results.length || summaryFailed !== 0
 	) {
 		const issues = [
 			duplicateKeys ? "duplicate case keys" : "",
+			keyMismatch ? "case keys do not match the planned matrix" : "",
 			missing.length ? `missing cases: ${missing.join(", ")}` : "",
 			unexpected.length ? `unexpected cases: ${unexpected.join(", ")}` : "",
 			failed ? `${failed} cases did not pass` : "",
@@ -331,6 +340,7 @@ const validateExternal = (
 		passed: total,
 		failed: 0,
 		caseIds: uniqueIds,
+		caseKeys,
 	};
 };
 
@@ -444,6 +454,7 @@ const validateLabGate = (expected: ExpectedArtifact, payload: unknown): Artifact
 			passed: cases.length - invalidCases.length,
 			failed: Math.max(1, invalidCases.length),
 			caseIds,
+			caseKeys: cases.map(item => item.caseKey),
 			gate,
 			error: `Lab gate aborted because measurement collection failed: ${validityReasonSummary(reasons) || codeSummary(invalidCases.flatMap((item) => item.codes)) || "no reason recorded"}`,
 		};
@@ -458,6 +469,7 @@ const validateLabGate = (expected: ExpectedArtifact, payload: unknown): Artifact
 			passed: cases.length - invalidCases.length,
 			failed: invalidCases.length,
 			caseIds,
+			caseKeys: cases.map(item => item.caseKey),
 			gate,
 			error: `${invalidCases.length} case(s) had invalid measurements (${codeSummary(invalidCases.flatMap((item) => item.codes))}): ${invalidCases.map((item) => item.caseKey).join(", ")}`,
 		};
@@ -471,6 +483,7 @@ const validateLabGate = (expected: ExpectedArtifact, payload: unknown): Artifact
 		passed: cases.length,
 		failed: 0,
 		caseIds,
+		caseKeys: cases.map(item => item.caseKey),
 		gate,
 	};
 };
@@ -560,7 +573,7 @@ const validateGoCoverage = (expected: ExpectedArtifact, text: string): ArtifactR
 	let total = 0;
 	let covered = 0;
 	const packageCoverage = new Map<string, { total: number; covered: number }>();
-	for (const line of lines) {
+	for (const line of mergeGoCoverageBlocks(lines)) {
 		const match = line.match(/^(.+):\d+\.\d+,\d+\.\d+ (\d+) (\d+)$/);
 		if (!match) return missingResult(expected, "invalid", "Go coverage profile contains a malformed block");
 		const statements = Number(match[2]);
@@ -623,6 +636,14 @@ const validateArtifact = (
 		return missingResult(expected, "missing", "Expected current-run artifact is missing");
 	}
 	switch (expected.kind) {
+		case "oracle-check": {
+			const report = readJson(filePath);
+			if (!isRecord(report) || report.schemaVersion !== 1 || report.runId !== runId || !Array.isArray(report.checks)) return missingResult(expected, "invalid", "Oracle report identity/schema mismatch");
+			const checks = report.checks;
+			const ids = checks.filter(isRecord).map(item => item.id);
+			if (!expected.expectedCases || checks.length !== expected.expectedCases.length || new Set(ids).size !== ids.length || expected.expectedCases.some(id => !ids.includes(id)) || checks.some(item => !isRecord(item) || item.passed !== true)) return missingResult(expected, "failed", "Oracle checks missing or failed");
+			return { id: expected.id, stepId: expected.stepId, kind: expected.kind, status: "passed", total: checks.length, passed: checks.length, failed: 0 };
+		}
 		case "vitest":
 			return validateVitest(expected, readJson(filePath));
 		case "go-test":
@@ -654,7 +675,7 @@ const validateManifestValidity = (manifest: RunManifest, failures: string[]) => 
 		failures.push("Run manifest has no valid measurement validity block");
 		return;
 	}
-	if (manifest.validity.status === "invalid") {
+	if (manifest.validity.status !== "valid") {
 		failures.push(`Run measurement validity is invalid: ${validityReasonSummary(manifest.validity.reasons) || "no reason recorded"}`);
 	}
 	if (manifest.validity.aborted) {
@@ -695,6 +716,8 @@ export const buildAggregate = (manifest: RunManifest, runDir: string): Aggregate
 			failures.push(`Duplicate step result: ${stepId}`);
 		}
 	}
+	const artifactPaths = manifest.expectedArtifacts.map(artifact => path.resolve(runDir, artifact.path));
+	if (new Set(artifactPaths).size !== artifactPaths.length) failures.push("Run manifest contains duplicate artifact paths");
 	const artifactIds = manifest.expectedArtifacts.map((artifact) => artifact.id);
 	if (new Set(artifactIds).size !== artifactIds.length) failures.push("Run manifest contains duplicate artifact IDs");
 	const artifacts = manifest.expectedArtifacts.map((expected) => {
@@ -702,13 +725,15 @@ export const buildAggregate = (manifest: RunManifest, runDir: string): Aggregate
 		if (!step || step.status !== "passed") {
 			return missingResult(expected, "missing", `Required step did not pass: ${expected.stepId}`);
 		}
-		return validateArtifact(
-			expected,
-			runDir,
-			manifest.runId,
+		try {
+			return validateArtifact(
+				expected,
+				runDir,
+				manifest.runId,
 			manifest.source.revision || "",
 			manifest.source.dirtyPatchSha256 || ""
-		);
+			);
+		} catch (error) { return missingResult(expected, "invalid", error instanceof Error ? error.message : String(error)); }
 	});
 	for (const artifact of artifacts) {
 		if (artifact.status !== "passed") {
@@ -720,8 +745,8 @@ export const buildAggregate = (manifest: RunManifest, runDir: string): Aggregate
 	for (const externalArtifact of externalArtifacts) {
 		const gateArtifact = gateArtifacts.find((artifact) => artifact.stepId === externalArtifact.stepId);
 		if (!externalArtifact.caseIds || !gateArtifact?.caseIds) continue;
-		const externalIds = new Set(externalArtifact.caseIds);
-		const gateIds = new Set(gateArtifact.caseIds);
+		const externalIds = new Set(externalArtifact.caseKeys ?? externalArtifact.caseIds);
+		const gateIds = new Set(gateArtifact.caseKeys ?? gateArtifact.caseIds);
 		const onlyExternal = [...externalIds].filter((id) => !gateIds.has(id));
 		const onlyGate = [...gateIds].filter((id) => !externalIds.has(id));
 		if (onlyExternal.length > 0 || onlyGate.length > 0) {
@@ -808,7 +833,7 @@ const atomicWrite = (filePath: string, content: string) => {
  */
 export const shouldPublishLatest = (manifest: RunManifest, report: AggregateReport): boolean =>
 	report.status === "passed" &&
-	manifest.validity?.status !== "invalid" &&
+	manifest.validity?.status === "valid" &&
 	manifest.validity?.aborted !== true &&
 	manifest.recorded !== false;
 
@@ -838,13 +863,7 @@ export const writeAggregateReport = (manifestPath: string) => {
 	const report = buildAggregate(manifest, runDir);
 	atomicWrite(path.join(runDir, "test-report.json"), JSON.stringify(report, null, 2));
 	atomicWrite(path.join(runDir, "test-report.html"), reportHtml(report));
-	try {
-		writeLabReport({ runDir, manifest, aggregate: report });
-	} catch (error) {
-		console.error(
-			`[test-report] unified lab report generation failed: ${error instanceof Error ? error.message : String(error)}`
-		);
-	}
+	writeLabReport({ runDir, manifest, aggregate: report });
 	if (manifest.finishedAt && shouldPublishLatest(manifest, report)) {
 		publishLatestPointer(process.cwd(), manifest.runId, manifest.finishedAt);
 	}

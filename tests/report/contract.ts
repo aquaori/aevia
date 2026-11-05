@@ -11,7 +11,8 @@ export type ArtifactKind =
 	| "feature-catalog"
 	| "lab-gate"
 	| "lab-inventory"
-	| "perf-request";
+	| "perf-request"
+	| "oracle-check";
 
 /** Lab runner modes. `custom` keeps legacy/interactive profiles representable. */
 export const LAB_MODES = ["single", "smoke", "ci", "nightly", "custom"] as const;
@@ -26,6 +27,9 @@ export type ValidityStatus = (typeof VALIDITY_STATUSES)[number];
  */
 export const VALIDITY_CODES = [
 	"MISSING_MARK",
+	"MISSING_CONTRACT",
+	"COLLECTION_FAILED",
+	"SOURCE_CHANGED",
 	"UNPAIRED_MARK",
 	"NEGATIVE_DURATION",
 	"DURATION_OUT_OF_RANGE",
@@ -76,6 +80,7 @@ export type ExpectedArtifact = {
 	kind: ArtifactKind;
 	path: string;
 	expectedCases?: string[];
+	expectedCaseKeys?: string[];
 	expectedSources?: string[];
 };
 
@@ -86,6 +91,7 @@ export type GateCase = {
 	id: string;
 	suite: string;
 	status: "valid" | "invalid";
+	contractKind?: "span" | "external" | "sentinel" | "none";
 	codes: ValidityCode[];
 	details: string[];
 };
@@ -166,6 +172,7 @@ export type RunManifest = {
 		dirtyPatchSha256: string;
 		trackedChanges?: string[];
 		untrackedFiles?: string[];
+		fileSha256?: Record<string, string>;
 	};
 	startedAt: string;
 	finishedAt?: string;
@@ -176,6 +183,9 @@ export type RunManifest = {
 	recorded: boolean;
 	rerun?: RunRerun;
 	measurement?: RunMeasurement;
+	selection?: import("../lab/resolve-only").LabResolveResult;
+	lane?: "all" | "quality" | "performance";
+	capabilities?: { goRace?: { supported: boolean; exitCode: number | null; detail: string } };
 };
 
 export const isLabMode = (value: unknown): value is LabMode =>

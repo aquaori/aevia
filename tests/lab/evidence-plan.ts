@@ -15,6 +15,7 @@ export type LabEvidenceStep = {
 	stdoutArtifact?: string;
 	env?: NodeJS.ProcessEnv;
 	requiresServices?: boolean;
+	freshServices?: boolean;
 	action?: "source-check";
 };
 
@@ -29,6 +30,9 @@ export type LabPlanContext = {
 	externalEnv: NodeJS.ProcessEnv;
 	cleanTree: boolean;
 	perfRequest: boolean;
+	goRaceSupported?: boolean;
+	goRaceRequired?: boolean;
+	lane?: "all" | "quality" | "performance";
 };
 
 export type LabEvidencePlan = {
@@ -66,20 +70,17 @@ const boundaryScalesOverride = () => {
  * problem rather than a product regression. Probe once per run and omit the step when the
  * detector cannot be built at all.
  */
-const raceProbeCache = new Map<string, boolean>();
-export const supportsGoRaceDetector = (backendDir: string): boolean => {
+export type GoRaceCapability = { supported: boolean; exitCode: number | null; detail: string };
+const raceProbeCache = new Map<string, GoRaceCapability>();
+export const probeGoRaceDetector = (backendDir: string): GoRaceCapability => {
 	const cached = raceProbeCache.get(backendDir);
-	if (cached !== undefined) return cached;
-	const probe = spawnSync("go", ["test", "-race", "-run=^$", "./internal/config"], {
-		cwd: backendDir,
-		encoding: "utf8",
-		timeout: 180000,
-		windowsHide: true,
-	});
-	const supported = probe.status === 0;
-	raceProbeCache.set(backendDir, supported);
-	return supported;
+	if (cached) return cached;
+	const probe = spawnSync("go", ["test", "-race", "-run=^$", "./internal/config"], { cwd: backendDir, encoding: "utf8", timeout: 30000, windowsHide: true });
+	const capability = { supported: probe.status === 0, exitCode: probe.status, detail: probe.error?.message || probe.stderr || probe.stdout || `exit ${probe.status}` };
+	raceProbeCache.set(backendDir, capability);
+	return capability;
 };
+export const supportsGoRaceDetector = (backendDir: string): boolean => probeGoRaceDetector(backendDir).supported;
 
 const sourceCheckStep = (): LabEvidenceStep => ({
 	id: "source-check",
@@ -147,7 +148,7 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 	const packageList = path.join(ctx.runDir, "backend", "packages.txt");
 	const goTests = path.join(ctx.runDir, "backend", "go-tests.jsonl");
 	const goCoverage = path.join(ctx.runDir, "backend", "coverage.out");
-	const historyFlag = ctx.cleanTree ? " --import-current-to-history=true" : "";
+	const historyFlag = ""; // The parent publishes only after the entire run passes source-check.
 	const steps: LabEvidenceStep[] = [
 		{ id: "build", title: "Production build", description: "Building the backend and typechecking/building the frontend.", command: "npm --silent run build", timeoutMs: 300000 },
 		{ id: "go-vet", title: "Go static analysis", description: "Running go vet across all backend packages.", command: "go vet ./...", cwd: ctx.backendDir, timeoutMs: 180000 },
@@ -239,7 +240,7 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			timeoutMs: 900000,
 			env: ctx.externalEnv,
 		},
-		...(supportsGoRaceDetector(ctx.backendDir)
+		...((ctx.goRaceSupported === true || ctx.goRaceRequired === true)
 			? [
 					{
 						id: "go-race",
@@ -257,7 +258,8 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			description: "Fuzzing the public scene payload validator for 30 seconds with a bounded worker count.",
 			command: "go test ./internal/gateway -run=^$ -fuzz=FuzzValidateScenePayloadNeverPanics -fuzztime=30s -parallel=2",
 			cwd: ctx.backendDir,
-			timeoutMs: 180000,
+			env: { GOCACHE: path.join(ctx.rootDir, "tests", ".tmp", "go-fuzz-cache") },
+			timeoutMs: 300000,
 		},
 		{
 			id: "lab-inventory",
@@ -288,6 +290,10 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			stepId: "external-performance-standard",
 			kind: "external",
 			path: "external/performance-external-standard-external-results.json",
+			expectedCaseKeys: ["gpu_cpuHigh", "gpu_cpuLow", "noGpu_cpuHigh", "noGpu_cpuLow"].flatMap(env => [
+				...[10000, 50000, 100000].map(scale => `full-render-${scale}|${env}|${scale}`),
+				`incremental-remote-first-pixel|${env}|`, `local-realtime-first-pixel|${env}|`,
+			]),
 		},
 		{
 			id: "performance-external-resilience",
@@ -335,7 +341,9 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 		},
 		{ id: "lab-inventory", stepId: "lab-inventory", kind: "lab-inventory", path: "catalog/lab-inventory.json" },
 	];
-	return { steps, artifacts };
+	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz") : steps;
+	const selectedIds = new Set(selectedSteps.map(step => step.id));
+	return { steps: selectedSteps, artifacts: artifacts.filter(artifact => selectedIds.has(artifact.stepId)) };
 };
 
 export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResult): LabEvidencePlan => {
@@ -369,7 +377,7 @@ export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResul
 			id: "go-test",
 			title: `Focused Go test (${go.packages.join(", ")})`,
 			description: "Running only the Go packages selected for this single-point verification.",
-			command: `go test ${pattern}${go.packages.join(" ")}`,
+			command: `go test -json ${pattern}${go.packages.join(" ")}`,
 			cwd: ctx.backendDir,
 			stdoutArtifact: path.join(ctx.runDir, "backend", "go-tests.jsonl"),
 			timeoutMs: 600000,
@@ -378,30 +386,35 @@ export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResul
 	}
 	const external = selection.selections.find((item) => item.kind === "external");
 	if (external && external.caseIds.length > 0) {
-		steps.push({
-			id: "external-focused",
-			title: `Focused external case (${external.caseIds.length})`,
-			description: "Running only the external cases selected for this single-point verification.",
-			command: externalRun(ctx, "correctness-full", ` --case-ids=${external.caseIds.join(",")}`),
-			cwd: ctx.frontendDir,
-			requiresServices: true,
-			timeoutMs: 900000,
-			env: ctx.externalEnv,
-		});
-		artifacts.push({
-			id: "external-focused",
-			stepId: "external-focused",
-			kind: "external",
-			path: "external/correctness-full-external-results.json",
-			expectedCases: external.caseIds,
-		});
-		artifacts.push({
-			id: "external-focused-gate",
-			stepId: "external-focused",
-			kind: "lab-gate",
-			path: "external/correctness-full-lab-gate.json",
-		});
+		const families = new Map<string, string[]>();
+		for (const id of external.caseIds) {
+			const definition = Object.values(EXTERNAL_CASES).find(item => item.id === id || (item.id === "full-render" && /^full-render-\d+$/.test(id)));
+			if (!definition) throw new Error(`Unknown external case: ${id}`);
+			const family = id.startsWith("boundary-") ? id : id === EXTERNAL_CASES.networkRecovery.id ? "resilience" :
+				id.startsWith("full-render-") || id === EXTERNAL_CASES.remoteFirstPixelPerformance.id || id === EXTERNAL_CASES.localFirstPixelPerformance.id ? "standard" : "correctness";
+			families.set(family, [...(families.get(family) ?? []), id]);
+		}
+		for (const [family, ids] of families) {
+			const correctness = family === "correctness";
+			const suite = correctness ? "correctness-full" : "performance-external";
+			const caseSet = family.startsWith("boundary-") ? "boundary" : family;
+			const stepId = correctness ? "external-focused" : `external-focused-${family}`;
+			const reportDir = correctness ? "" : family;
+			const tag = correctness ? suite : `${suite}-${caseSet}`;
+			const keys = external.caseKeys?.filter(key => ids.includes(key.split("|")[0]!)) ?? [];
+			const scales = ids.filter(id => /^full-render-\d+$/.test(id)).map(id => Number(id.slice("full-render-".length)));
+			const selectionFlags = `${keys.length ? ` --case-keys=${q(ctx, keys.join(","))}` : ""}${scales.length ? ` --scales=${scales.join(",")}` : ""}`;
+			steps.push({
+				id: stepId, title: `Focused external case (${ids.length})`, description: "Running selected cases in their owning suite.",
+				command: externalRun(ctx, suite, ` --case-ids=${ids.join(",")}${selectionFlags}${correctness ? "" : ` --case-set=${caseSet} --matrix=${caseSet === "standard"}${caseSet === "boundary" ? boundaryScalesOverride() : ""}`}`, reportDir),
+				cwd: ctx.frontendDir, requiresServices: true, freshServices: caseSet === "boundary", timeoutMs: 900000, env: ctx.externalEnv
+			});
+			const prefix = `external/${reportDir ? reportDir + "/" : ""}${tag}`;
+			artifacts.push({ id: stepId, stepId, kind: "external", path: `${prefix}-external-results.json`, expectedCases: ids, expectedCaseKeys: keys.length ? keys : undefined });
+			artifacts.push({ id: `${stepId}-gate`, stepId, kind: "lab-gate", path: `${prefix}-lab-gate.json` });
+		}
 	}
+
 	steps.push(sourceCheckStep());
 	return { steps, artifacts };
 };
@@ -424,4 +437,15 @@ const withOptionalPerfRequest = (plan: LabEvidencePlan, ctx: LabPlanContext): La
 		steps,
 		artifacts: [...plan.artifacts, { id: "perf-request", stepId: "perf-request", kind: "perf-request", path: "perf-request.json" }],
 	};
+};
+
+export const withCanvasOracle = (plan: LabEvidencePlan, ctx: LabPlanContext): LabEvidencePlan => {
+	const steps = [...plan.steps];
+	const before = steps.findIndex(step => step.id === "browser-test");
+	steps.splice(before < 0 ? steps.length - 1 : before, 0, {
+		id: "canvas-oracle", title: "Canvas blank oracle sensitivity", description: "Checking an empty canvas and a one-pixel faint residual in a real browser.",
+		command: `${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules/tsx/dist/cli.mjs"))} tests/lab/check-blank-oracle.ts --output=${q(ctx, path.join(ctx.runDir, "frontend/blank-oracle.json"))}`,
+		cwd: ctx.canonicalRootDir, timeoutMs: 60000,
+	});
+	return { steps, artifacts: [...plan.artifacts, { id: "canvas-oracle", stepId: "canvas-oracle", kind: "oracle-check", path: "frontend/blank-oracle.json", expectedCases: ["blank", "faint-residual", "staged-render"] }] };
 };

@@ -18,6 +18,7 @@ export type LabGoSelection = {
 export type LabExternalSelection = {
 	kind: "external";
 	caseIds: string[];
+	caseKeys?: string[];
 };
 
 export type LabSelection = LabVitestSelection | LabGoSelection | LabExternalSelection;
@@ -119,6 +120,7 @@ const mergeSelections = (selections: LabSelection[]): LabSelection[] => {
 	const goPackages = new Set<string>();
 	const goRunPatterns = new Set<string>();
 	const caseIds = new Set<string>();
+	const caseKeys = new Set<string>();
 	for (const selection of selections) {
 		if (selection.kind === "vitest") {
 			selection.files.forEach((file) => vitestFiles.add(file));
@@ -128,6 +130,7 @@ const mergeSelections = (selections: LabSelection[]): LabSelection[] => {
 			if (selection.runPattern) goRunPatterns.add(selection.runPattern);
 		} else {
 			selection.caseIds.forEach((entry) => caseIds.add(entry));
+			selection.caseKeys?.forEach(entry => caseKeys.add(entry));
 		}
 	}
 	const merged: LabSelection[] = [];
@@ -142,7 +145,7 @@ const mergeSelections = (selections: LabSelection[]): LabSelection[] => {
 		merged.push({ kind: "go", packages: [...goPackages], runPattern: goRunPatterns.size > 0 ? [...goRunPatterns].join("|") : undefined });
 	}
 	if (caseIds.size > 0) {
-		merged.push({ kind: "external", caseIds: [...caseIds] });
+		merged.push({ kind: "external", caseIds: [...caseIds], caseKeys: caseKeys.size ? [...caseKeys] : undefined });
 	}
 	return merged;
 };
@@ -161,7 +164,8 @@ export const resolveOnlySelectors = (selectors: string[], rootDir: string): LabR
 			continue;
 		}
 		if (kind === "case") {
-			selections.push({ kind: "external", caseIds: value.split(",").map((item) => item.trim()).filter(Boolean) });
+			const targets = value.split(",").map(item => item.trim()).filter(Boolean);
+			selections.push({ kind: "external", caseIds: targets.map(item => item.split("|")[0]!), caseKeys: targets.filter(item => item.includes("|")) });
 			continue;
 		}
 		if (kind === "test") {
@@ -170,6 +174,7 @@ export const resolveOnlySelectors = (selectors: string[], rootDir: string): LabR
 		}
 		if (kind === "go") {
 			const [packageName, runPattern] = value.split("#");
+			if (packageName && !/^[A-Za-z0-9_./-]+$/.test(packageName)) throw new Error("Invalid Go package selector");
 			selections.push({ kind: "go", packages: [packageName || "."], runPattern: runPattern || undefined });
 			continue;
 		}
@@ -189,6 +194,7 @@ export const resolveSinceRef = (ref: string, rootDir: string): LabResolveResult 
 	const specs = collectSpecFiles(rootDir);
 	const changed = [
 		...git(rootDir, ["diff", "--name-only", `${ref}...HEAD`]),
+		...git(rootDir, ["diff", "--name-only", "HEAD"]),
 		...git(rootDir, ["ls-files", "--others", "--exclude-standard"]),
 	];
 	const selections: LabSelection[] = [];

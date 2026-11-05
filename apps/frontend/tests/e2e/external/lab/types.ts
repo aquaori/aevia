@@ -101,6 +101,7 @@ export type LabCaseEvaluation = {
 	caseKey: string;
 	scenarioKey: string;
 	status: "valid" | "invalid";
+	contractKind?: "span" | "external" | "sentinel" | "none";
 	codes: ValidityCode[];
 	details: string[];
 	witnessDeltaMs: MetricMap;

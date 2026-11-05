@@ -5,6 +5,7 @@ import {
 	evaluateCase,
 	evaluateScenario,
 	neutralCaseEvaluation,
+	failedCollectionEvaluation,
 } from "../../apps/frontend/tests/e2e/external/lab/evaluate";
 import { DEFAULT_LAB_POLICY } from "../../apps/frontend/tests/e2e/external/lab/policy";
 import type {
@@ -143,4 +144,18 @@ describe("lab measurement gate", () => {
 		expect(aborted.scenarios[0]?.verdict).toBe("aborted");
 		expect(DEFAULT_LAB_POLICY.abortRatio).toBe(1);
 	});
+});
+
+it("rejects unknown measurement contracts instead of certifying skipped collection", () => {
+	expect(evaluateCase(baseCase("unknown-case")).status).toBe("invalid");
+});
+
+it("does not certify a harness setup failure as valid measurement collection", () => {
+	const failure = failedCollectionEvaluation({ caseId: "boundary-full-render-until-crash", caseKey: "boundary", scenarioKey: "boundary", detail: "setup acknowledgement timed out" });
+	expect(failure.status).toBe("invalid");
+	expect(failure.codes).toEqual(["COLLECTION_FAILED"]);
+	expect(evaluateScenario([failure]).verdict).toBe("aborted");
+});
+it("rejects missing required external measurements", () => {
+	expect(evaluateCase({ ...baseCase("resilience-network-recovery"), external: {} }).codes).toContain("EMPTY_METRICS");
 });

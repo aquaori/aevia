@@ -76,6 +76,8 @@ export type LabWitnessSpec = {
 
 export type CaseLabContract = {
 	requiredSpans: LabSpanSpec[];
+	requiredExternalMetrics?: string[];
+	runtimeRequired?: boolean;
 	witnesses: LabWitnessSpec[];
 	requireSentinel: boolean;
 	checkPageErrors: boolean;
@@ -96,11 +98,13 @@ const markSelector = (name: string, detailIncludes?: LabMarkSelector["detailIncl
  *   arrival while the instrumented figure is the literal first paint.
  * - `visuallyStableMs` = document start to the last worker render-complete
  *   (`aevia.frame.render-complete`, main-thread settlement of the worker batch). This is
- *   semantically the same event the external observer watches, so it is the witness metric.
+ *   compared with the external pixel quiet-window observation as an approximate witness;
+ *   worker completion does not itself prove compositor presentation or sustained stability.
  *
  * Worker timestamps are never subtracted: every span endpoint here is a main-thread mark.
  */
 const FULL_RENDER_CONTRACT: CaseLabContract = {
+	requiredExternalMetrics: ["firstNonBlankMsMedian", "visuallyStableMsMedian"],
 	requiredSpans: [
 		{
 			metric: "firstNonBlankMs",
@@ -109,9 +113,6 @@ const FULL_RENDER_CONTRACT: CaseLabContract = {
 			after: markSelector(LAB_MARKS.initMeta),
 			end: [
 				markSelector(LAB_MARKS.frameFirstPaint),
-				markSelector(LAB_MARKS.workerAck, { key: "type", valueIncludes: "scene-operation-rendered" }),
-				markSelector(LAB_MARKS.frameCommit),
-				markSelector(LAB_MARKS.initRenderComplete),
 			],
 			endPick: "first",
 		},
@@ -120,7 +121,7 @@ const FULL_RENDER_CONTRACT: CaseLabContract = {
 			thread: "main",
 			start: markSelector(LAB_MARKS.pageStart),
 			after: markSelector(LAB_MARKS.initMeta),
-			end: [markSelector(LAB_MARKS.frameRenderComplete), markSelector(LAB_MARKS.initRenderComplete)],
+			end: [markSelector(LAB_MARKS.frameRenderComplete, { key: "reason", valueIncludes: "init-stream-final" })],
 			endPick: "last",
 		},
 	],
@@ -134,6 +135,7 @@ const FULL_RENDER_CONTRACT: CaseLabContract = {
 // ws message. Until instrumentation exposes that settlement, the case keeps its external
 // pixel oracle but is not measurement-gated (sentinel + page errors only).
 const INCREMENTAL_REMOTE_FIRST_PIXEL_CONTRACT: CaseLabContract = {
+	requiredExternalMetrics: ["remoteFirstPixelMsMedian", "framesToFirstPixelMedian"],
 	requiredSpans: [],
 	witnesses: [],
 	requireSentinel: true,
@@ -141,6 +143,7 @@ const INCREMENTAL_REMOTE_FIRST_PIXEL_CONTRACT: CaseLabContract = {
 };
 
 const LOCAL_REALTIME_FIRST_PIXEL_CONTRACT: CaseLabContract = {
+	requiredExternalMetrics: ["inputToFirstPixelMsMedian", "inputToFirstPixelFramesMedian"],
 	requiredSpans: [
 		{
 			metric: "inputToFirstPixelMs",
@@ -178,6 +181,12 @@ const CASE_CONTRACTS: Record<string, CaseLabContract> = {
 	[EXTERNAL_CASES.concurrentCrossing.id]: SENTINEL_ONLY_CONTRACT(true),
 	[EXTERNAL_CASES.lateJoiner.id]: SENTINEL_ONLY_CONTRACT(true),
 	[EXTERNAL_CASES.multipageIsolation.id]: MULTIPAGE_ISOLATION_CONTRACT,
+	[EXTERNAL_CASES.undoRedoConvergence.id]: SENTINEL_ONLY_CONTRACT(true),
+	[EXTERNAL_CASES.lateJoinerUndoConsistency.id]: SENTINEL_ONLY_CONTRACT(true),
+	[EXTERNAL_CASES.networkRecovery.id]: { ...SENTINEL_ONLY_CONTRACT(false), requiredExternalMetrics: ["worstRecoveryMs"] },
+	[EXTERNAL_CASES.fullRenderBoundary.id]: { ...SENTINEL_ONLY_CONTRACT(false), runtimeRequired: false, requiredExternalMetrics: ["lastSurvivedScale", "peakJsHeapMb"] },
+	[EXTERNAL_CASES.heapGrowthBoundary.id]: { ...SENTINEL_ONLY_CONTRACT(false), runtimeRequired: false, requiredExternalMetrics: ["heapGrowthMb"] },
+	[EXTERNAL_CASES.redrawFreezeBoundary.id]: { ...SENTINEL_ONLY_CONTRACT(false), runtimeRequired: false, requiredExternalMetrics: ["lastSurvivedConcurrency"] },
 	[EXTERNAL_CASES.remoteFirstPixelPerformance.id]: INCREMENTAL_REMOTE_FIRST_PIXEL_CONTRACT,
 	[EXTERNAL_CASES.localFirstPixelPerformance.id]: LOCAL_REALTIME_FIRST_PIXEL_CONTRACT,
 };
@@ -185,10 +194,8 @@ const CASE_CONTRACTS: Record<string, CaseLabContract> = {
 const FULL_RENDER_PREFIX = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
 
 /**
- * Returns the lab contract for a case, or `null` when the case is not gated.
- * Boundary suites and network recovery intentionally return `null`: they
- * provoke renderer pressure and reconnects, so console errors and missing
- * marks there are expected product conditions rather than harness defects.
+ * Unknown contracts return null and fail collection. Boundary contracts use
+ * external metrics because renderer pressure may intentionally remove marks.
  */
 export const caseLabContract = (caseId: string): CaseLabContract | null => {
 	if (caseId.startsWith(FULL_RENDER_PREFIX)) return FULL_RENDER_CONTRACT;

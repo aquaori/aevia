@@ -111,8 +111,8 @@ const measurementRows = (measurements: LabMeasurement[]): string => {
 				`<td class="num">${fmt(measurement.learned, 2)}</td>` +
 				`<td class="num">${fmtDelta(measurement.deltaPercent)}</td>` +
 				`<td>${badge(measurement.verdict)}</td>` +
-				`<td>${measurement.validity.startsWith("invalid") ? badge("invalid", measurement.validity) : badge("valid")}</td>` +
-				`<td>${rerunButton("case", measurement.id)}</td>` +
+				`<td>${measurement.validity.startsWith("invalid") ? badge("invalid", measurement.validity) : badge(measurement.validity === "unknown" ? "unknown" : "valid")}</td>` +
+				`<td>${rerunButton("case", `${measurement.id}|${measurement.env || ""}|${measurement.scale ?? ""}`)}</td>` +
 				`</tr>`
 		)
 		.join("");
@@ -168,6 +168,8 @@ const renderRunMeta = (report: LabReport): string => {
 		["开始 / 结束", `<code>${esc(run.startedAt || "—")}</code> → <code>${esc(run.finishedAt || "—")}</code>`],
 		["耗时", fmtDuration(run.durationMs)],
 		["采集策略", `<code>${esc(run.policy)}</code>`],
+		["契约范围", esc(["span", "external", "sentinel", "none"].map(kind => `${kind}: ${report.gate.cases.filter(item => (item.contractKind || "none") === kind).length}`).join(" · "))],
+		["标准性能结论", run.performanceVerdict === "not-run" ? "未运行" : run.performanceVerdict === "failed" ? "失败" : run.performanceVerdict === "passed" ? "通过（同条件基线与学习检查）" : "未判定：基线条件与统计校准尚未认证"],
 		["重跑来源", run.rerunOf ? `<code>${esc(run.rerunOf)}</code> · scope=${esc(run.rerunScope)} · ids=${esc(run.rerunIds.join(", "))}` : "—"],
 	];
 	return `<section class="meta"><dl>${rows.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd>${value}</dd></div>`).join("")}</dl></section>`;
@@ -225,8 +227,7 @@ const renderGate = (report: LabReport): string => {
 			: `<span class="muted">missingMarks: 无</span>`
 	}</div>
 <h3>双源偏差（instrumented vs external）</h3>
-<div class="table-wrap"><table><thead><tr><th>caseKey</th><th>指标</th><th class="num">external</th><th class="num">instrumented</th><th class="num">Δ witness (ms)</th><th class="num">Δ%</th></tr></thead><tbody>${
-		dual.length === 0
+<div class="table-wrap"><table><thead><tr><th>caseKey</th><th>指标</th><th class="num">external</th><th class="num">instrumented</th><th class="num">Δ witness (ms)</th><th class="num">基线变化</th></tr></thead><tbody>${dual.length === 0
 			? `<tr><td colspan="6" class="empty">本次运行没有成对的 instrumented/external 样本。</td></tr>`
 			: dual
 					.slice(0, 200)
@@ -387,7 +388,7 @@ const renderPanels = (report: LabReport): string => {
 	const e2ePanel = `<h2>E2E（正确性）</h2>${renderExternalSuites(report, "e2e")}`;
 	const perfPanel = `<h2>性能</h2>
 <p class="muted">external=${report.measurements.filter((item) => item.source !== "instrumented").length} · instrumented=${report.measurements.filter((item) => item.source === "instrumented").length} · 双源配对=${report.measurements.filter((item) => item.instrumented !== null && item.external !== null).length}</p>
-<div class="table-wrap"><table><thead><tr><th>case</th><th>环境</th><th class="num">规模</th><th>指标</th><th class="num">external</th><th class="num">instrumented</th><th class="num">Δwitness</th><th class="num">baseline</th><th class="num">budget</th><th class="num">learned</th><th class="num">Δ%</th><th>判定</th><th>有效性</th><th>操作</th></tr></thead><tbody>${measurementRows(report.measurements)}</tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>case</th><th>环境</th><th class="num">规模</th><th>指标</th><th class="num">external</th><th class="num">instrumented</th><th class="num">Δwitness</th><th class="num">baseline</th><th class="num">budget</th><th class="num">learned</th><th class="num">基线变化</th><th>判定</th><th>有效性</th><th>操作</th></tr></thead><tbody>${measurementRows(report.measurements)}</tbody></table></div>
 <h3>性能套件</h3>${renderExternalSuites(report, "performance")}`;
 	return `<section class="panel" data-panel="overview"><h2>总览</h2><h3>步骤</h3>${renderSteps(report)}<h3>失败与无效原因</h3>${renderFailures(report)}<h3>聚合产物</h3>${renderArtifacts(report)}</section>
 <section class="panel" data-panel="unit" hidden>${unitPanel}</section>

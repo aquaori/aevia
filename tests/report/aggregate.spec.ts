@@ -49,7 +49,7 @@ const createFixture = () => {
 			{ id: "http.reserved", kind: "http", surface: "POST /v2/rooms", state: "rejection_contract_verified", oracle: "Returns 501", evidence: [] },
 		],
 	});
-	write("vitest.json", { success: true, numTotalTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0 });
+	write("vitest.json", { success: true, numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, testResults: [{ assertionResults: [{ status: "passed" }] }] });
 	write("coverage-summary.json", {
 		total: {
 			statements: { total: 10, covered: 8 },
@@ -115,7 +115,7 @@ describe("run evidence aggregation", () => {
 
 	it("rejects skipped Vitest cases and empty coverage denominators", () => {
 		const { manifest, runDir, write } = createFixture();
-		write("vitest.json", { success: true, numTotalTests: 1, numFailedTests: 0, numPendingTests: 1, numTodoTests: 0 });
+		write("vitest.json", { success: true, numTotalTests: 1, numPassedTests: 0, numFailedTests: 0, numPendingTests: 1, numTodoTests: 0, testResults: [{ assertionResults: [{ status: "pending" }] }] });
 		const expectedCoverage = manifest.expectedArtifacts.find((artifact) => artifact.kind === "coverage")!;
 		write("coverage-summary.json", {
 			total: {
@@ -222,7 +222,7 @@ const validGatePayload = (): LabGateReport => ({
 	cases: [
 		{
 			scenarioKey: "correctness-full/standard",
-			caseKey: "room-create",
+			caseKey: "room-create||",
 			id: "room-create",
 			suite: "correctness-full",
 			status: "valid",
@@ -318,14 +318,14 @@ describe("lab measurement gate aggregation", () => {
 		expect(shouldPublishLatest(manifest, report)).toBe(false);
 	});
 
-	it("accepts degraded validity when the run itself was not aborted", () => {
+	it("rejects degraded validity even when no scenario aborted", () => {
 		const { manifest, runDir } = createFixture();
 		manifest.validity = {
 			status: "degraded",
 			aborted: false,
 			reasons: [{ scope: "case", id: "room-create", code: "EXTERNAL_DISAGREEMENT" }],
 		};
-		expect(buildAggregate(manifest, runDir).status).toBe("passed");
+		expect(buildAggregate(manifest, runDir).status).toBe("failed");
 	});
 
 	it("rejects a gate whose case coverage does not match external results", () => {
@@ -358,4 +358,36 @@ describe("lab measurement gate aggregation", () => {
 		).toBe(false);
 		expect(shouldPublishLatest(manifest, { ...report, status: "failed" })).toBe(false);
 	});
+});
+
+it("rejects a missing planned matrix member even when summaries agree", () => {
+	const { manifest, runDir } = createFixture();
+	manifest.expectedArtifacts.find(item => item.kind === "external")!.expectedCaseKeys = ["room-create||", "room-create|other|"];
+	expect(buildAggregate(manifest, runDir).failures.join(" ")).toContain("planned matrix");
+});
+it("merges cross-package coverage blocks before calculating coverage", () => {
+	const { manifest, runDir, write } = createFixture();
+	write("go-coverage.out", "mode: set\nexample/room/room.go:1.1,2.1 2 0\nexample/room/room.go:1.1,2.1 2 1\nexample/room/room.go:3.1,4.1 3 0\n");
+	const coverage = buildAggregate(manifest, runDir).artifacts.find(item => item.kind === "go-coverage")!;
+	expect(coverage.coverageByPackage?.["example/room"]).toMatchObject({ total: 5, covered: 2, percent: 40 });
+});
+
+it("requires the independent browser oracle to be complete and bound to this run", () => {
+	const { manifest, runDir, write } = createFixture();
+	manifest.expectedArtifacts.push({ id: "oracle", stepId: "verification", kind: "oracle-check", path: "oracle.json", expectedCases: ["blank", "faint-residual"] });
+	const payload = { schemaVersion: 1, runId: manifest.runId, checks: [{ id: "blank", passed: true }, { id: "faint-residual", passed: true }] };
+	write("oracle.json", payload);
+	expect(buildAggregate(manifest, runDir).status).toBe("passed");
+	write("oracle.json", { ...payload, runId: "another-run" });
+	expect(buildAggregate(manifest, runDir).status).toBe("failed");
+	write("oracle.json", { ...payload, checks: [payload.checks[0], payload.checks[0]] });
+	expect(buildAggregate(manifest, runDir).status).toBe("failed");
+	write("oracle.json", { ...payload, checks: [{ id: "blank", passed: true }, { id: "faint-residual", passed: false }] });
+	expect(buildAggregate(manifest, runDir).status).toBe("failed");
+});
+
+it("rejects early Vitest reports even when their top-level success flag is true", () => {
+	const { manifest, runDir, write } = createFixture();
+	write("vitest.json", { success: true, numTotalTests: 2, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, testResults: [{ assertionResults: [{ status: "passed" }, { status: "pending" }] }] });
+	expect(buildAggregate(manifest, runDir).status).toBe("failed");
 });

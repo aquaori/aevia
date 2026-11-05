@@ -11,6 +11,7 @@ type ReadbackOptions = {
 	roi?: Roi;
 	sampleSize?: number;
 	includeOverlay?: boolean;
+	nonBlankThreshold?: number;
 };
 
 type BrowserCanvasSample = {
@@ -130,7 +131,7 @@ export const CANVAS_OBSERVER_INIT_SCRIPT = String.raw`
 			const g = pixels[index + 1] ?? 255;
 			const b = pixels[index + 2] ?? 255;
 			const a = pixels[index + 3] ?? 255;
-			if (a > 0 && (r < 245 || g < 245 || b < 245)) nonBlank += 1;
+			if (a > 0 && (r < (options.nonBlankThreshold ?? 245) || g < (options.nonBlankThreshold ?? 245) || b < (options.nonBlankThreshold ?? 245))) nonBlank += 1;
 			hash ^= r;
 			hash = Math.imul(hash, 16777619);
 			hash ^= g;

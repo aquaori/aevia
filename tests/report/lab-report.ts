@@ -1,3 +1,4 @@
+import { mergeGoCoverageBlocks } from "./go-coverage";
 // File role: unified lab report model. Reads one managed run directory (manifest v2 +
 // evidence artifacts + optional lab-gate/inventory files) into a single durable
 // `lab-report.json`, then renders the standalone HTML report via `lab-html.ts`.
@@ -43,6 +44,7 @@ export type LabRunBlock = {
 	rerunScope: string | null;
 	rerunIds: string[];
 	policy: string;
+	performanceVerdict?: "not-run" | "passed" | "failed" | "inconclusive";
 };
 
 export type LabGateBlock = {
@@ -110,6 +112,8 @@ export type LabGoSummary = {
 };
 
 export type LabExternalCase = {
+	conditions?: Record<string, unknown> | null;
+	performanceQualification?: string;
 	caseKey: string;
 	id: string;
 	title: string;
@@ -121,6 +125,7 @@ export type LabExternalCase = {
 	durationMs: number;
 	error: string | null;
 	metrics: Record<string, number | string | boolean | null>;
+	externalMetrics?: Record<string, number | string | boolean | null>;
 	regressionChecks: Array<Record<string, unknown>>;
 	learningChecks: Array<Record<string, unknown>>;
 	learningStatus: string | null;
@@ -223,6 +228,7 @@ export type LabGalleryItem = {
 export type LabRerunCase = {
 	caseKey: string;
 	id: string;
+	selector?: string;
 	suite: string;
 	title: string;
 };
@@ -597,6 +603,7 @@ const parseExternalReport = (payload: unknown, reportPath: string, runDir: strin
 		const env = stringValue(raw.environment) || environment;
 		const status: "passed" | "failed" = raw.status === "failed" ? "failed" : "passed";
 		const metrics = metricMap(raw.metrics);
+		const externalMetrics = metricMap(raw.externalMetrics ?? raw.metrics);
 		// Instrumented samples may arrive as a nested object (`instrumented.<metric>`) or as
 		// separate `*Instrumented` metric keys; normalise both into the flat metric map.
 		const nestedInstrumented =
@@ -623,6 +630,9 @@ const parseExternalReport = (payload: unknown, reportPath: string, runDir: strin
 		const artifacts = stringArray(raw.artifacts).map((item) => relativeArtifact(runDir, item));
 		return {
 			caseKey: externalCaseKey(env, id),
+			performanceQualification: stringValue(raw.performanceQualification) || undefined,
+			externalMetrics,
+			conditions: isRecord(raw.conditions) ? raw.conditions : null,
 			id,
 			title: stringValue(raw.title) || id,
 			suite,
@@ -637,7 +647,7 @@ const parseExternalReport = (payload: unknown, reportPath: string, runDir: strin
 			learningChecks: learning && Array.isArray(learning.checks) ? recordArray(learning.checks) : [],
 			learningStatus: learning ? stringValue(learning.status) || null : null,
 			artifacts,
-			rerunIds: id ? [id] : [],
+			rerunIds: id ? [`${id}|${env || ""}|${raw.scale ?? ""}`] : [],
 			rerunnable: id.length > 0,
 		};
 	});
@@ -656,20 +666,16 @@ const parseExternalReport = (payload: unknown, reportPath: string, runDir: strin
 	};
 };
 
-const readExternalSuites = (runDir: string): { suites: LabExternalSuite[]; reportFiles: string[] } => {
-	const externalDir = path.join(runDir, "external");
-	// Boundary steps keep their reports under external/boundary-<case>/; walk recursively so a
-	// split step is still part of the unified report.
-	const files = listFilesRecursive(externalDir)
-		.filter((name) => name.endsWith("-external-results.json"))
-		.sort();
+const readExternalSuites = (runDir: string, manifest: RunManifest): { suites: LabExternalSuite[]; reportFiles: string[] } => {
+	const files = manifest.expectedArtifacts.filter(item => item.kind === "external").map(item => item.path).sort();
 	const suites: LabExternalSuite[] = [];
 	for (const name of files) {
-		const filePath = path.join(externalDir, name);
+		const filePath = path.resolve(runDir, name);
+		if (!filePath.startsWith(`${path.resolve(runDir)}${path.sep}`)) throw new Error("Report artifact escaped run directory");
 		const parsed = parseExternalReport(readJson(filePath), filePath, runDir);
 		if (parsed) suites.push(parsed);
 	}
-	const summary = { suites, reportFiles: files.map((name) => `external/${name}`) };
+	const summary = { suites, reportFiles: files };
 	return summary;
 };
 
@@ -698,22 +704,21 @@ const readGateBlock = (
 	manifest: RunManifest,
 	externalSuites: LabExternalSuite[]
 ): LabGateBlock => {
-	const externalDir = path.join(runDir, "external");
-	const sources = listFilesRecursive(externalDir)
-		.filter((name) => name.endsWith("-lab-gate.json"))
-		.sort()
-		.map((name) => `external/${name}`);
+	const sources = manifest.expectedArtifacts.filter(item => item.kind === "lab-gate").map(item => item.path).sort();
 	const cases: GateCase[] = [];
 	const scenarios: GateScenario[] = [];
 	const reasons: ValidityReason[] = [];
 	const seenCases = new Set<string>();
+	const seenScenarios = new Set<string>();
 	let policy: LabGateBlock["policy"] = null;
 	let status: LabGateBlock["status"] | null = null;
 	let aborted = false;
 	let instrumentation: LabInstrumentation = { enabled: false, contractVersion: null, missingMarks: [] };
 
 	for (const relativeFile of sources) {
-		const payload = readJson(path.join(runDir, relativeFile));
+		const gatePath = path.resolve(runDir, relativeFile);
+		if (!gatePath.startsWith(`${path.resolve(runDir)}${path.sep}`)) throw new Error("Gate artifact escaped run directory");
+		const payload = readJson(gatePath);
 		if (!isRecord(payload)) continue;
 		if (isRecord(payload.policy) && finite(payload.policy.warnRatio) && finite(payload.policy.abortRatio)) {
 			policy = { warnRatio: Number(payload.policy.warnRatio), abortRatio: Number(payload.policy.abortRatio) };
@@ -733,15 +738,18 @@ const readGateBlock = (
 		}
 		for (const rawCase of recordArray(payload.cases)) {
 			const caseKey = stringValue(rawCase.caseKey);
-			if (!caseKey || seenCases.has(caseKey)) continue;
+			if (!caseKey) continue;
+			const identity = `${stringValue(rawCase.suite)}|${caseKey}`;
+			if (seenCases.has(identity)) throw new Error(`Duplicate gate case across artifacts: ${identity}`);
 			const caseStatus = rawCase.status === "invalid" ? "invalid" : "valid";
-			seenCases.add(caseKey);
+			seenCases.add(identity);
 			cases.push({
 				scenarioKey: stringValue(rawCase.scenarioKey),
 				caseKey,
 				id: stringValue(rawCase.id) || caseKey,
 				suite: stringValue(rawCase.suite),
 				status: caseStatus,
+				contractKind: rawCase.contractKind as GateCase["contractKind"],
 				codes: Array.isArray(rawCase.codes) ? (rawCase.codes as GateCase["codes"]) : [],
 				details: stringArray(rawCase.details),
 			});
@@ -789,10 +797,10 @@ const readGateBlock = (
 		}
 	}
 
-	const derived = sources.length === 0;
+	const derived = cases.length === 0;
 	const validity = validityOf(manifest);
 	const effectiveStatus: LabGateBlock["status"] =
-		status ?? (validity.status === "invalid" ? "invalid" : validity.status === "degraded" ? "degraded" : "valid");
+		status ?? (sources.length > 0 ? "unknown" : validity.status === "invalid" ? "invalid" : validity.status === "degraded" ? "degraded" : "valid");
 
 	if (derived) {
 		aborted = validity.aborted;
@@ -859,7 +867,7 @@ const metricKeysFor = (id: string, metrics: Record<string, number | string | boo
 			!key.endsWith("Instrumented") &&
 			typeof metrics[key] === "number"
 	);
-	return [...new Set([...known, ...instrumentedBases, ...extra])];
+	return [...new Set([...known, ...instrumentedBases, ...extra].map(key => typeof metrics[`${key}Median`] === "number" ? `${key}Median` : key))];
 };
 
 const metricMatch = (check: Record<string, unknown>, metric: string): boolean => {
@@ -879,23 +887,21 @@ const buildMeasurements = (
 	externalSuites: LabExternalSuite[],
 	gate: LabGateBlock
 ): LabMeasurement[] => {
-	const gateByCaseKey = new Map(gate.cases.map((item) => [item.caseKey, item]));
-	const gateById = new Map<string, GateCase>();
-	for (const item of gate.cases) gateById.set(item.id, item);
+	const gateByCaseKey = new Map(gate.cases.map((item) => [`${item.suite}|${item.caseKey}`, item]));
 	const measurements: LabMeasurement[] = [];
 	for (const suite of externalSuites) {
 		for (const externalCase of suite.cases) {
-			const gateCase = gateByCaseKey.get(externalCase.caseKey) ?? gateById.get(externalCase.id);
+			const gateCase = gateByCaseKey.get(`${externalCase.suite}|${externalCase.id}|${externalCase.environment || ""}|${externalCase.scale ?? ""}`) ?? gateByCaseKey.get(`${externalCase.suite}|${externalCase.caseKey}`);
 			const validity = gateCase
 				? gateCase.status === "invalid"
 					? `invalid:${gateCase.codes.join("+") || "unknown"}`
 					: "valid"
-				: externalCase.status === "failed"
+				: gate.status === "unknown" ? "unknown" : externalCase.status === "failed"
 					? "failed"
 					: "valid";
 			for (const metric of metricKeysFor(externalCase.id, externalCase.metrics)) {
-				const direct = numberFromMetricMap(externalCase.metrics, metric);
-				const median = numberFromMetricMap(externalCase.metrics, `${metric}Median`);
+				const direct = numberFromMetricMap(externalCase.externalMetrics ?? externalCase.metrics, metric);
+				const median = numberFromMetricMap(externalCase.externalMetrics ?? externalCase.metrics, `${metric}Median`);
 				const externalValue = direct ?? median;
 				const instrumentedBase = metric.endsWith("Median") ? metric.slice(0, -"Median".length) : metric;
 				const instrumentedValue =
@@ -1008,7 +1014,9 @@ const readGoCoverage = (runDir: string): LabCoverageBlock | null => {
 	const packages = new Map<string, { total: number; covered: number }>();
 	let total = 0;
 	let covered = 0;
-	for (const line of lines) {
+	let merged: string[];
+	try { merged = mergeGoCoverageBlocks(lines); } catch { return null; }
+	for (const line of merged) {
 		const match = line.match(/^(.+):\d+\.\d+,\d+\.\d+ (\d+) (\d+)$/);
 		if (!match) return null;
 		const statements = Number(match[2]);
@@ -1258,7 +1266,7 @@ const buildRerunIndex = (
 	for (const suite of externalSuites) {
 		for (const externalCase of suite.cases) {
 			if (!externalCase.rerunnable) continue;
-			addCase({ caseKey: externalCase.caseKey, id: externalCase.id, suite: suite.suite, title: externalCase.title });
+			addCase({ caseKey: externalCase.caseKey, id: externalCase.id, selector: externalCase.rerunIds[0], suite: suite.suite, title: externalCase.title });
 		}
 	}
 	const scenarios: LabRerunScenario[] = [];
@@ -1266,7 +1274,7 @@ const buildRerunIndex = (
 	for (const scenario of gates.scenarios) {
 		const ids = new Set<string>();
 		for (const gateCase of gates.cases.filter((item) => item.scenarioKey === scenario.scenarioKey)) {
-			if (gateCase.id) ids.add(gateCase.id);
+			if (gateCase.id) ids.add(gateCase.caseKey.includes("|") ? gateCase.caseKey : gateCase.id);
 		}
 		if (ids.size === 0) {
 			for (const suite of externalSuites) {
@@ -1324,7 +1332,7 @@ export const buildLabReport = (
 
 	const goSuite = parseGoTests(readText(path.join(absoluteRunDir, "backend", "go-tests.jsonl")));
 
-	const { suites: externalSuites } = readExternalSuites(absoluteRunDir);
+	const { suites: externalSuites } = readExternalSuites(absoluteRunDir, manifest);
 	const performanceSuites = externalSuites.filter((item) => item.suite === "performance-external");
 	const e2eSuites = externalSuites.filter((item) => item.suite !== "performance-external");
 	const e2e = summariseExternal(e2eSuites);
@@ -1358,6 +1366,7 @@ export const buildLabReport = (
 		rerunScope: isRecord(manifest.rerun) ? stringValue(manifest.rerun.scope) || null : null,
 		rerunIds: isRecord(manifest.rerun) ? stringArray(manifest.rerun.ids) : [],
 		policy: capturePolicyOf(manifest),
+		performanceVerdict: performance.total === 0 ? "not-run" : performance.failed > 0 ? "failed" : performanceSuites.flatMap(suite => suite.cases).filter(item => /^(full-render-\d+|incremental-remote-first-pixel|local-realtime-first-pixel)$/.test(item.id)).length > 0 && performanceSuites.flatMap(suite => suite.cases).filter(item => /^(full-render-\d+|incremental-remote-first-pixel|local-realtime-first-pixel)$/.test(item.id)).every(item => item.performanceQualification === "passed") ? "passed" : "inconclusive",
 	};
 
 	const suites = { unit, integration, browser, go: goSuite, e2e, performance };

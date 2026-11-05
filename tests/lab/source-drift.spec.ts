@@ -81,3 +81,15 @@ describe("source drift explainer", () => {
 		expect(drift.ignoredGeneratedPaths).toEqual([historyPath]);
 	});
 });
+
+it("detects same-name untracked edits by file hash", () => {
+	const before = identity({ untrackedFiles: ["new.ts"], fileSha256: { "new.ts": "old" } });
+	const after = { ...before, dirtyPatchSha256: "changed", fileSha256: { "new.ts": "new" } };
+	expect(describeSourceDrift(before, after).fingerprintChanged).toBe(true);
+});
+it("does not hide an existing source edit behind a generated-file addition", () => {
+	const before = identity({ trackedChanges: ["src/a.ts"], fileSha256: { "src/a.ts": "old" } });
+	const history = "apps/frontend/tests/e2e/external/history/x.jsonl";
+	const after = { ...before, dirtyPatchSha256: "changed", trackedChanges: ["src/a.ts", history], fileSha256: { "src/a.ts": "new", [history]: "output" } };
+	expect(describeSourceDrift(before, after, { isIgnoredPath: isGeneratedEvidencePath }).inPlaceContentChanged).toEqual(["src/a.ts"]);
+});

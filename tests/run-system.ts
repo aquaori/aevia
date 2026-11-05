@@ -1,20 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import path from "node:path";
-import { writeAggregateReport } from "./report/aggregate";
+import { buildAggregate, writeAggregateReport } from "./report/aggregate";
 import { VALIDITY_CODES } from "./report/contract";
 import type { LabMode, RunManifest, RunStep, ValidityReason } from "./report/contract";
 import { readSourceIdentity } from "./report/provenance";
 import { browserAvailability, selectedBrowser } from "./browser-launch";
 import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
 import { resolveOnlySelectors, resolveSinceRef, type LabResolveResult } from "./lab/resolve-only";
-import { buildLabEvidencePlan, type LabPlanContext } from "./lab/evidence-plan";
+import { buildLabEvidencePlan, probeGoRaceDetector, withCanvasOracle, type LabPlanContext } from "./lab/evidence-plan";
 import { isLiveConsoleEnabled, startLiveConsole, type LiveConsole } from "./lab/live-console";
-import { describeSourceDrift, describeSourceDriftLines, isGeneratedEvidencePath } from "./lab/source-drift";
+import { describeSourceDrift, describeSourceDriftLines } from "./lab/source-drift";
 
 type Step = {
 	title: string;
@@ -107,6 +107,7 @@ let activeServicesDbPath: string | undefined;
 let activeTestProcess: ChildProcess | undefined;
 let interruptedSignal: "SIGINT" | "SIGTERM" | undefined;
 let activeLiveConsole: LiveConsole | undefined;
+let activeEvidenceDirectory: string | undefined;
 
 const dateTag = () => new Date().toISOString().replace(/[:.]/g, "-");
 const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
@@ -155,7 +156,10 @@ const startManagedService = (
 		detached: process.platform !== "win32",
 	});
 	const service: ManagedService = { name, child, tail: [] };
+	const serviceLog = activeEvidenceDirectory ? path.join(activeEvidenceDirectory, "logs", `service-${name}-${randomUUID()}.log`) : undefined;
+	if (serviceLog) mkdirSync(path.dirname(serviceLog), { recursive: true });
 	const collect = (chunk: Buffer, source: "stdout" | "stderr") => {
+		if (serviceLog) appendFileSync(serviceLog, `[${source}] ${chunk.toString()}`, "utf8");
 		for (const line of chunk.toString().split(/\r?\n/)) {
 			if (!line.trim()) continue;
 			service.tail.push(`${source}: ${line}`);
@@ -240,7 +244,7 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 	const frontendUrl = `http://127.0.0.1:${frontendPort}`;
 	const apiUrl = `http://127.0.0.1:${backendPort}`;
 	const wsUrl = `ws://127.0.0.1:${backendPort}/ws`;
-	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}.sqlite`);
+	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}-${randomUUID()}.sqlite`);
 	activeServicesDbPath = databasePath;
 	const backendExecutable = path.join(
 		testTempDir,
@@ -318,7 +322,7 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 				// A force-killed Windows process can release SQLite handles asynchronously.
 			}
 		}
-		rmSync(backendExecutable, { force: true });
+		try { rmSync(backendExecutable, { force: true }); } catch { print("[lab] isolated executable retained: cleanup unavailable on this host"); }
 		try {
 			rmdirSync(testTempDir);
 		} catch {
@@ -970,14 +974,16 @@ const GATE_FILE_BY_STEP: Record<string, string> = {
 	"external-focused": "correctness-full-lab-gate.json",
 };
 
-const readGateForStep = (runDir: string, stepId: string): RawGate | null => {
+const readGateForStep = (runDir: string, stepId: string, manifest: RunManifest): RawGate | null => {
 	const externalDir = path.join(runDir, "external");
+	const declared = manifest.expectedArtifacts.find(item => item.stepId === stepId && item.kind === "lab-gate");
+	if (declared) {
+		try { return JSON.parse(readFileSync(path.join(runDir, declared.path), "utf8")) as RawGate; } catch { return null; }
+	}
 	const expected = GATE_FILE_BY_STEP[stepId];
 	const candidates = expected
 		? [path.join(externalDir, expected)]
-		: existsSync(externalDir)
-			? readdirSync(externalDir).filter((name) => name.endsWith("-lab-gate.json")).map((name) => path.join(externalDir, name))
-			: [];
+		: [];
 	for (const filePath of candidates) {
 		if (!existsSync(filePath)) continue;
 		try {
@@ -993,7 +999,7 @@ const validityCodeOf = (value: unknown, fallback: ValidityReason["code"]): Valid
 	typeof value === "string" && (VALIDITY_CODES as readonly string[]).includes(value) ? (value as ValidityReason["code"]) : fallback;
 
 const applyGateValidity = (runDir: string, manifest: RunManifest, stepId: string, exitCode: number | null) => {
-	const gate = readGateForStep(runDir, stepId);
+	const gate = readGateForStep(runDir, stepId, manifest);
 	const aborted = gate?.aborted === true || gate?.status === "invalid" || exitCode === 3;
 	if (!gate) {
 		if (aborted) {
@@ -1073,6 +1079,8 @@ const runEvidenceStep = async (
 	persistManifest(manifestPath, manifest);
 	activeLiveConsole?.stepStart(step.id);
 	const logPath = path.join(runDir, "logs", `${step.id}.log`);
+	mkdirSync(path.dirname(logPath), { recursive: true });
+	writeFileSync(logPath, "", "utf8");
 	record.logPath = path.relative(runDir, logPath).replaceAll("\\", "/");
 	let stdout = "";
 	let stderr = "";
@@ -1088,8 +1096,9 @@ const runEvidenceStep = async (
 				dirtyPatchSha256: manifest.source.dirtyPatchSha256,
 				trackedChanges: manifest.source.trackedChanges,
 				untrackedFiles: manifest.source.untrackedFiles,
+				fileSha256: manifest.source.fileSha256,
 			};
-			const drift = describeSourceDrift(before, source, { isIgnoredPath: isGeneratedEvidencePath });
+			const drift = describeSourceDrift(before, source);
 			if (drift.revisionChanged || drift.fingerprintChanged) {
 				throw new Error([
 					"Source revision or dirty-file fingerprint changed during the test run",
@@ -1101,7 +1110,7 @@ const runEvidenceStep = async (
 		} else {
 			if (step.freshServices) await resetExternalServices();
 			else if (step.requiresServices && !activeExternalServices) await startExternalServices();
-			const childEnv = { ...process.env, ...step.env, FORCE_COLOR: "0" };
+			const childEnv: NodeJS.ProcessEnv = { ...process.env, ...step.env, AEVIA_TEST_RUN_ID: manifest.runId, FORCE_COLOR: "0" };
 			if (step.id === "browser-test") childEnv.AEVIA_TEST_BROWSER_PORT = String(await findAvailablePort());
 			const child = spawn(step.command || "", {
 				cwd: step.cwd || rootDir,
@@ -1119,12 +1128,15 @@ const runEvidenceStep = async (
 			child.stdout?.on("data", (chunk) => {
 				const text = chunk.toString();
 				stdout += text;
+				appendFileSync(logPath, text, "utf8");
 				activeLiveConsole?.log(step.id, text, "stdout");
 			});
 			child.stderr?.on("data", (chunk) => {
 				const text = chunk.toString();
 				stderr += text;
+				appendFileSync(logPath, `[stderr] ${text}`, "utf8");
 				activeLiveConsole?.log(step.id, text, "stderr");
+				process.stderr.write(text);
 			});
 			try {
 				exitCode = await new Promise<number | null>((resolve, reject) => {
@@ -1175,6 +1187,7 @@ type ManagedRunOptions = {
 const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOptions = {}) => {
 	const runId = randomUUID();
 	const runDir = path.join(canonicalRootDir, "tests", "reports", "summary", "runs", runId);
+	activeEvidenceDirectory = runDir;
 	mkdirSync(runDir, { recursive: true });
 	const source = readSourceIdentity(canonicalRootDir);
 	const catalogSnapshot = path.join(runDir, "catalog", "feature-obligations.json");
@@ -1207,14 +1220,25 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 		cleanTree,
 		perfRequest: argValue("perf") === "request",
 	};
-	const { steps, artifacts } = isCoreProfile(profile)
+	const lane = argValue("lane") || "all";
+	if (lane !== "all" && lane !== "quality" && lane !== "performance") throw new Error("--lane must be all|quality|performance");
+	planContext.lane = lane;
+	const raceCapability = profile === "nightly" && lane !== "performance" ? probeGoRaceDetector(backendDir) : undefined;
+	planContext.goRaceSupported = raceCapability?.supported ?? false;
+	planContext.goRaceRequired = process.env.CI === "true" && process.platform === "linux";
+	const basePlan = isCoreProfile(profile)
 		? managedEvidencePlan(profile, runDir, runId, source)
 		: buildLabEvidencePlan(profile, planContext, options.selection);
-	if (profile === "nightly" && !steps.some((step) => step.id === "go-race")) {
-		print("[lab] go-race skipped: this host cannot build the race detector (usable CGO toolchain unavailable)");
+	const { steps, artifacts } = profile === "ci" || profile === "full" || profile === "nightly" ? withCanvasOracle(basePlan, planContext) : basePlan;
+	if (isCoreProfile(profile) && planContext.perfRequest) {
+		steps.splice(steps.length - 1, 0, { id: "perf-request", title: "Performance gate request", description: "Recording an optional performance request.", command: `node scripts/write-perf-request.mjs ${shellQuote(path.join(runDir, "perf-request.json"))}`, cwd: canonicalRootDir });
+		artifacts.push({ id: "perf-request", stepId: "perf-request", kind: "perf-request", path: "perf-request.json" });
+	}
+	if (profile === "nightly" && lane !== "performance" && !steps.some((step) => step.id === "go-race")) {
+		print(`[lab] go-race unavailable: ${raceCapability?.detail.trim()}`);
 	}
 	const mode = managedModeOf(profile);
-	const recorded = profile !== "single" && options.rerunOf === undefined && (profile !== "nightly" || cleanTree);
+	const recorded = profile !== "single" && options.rerunOf === undefined && cleanTree;
 	const manifest: RunManifest = {
 		schemaVersion: 2,
 		runId,
@@ -1230,6 +1254,9 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 		recorded,
 		rerun: options.rerunOf,
 		measurement: { policy: "prefer-instrumented" },
+		capabilities: { goRace: raceCapability },
+		lane,
+		selection: options.selection,
 	};
 	const manifestPath = path.join(runDir, "run-manifest.json");
 	persistManifest(manifestPath, manifest);
@@ -1266,7 +1293,11 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 			await runEvidenceStep(step, record, manifest, manifestPath, runDir);
 			if (record.status !== "passed") {
 				failed = true;
-				applyGateValidity(runDir, manifest, step.id, record.exitCode);
+				applyGateValidity(runDir, manifest, step.id, record.exitCode ?? null);
+				if (step.id === "source-check") {
+					manifest.validity = { status: "invalid", aborted: false, reasons: [{ scope: "run", id: runId, code: "SOURCE_CHANGED", detail: record.error }] };
+					manifest.recorded = false;
+				}
 				break;
 			}
 			if (step.id === "go-package-list") {
@@ -1286,7 +1317,11 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 			runningStep.finishedAt = new Date().toISOString();
 		}
 	} finally {
-		await stopExternalServices();
+		try { await stopExternalServices(); } catch (error) {
+			failed = true;
+			manifest.validity = { status: "invalid", aborted: false, reasons: [{ scope: "run", id: runId, code: "GATE_ABORTED", detail: `Service cleanup failed: ${error instanceof Error ? error.message : String(error)}` }] };
+			manifest.recorded = false;
+		}
 		for (const step of manifest.steps) {
 			if (step.status === "pending") step.status = interruptedSignal ? "cancelled" : "skipped";
 		}
@@ -1296,12 +1331,19 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 	}
 
 	try {
-		let report = writeAggregateReport(manifestPath);
+		let report = buildAggregate(manifest, runDir);
 		if (report.status !== "passed" && manifest.status === "passed") {
 			manifest.status = "failed";
 			persistManifest(manifestPath, manifest);
-			report = writeAggregateReport(manifestPath);
+			report = buildAggregate(manifest, runDir);
 		}
+		if (profile === "nightly" && lane !== "quality" && report.status === "passed" && manifest.recorded && manifest.validity.status === "valid") {
+			const { importHistoryFromReport } = await import("../apps/frontend/tests/e2e/external/learning");
+			const reportPath = path.join(runDir, "external", "performance-external-standard-external-results.json");
+			const payload = JSON.parse(readFileSync(reportPath, "utf8"));
+			importHistoryFromReport(payload.config, reportPath);
+		}
+		report = writeAggregateReport(manifestPath);
 		print(`Report: ${path.join(runDir, "test-report.html")}`);
 		print(`Measurement: ${manifest.validity.status}${manifest.validity.aborted ? " (aborted)" : ""}${manifest.recorded ? "" : " · not recorded"}`);
 		print(`Result: ${report.status}; ${report.failures.length} evidence issue(s)`);
@@ -1322,6 +1364,10 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 		});
 		if (report.status !== "passed") process.exitCode = manifest.validity.aborted ? 3 : interruptedSignal ? 130 : 1;
 	} catch (error) {
+		manifest.status = "failed";
+		manifest.recorded = false;
+		persistManifest(manifestPath, manifest);
+		try { writeAggregateReport(manifestPath); } catch { /* Original error is reported below. */ }
 		activeLiveConsole?.finish({
 			status: interruptedSignal ? "cancelled" : "failed",
 			validity: manifest.validity.status,
@@ -1396,14 +1442,23 @@ const runReplay = async () => {
 
 const resolveRerunSelection = (scope: "run" | "scenario" | "case", ids: string[]): LabResolveResult | undefined => {
 	if (scope === "run" || ids.length === 0) return undefined;
+	if (scope === "scenario") {
+		const runId = argValue("rerun-of")!;
+		const report = JSON.parse(readFileSync(path.join(canonicalRootDir, "tests/reports/summary/runs", runId, "lab-report.json"), "utf8"));
+		ids = ids.flatMap(key => {
+			const scenario = report.rerun.scenarios.find((item: { scenarioKey: string }) => item.scenarioKey === key);
+			if (!scenario) throw new Error(`Unknown rerun scenario: ${key}`);
+			return scenario.ids as string[];
+		});
+	}
 	const selectors: string[] = [];
 	for (const id of ids) {
+		if (/^(go|file|test):/.test(id)) { selectors.push(id); continue; }
 		if (id.includes(".ts") || id.includes(".vue")) {
 			selectors.push(`file:${id}`);
 			continue;
 		}
-		const caseId = id.includes("|") ? id.split("|")[0]! : id;
-		selectors.push(`case:${caseId}`);
+		selectors.push(`case:${id}`);
 	}
 	return selectors.length > 0 ? resolveOnlySelectors(selectors, canonicalRootDir) : undefined;
 };
@@ -1442,11 +1497,12 @@ const buildManagedRunOptions = (profile: ManagedProfile): ManagedRunOptions & { 
 	}
 	if (profile === "single" && !selection) selection = resolveSingleSelection();
 	if (!rerunOf) return { selection, effectiveProfile: profile };
-	const effectiveProfile = selection && rerunOf.scope === "case" ? "single" : profile;
+	const effectiveProfile = selection && rerunOf.scope !== "run" ? "single" : profile;
 	return { selection, rerunOf, effectiveProfile };
 };
 
 const main = async () => {
+	if (process.argv.some(arg => arg === "--from-step" || arg.startsWith("--from-step="))) throw new Error("Checkpoint resume is not implemented; use an explicit case or scenario rerun");
 	if (hasArg("doctor")) {
 		runDoctor();
 		return;

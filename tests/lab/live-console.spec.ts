@@ -1,3 +1,4 @@
+import http from "node:http";
 // File role: protocol and security checks for the temporary live test console.
 import fs from "node:fs";
 import os from "node:os";
@@ -171,9 +172,30 @@ describe("live console", () => {
 		await client.waitFor((message) => message.type === "hello");
 		const requested = client.waitFor((message) => message.type === "cancel-requested");
 		client.socket.send(JSON.stringify({ type: "cancel" }));
+		client.socket.send(JSON.stringify({ type: "cancel" }));
 		await requested;
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		expect(cancelled).toBe(1);
 		client.socket.close();
 	});
+});
+
+it("rejects foreign HTTP hosts and malformed report URLs", async () => {
+	const live = await startConsole();
+	const status = await new Promise<number | undefined>((resolve, reject) => {
+		http.get({ host: "127.0.0.1", port: live.port, path: "/", headers: { Host: "untrusted.invalid" } }, response => { response.resume(); resolve(response.statusCode); }).on("error", reject);
+	});
+	expect(status).toBe(403);
+	const malformed = await fetch(`http://127.0.0.1:${live.port}/report/run-1/%ZZ`);
+	expect(malformed.status).toBe(404);
+	expect((await fetch(`http://127.0.0.1:${live.port}/health`)).status).toBe(200);
+});
+
+it("does not serve report files through a directory link outside the run", async () => {
+	const runDir = createRunDir();
+	const outside = createRunDir();
+	fs.symlinkSync(outside, path.join(runDir, "escape"), process.platform === "win32" ? "junction" : "dir");
+	const live = await startConsole({ runDir });
+	const response = await fetch(`http://127.0.0.1:${live.port}/report/run-1/escape/test-report.html`);
+	expect(response.status).toBe(404);
 });

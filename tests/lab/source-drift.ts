@@ -4,15 +4,15 @@
 // re-checks it at the end. A mismatch is a hard failure, but the old message only printed two hashes,
 // which made "my editor wrote a file mid-run" indistinguishable from a real reproducibility bug.
 //
-// Some tracked files are *run output*: the performance history and baseline JSONL/JSON files are
-// deliberately committed, and a clean nightly import appends to them while the run is executing.
-// Those paths are excluded from the drift verdict; everything else must stay byte-identical.
+// The managed runner compares every input path strictly. Optional ignored paths are
+// retained for compatibility with legacy callers; managed outputs publish after source-check.
 
 export type SourceIdentityLike = {
 	revision: string | null;
 	dirtyPatchSha256: string;
 	trackedChanges?: string[];
 	untrackedFiles?: string[];
+	fileSha256?: Record<string, string>;
 };
 
 export type SourceDriftOptions = {
@@ -69,12 +69,17 @@ export const describeSourceDrift = (
 	const fingerprintMoved = before.dirtyPatchSha256 !== after.dirtyPatchSha256;
 	// With identical file sets the aggregate hash can only move because some tracked file's content
 	// changed in place; only the non-generated candidates count as drift.
-	const inPlaceCandidates = fingerprintMoved && rawFileSetsEqual ? sorted(before.trackedChanges) : [];
+	const inventoryChanged = before.fileSha256 && after.fileSha256
+		? sorted([...Object.keys(before.fileSha256), ...Object.keys(after.fileSha256)]).filter(file => before.fileSha256![file] !== after.fileSha256![file])
+		: null;
+	const inPlaceCandidates = inventoryChanged ?? (fingerprintMoved && rawFileSetsEqual ? sorted([...(before.trackedChanges ?? []), ...(before.untrackedFiles ?? [])]) : []);
 	const inPlaceContentChanged = inPlaceCandidates.filter((item) => !ignored(item));
 	const ignoredContentPaths = inPlaceCandidates.filter((item) => ignored(item));
 	const filteredFileSetsEqual =
 		trackedAdded.length === 0 && trackedRemoved.length === 0 && untrackedAdded.length === 0 && untrackedRemoved.length === 0;
-	const fingerprintChanged = !filteredFileSetsEqual || (fingerprintMoved && inPlaceContentChanged.length > 0);
+	const fingerprintChanged = inventoryChanged !== null
+		? inventoryChanged.some(file => !ignored(file)) || (fingerprintMoved && inventoryChanged.length === 0)
+		: !filteredFileSetsEqual || (fingerprintMoved && (inPlaceContentChanged.length > 0 || ignoredGeneratedPaths.length === 0));
 
 	return {
 		revisionChanged: before.revision !== after.revision,

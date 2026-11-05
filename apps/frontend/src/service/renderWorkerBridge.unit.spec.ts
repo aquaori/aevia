@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { reactive } from "vue";
 import type { Command } from "@collaborative-whiteboard/shared";
-import { cloneCommandForStateSync } from "./renderWorkerBridge";
+import { cloneCommandForStateSync, createRenderWorkerBridge } from "./renderWorkerBridge";
 
 const command = (points: Command["points"]): Command => ({
 	id: "cmd-1",
@@ -57,5 +57,35 @@ describe("cloneCommandForStateSync", () => {
 		const cloned = cloneCommandForStateSync(source);
 		expect(() => structuredClone(cloned)).not.toThrow();
 		expect(cloned.sceneOperation).not.toBe(source.sceneOperation);
+	});
+});
+
+describe("worker acknowledgement isolation", () => {
+	it("keeps lab acknowledgements out of business render completion state", async () => {
+		vi.useFakeTimers();
+		let worker: { onmessage?: (event: { data: unknown }) => void };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			constructor() { worker = this; }
+			postMessage() {}
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			worker!.onmessage?.({ data: { type: "lab:operation-rendered", opId: "lab-only" } });
+			let settled = false;
+			const pending = bridge.waitForSceneOperationRender("lab-only", 50).then(() => { settled = true; });
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "lab-only" } });
+			await pending;
+			expect(settled).toBe(true);
+		} finally {
+			bridge.dispose();
+			vi.unstubAllGlobals();
+			vi.useRealTimers();
+		}
 	});
 });

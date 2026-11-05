@@ -73,6 +73,8 @@ export interface MetricMap {
 }
 
 export interface CaseResult {
+	conditions?: import("./conditions").PerformanceConditions;
+	performanceQualification?: "passed" | "failed" | "inconclusive";
 	id: string;
 	title?: string;
 	description?: string;
@@ -84,6 +86,7 @@ export interface CaseResult {
 	failureType: FailureType;
 	durationMs: number;
 	metrics: MetricMap;
+	externalMetrics?: MetricMap;
 	samples?: CaseSample[];
 	aggregate?: Record<string, MetricStats>;
 	regression?: CaseRegression;
@@ -125,6 +128,7 @@ export interface MetricStats {
 }
 
 export interface BaselineCaseSnapshot {
+	conditions?: import("./conditions").PerformanceConditions;
 	id: string;
 	environment?: EnvironmentId;
 	runMode?: RunMode;
@@ -149,6 +153,7 @@ export interface BudgetCaseRule {
 }
 
 export interface BudgetFile {
+	sourceBaselineSha256?: string;
 	version: 1;
 	cases: Record<string, BudgetCaseRule>;
 }
@@ -178,6 +183,7 @@ export interface CaseRegression {
 }
 
 export interface PerformanceHistoryEntry {
+	conditionHash?: string;
 	version: 1;
 	suite: SuiteId;
 	sourceReport: string;

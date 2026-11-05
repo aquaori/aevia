@@ -1,7 +1,5 @@
 name: Aevia nightly lab
-# Nightly runs are the only place the performance gate and the learned base line run.
-# They target a self-hosted machine because GitHub-hosted runner variance is larger than
-# the 20%% relative regression threshold, which would make the gate random.
+# Fixed Windows host for performance; Linux quality and race run independently.
 on:
   schedule:
     - cron: "0 18 * * *" # 02:00 Asia/Shanghai
@@ -12,8 +10,8 @@ permissions:
 
 jobs:
   nightly:
-    name: nightly / ${{ matrix.browser }}
-    runs-on: [self-hosted, aevia-nightly]
+    name: nightly / Windows performance / ${{ matrix.browser }}
+    runs-on: [self-hosted, windows, aevia-nightly]
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -30,6 +28,11 @@ jobs:
           go-version-file: apps/backend/go.mod
           cache-dependency-path: apps/backend/go.sum
       - run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: tests/reports/lab-history
+          key: windows-aevia-lab-history-${{ github.run_id }}
+          restore-keys: windows-aevia-lab-history-
       - name: Install browser engines
         run: npx playwright install chromium
       - name: Check test environment
@@ -38,13 +41,40 @@ jobs:
           AEVIA_TEST_BROWSER: ${{ matrix.browser }}
           AEVIA_TEST_JSON: "1"
       - name: Run managed nightly suite
-        run: npm run test:nightly
+        run: npm run test:nightly -- --lane=performance
         env:
           AEVIA_TEST_BROWSER: ${{ matrix.browser }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: aevia-nightly-evidence-${{ matrix.browser }}
+          path: tests/reports/summary/runs/
+          if-no-files-found: warn
+          retention-days: 30
+
+  quality:
+    name: nightly / Linux correctness and race
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:nightly -- --lane=quality --live=off
+        env:
+          AEVIA_TEST_BROWSER: chromium
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aevia-linux-nightly-evidence
           path: tests/reports/summary/runs/
           if-no-files-found: warn
           retention-days: 30

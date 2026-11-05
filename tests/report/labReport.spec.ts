@@ -325,6 +325,10 @@ const createRunDirectory = (): { tempRoot: string; runDir: string; manifest: Run
 	temporaryRoots.push(tempRoot);
 	const runDir = path.join(tempRoot, "tests", "reports", "summary", "runs", RUN_ID);
 	const manifest = makeManifest();
+	manifest.expectedArtifacts.push(
+		{ id: "performance", stepId: "external-e2e", kind: "external", path: "external/performance-external-all-external-results.json" },
+		{ id: "gate", stepId: "external-e2e", kind: "lab-gate", path: "external/correctness-full-lab-gate.json" },
+	);
 	const aggregate = makeAggregate();
 	const screenshot = path.join(runDir, "external", "artifacts", "correctness-smoke-shot.png");
 
@@ -470,7 +474,7 @@ describe("unified lab report", () => {
 		expect(labHtml).toContain('data-rerun-scope="case"');
 		expect(labHtml).toContain('data-rerun-scope="scenario"');
 		expect(labHtml).toContain('data-rerun-scope="run"');
-		expect(labHtml).toContain('data-rerun-ids="full-render-10000"');
+		expect(labHtml).toContain('data-rerun-ids="full-render-10000|gpu_cpuHigh|10000"');
 		expect(labHtml).toContain("需 npm run lab:serve");
 		const embedded = readEmbeddedLabData(labHtml);
 		expect(embedded.schemaVersion).toBe(2);
@@ -541,4 +545,10 @@ describe("unified lab report", () => {
 		const embedded = readEmbeddedLabData(html);
 		expect(embedded.schemaVersion).toBe(2);
 	});
+});
+
+it("keeps the report usable when external results exist but the gate is missing", () => {
+	const { runDir, manifest, aggregate } = createRunDirectory();
+	fs.renameSync(path.join(runDir, "external/correctness-full-lab-gate.json"), path.join(runDir, "gate-backup.json"));
+	expect(() => writeLabReport({ runDir, manifest, aggregate })).not.toThrow();
 });

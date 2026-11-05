@@ -11,6 +11,7 @@ export type SourceIdentity = {
 	dirtyPatchSha256: string;
 	trackedChanges: string[];
 	untrackedFiles: string[];
+	fileSha256?: Record<string, string>;
 };
 
 export const readSourceIdentity = (rootDir: string): SourceIdentity => {
@@ -38,5 +39,18 @@ export const readSourceIdentity = (rootDir: string): SourceIdentity => {
 		hash.update(fs.readFileSync(absolutePath));
 		hash.update("\0");
 	}
-	return { revision, dirtyPatchSha256: hash.digest("hex"), trackedChanges, untrackedFiles: untracked };
+	const fileSha256: Record<string, string> = {};
+	const files = String(git(repositoryRoot, ["ls-files", "-z"])).split("\0").filter(Boolean).concat(untracked);
+	// Runtime history is a measurement input; append only after source-check.
+	const historyDir = path.join(repositoryRoot, "tests", "reports", "lab-history");
+	if (fs.existsSync(historyDir)) {
+		for (const file of fs.readdirSync(historyDir).filter(file => file.endsWith(".jsonl")).sort()) {
+			files.push(`tests/reports/lab-history/${file}`);
+		}
+	}
+	for (const file of files) {
+		const absolute = path.resolve(repositoryRoot, file);
+		fileSha256[file] = fs.existsSync(absolute) ? createHash("sha256").update(fs.readFileSync(absolute)).digest("hex") : "deleted";
+	}
+	return { fileSha256, revision, dirtyPatchSha256: hash.digest("hex"), trackedChanges, untrackedFiles: untracked };
 };

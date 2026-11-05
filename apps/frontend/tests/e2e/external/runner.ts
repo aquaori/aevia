@@ -1,3 +1,4 @@
+import { collectConditions, qualifyPerformanceResults } from "./conditions";
 import path from "path";
 import { randomUUID } from "node:crypto";
 import type { Browser, LaunchOptions } from "playwright";
@@ -101,7 +102,9 @@ const matrixEnvironment = (
 const runWithBrowser = async (config: ExternalConfig, reportRoot: string, artifactRoot: string) => {
 	const browser = await launchBrowser(config.mode, config.gpu);
 	try {
-		return await runSuite({ browser, config, reportRoot, artifactRoot });
+		const conditions = await collectConditions(browser, config);
+		const results = await runSuite({ browser, config, reportRoot, artifactRoot });
+		return results.map(result => ({ ...result, conditions }));
 	} finally {
 		await browser.close();
 	}
@@ -280,8 +283,7 @@ const main = async () => {
 	let abortError: LabAbortError | null = null;
 	const runChunk = async (chunkConfig: ExternalConfig) => {
 		results.push(...(await runWithBrowser(chunkConfig, reportRoot, artifactRoot)));
-		const abort = detectAbort(chunkConfig, results, policy.abortRatio);
-		if (abort) throw abort;
+
 	};
 	try {
 		if (config.suite === "performance-external" && config.matrix) {
@@ -295,6 +297,8 @@ const main = async () => {
 			logEnvironment(config);
 			await runChunk(config);
 		}
+		const abort = detectAbort(config, results, policy.abortRatio);
+		if (abort) throw abort;
 	} catch (error: unknown) {
 		if (error instanceof LabAbortError) {
 			abortError = error;
@@ -340,18 +344,7 @@ const main = async () => {
 	const regressions = applyPerformanceRegressions(config, results, baseline, budgets);
 	const historyEntries = loadHistoryEntries(config.historyFile);
 	const learningArtifacts = buildLearningArtifacts(config, results, historyEntries, baseline);
-	if (config.saveBaseline) {
-		if (gate.status !== "valid" || results.some((result) => result.status === "failed")) {
-			console.error("[external-e2e] baseline not saved: measurement is not valid or cases failed");
-		} else {
-			const baselineSourcePath = path.join(reportRoot, `${reportTag}-external-results.json`);
-			writeBaselineFile(
-				config.baselineFile,
-				createBaselineFromResults(results, baselineSourcePath, config.suite)
-			);
-			console.log(`[external-e2e] saved baseline: ${config.baselineFile}`);
-		}
-	}
+
 	const learningFailure = shouldFailForLearning(config, learningArtifacts.learnedRegressions);
 	if (learningFailure.shouldFail) {
 		for (const message of learningFailure.messages) {
@@ -368,6 +361,19 @@ const main = async () => {
 					result.error = messages.join("；");
 				}
 			}
+		}
+	}
+	qualifyPerformanceResults(results, baseline, config.failOnPerformance);
+	if (config.saveBaseline) {
+		if (gate.status !== "valid" || results.some((result) => result.status === "failed") || run.dirtyPatchSha256 !== "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" || Boolean(process.env.AEVIA_TEST_RUN_ID)) {
+			console.error("[external-e2e] baseline not saved: measurement is not valid or cases failed");
+		} else {
+			const baselineSourcePath = path.join(reportRoot, `${reportTag}-external-results.json`);
+			writeBaselineFile(
+				config.baselineFile,
+				createBaselineFromResults(results, baselineSourcePath, config.suite)
+			);
+			console.log(`[external-e2e] saved baseline: ${config.baselineFile}`);
 		}
 	}
 	const report = {

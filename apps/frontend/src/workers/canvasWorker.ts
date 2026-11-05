@@ -106,9 +106,9 @@ const markWorkerFirstPaint = (paintedRefs: number) => {
 	scheduleWorkerMarkFlush();
 };
 
-const markWorkerRenderComplete = (paintedRefs: number) => {
+const markWorkerRenderComplete = (paintedRefs: number, reason = "render") => {
 	if (!labEnabled()) return;
-	labMark(LAB_MARK_WORKER_RENDER_COMPLETE, { paintedRefs, pageId: currentPageId });
+	labMark(LAB_MARK_WORKER_RENDER_COMPLETE, { paintedRefs, pageId: currentPageId, reason });
 	scheduleWorkerMarkFlush();
 };
 
@@ -697,8 +697,9 @@ self.onmessage = (event: MessageEvent) => {
 		sceneEngine.endBulkLoad();
 		// Reconcile single-point and translucent strokes after their streamed atoms
 		// have already provided first paint. This does not gate progressive display.
-		renderFullScene();
+		const paintedRefs = renderFullScene();
 		applyPendingInitSceneOperations();
+		markWorkerRenderComplete(paintedRefs, "init-stream-final");
 		return;
 	}
 
@@ -761,6 +762,8 @@ self.onmessage = (event: MessageEvent) => {
 			renderSceneOperation(cmd.sceneOperation);
 			if (cmd.sceneOperation.kind === "element.transform") {
 				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId });
+			} else if (labEnabled()) {
+				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
 			}
 			return;
 		}

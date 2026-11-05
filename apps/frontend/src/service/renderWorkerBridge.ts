@@ -266,8 +266,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			if (labEnabled()) {
 				labMark(LAB_MARK_WORKER_ACK, {
 					type: typeof type === "string" ? type : "unknown",
+					opId: typeof opId === "string" ? opId : "",
 				});
 			}
+
+			// Lab acknowledgements must not accumulate in business render wait state.
+			if (type === "lab:operation-rendered") return;
 
 			if (type === "scene-operation-rendered") {
 				const callback = typeof opId === "string" ? pendingSceneOperationRenders.get(opId) : undefined;

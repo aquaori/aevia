@@ -1,3 +1,5 @@
+import { installLabRuntime, trackLabPage, captureLabSnapshot } from "./lab/install";
+import { withDeadline } from "./deadline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 import { PNG } from "pngjs";
 import type { Roi } from "./types";
@@ -47,6 +49,22 @@ export const createBoundaryProbe = async (
 		viewport: options.viewport || { width: 1280, height: 720 },
 	});
 	const page = await context.newPage();
+	await page.addInitScript(() => {
+		const state = { sockets: [] as WebSocket[], opens: 0, closes: 0 };
+		(window as unknown as { __labNetworkProbe: typeof state }).__labNetworkProbe = state;
+		window.WebSocket = new Proxy(window.WebSocket, {
+			construct(target, args) {
+				const socket = Reflect.construct(target, args) as WebSocket;
+				if (new URL(socket.url).pathname !== "/ws") return socket;
+				state.sockets.push(socket);
+				socket.addEventListener("open", () => state.opens++);
+				socket.addEventListener("close", () => state.closes++);
+				return socket;
+			},
+		});
+	});
+	await installLabRuntime(page);
+	trackLabPage(page);
 	const client = await context.newCDPSession(page);
 	const crash: CrashState = {
 		pageCrashed: false,
@@ -77,7 +95,7 @@ export const createBoundaryProbe = async (
 	const readMetrics = async (): Promise<CdpMetrics> => {
 		const metrics: CdpMetrics = {};
 		try {
-			const heap = await client.send("Runtime.getHeapUsage");
+			const heap = await withDeadline(client.send("Runtime.getHeapUsage"), 30000, "CDP heap metrics");
 			metrics.usedHeapMb = bytesToMb(heap.usedSize);
 			metrics.totalHeapMb = bytesToMb(heap.totalSize);
 		} catch (error: unknown) {
@@ -85,7 +103,7 @@ export const createBoundaryProbe = async (
 		}
 
 		try {
-			const perf = await client.send("Performance.getMetrics");
+			const perf = await withDeadline(client.send("Performance.getMetrics"), 30000, "CDP performance metrics");
 			metrics.jsHeapUsedMb = bytesToMb(metricValue(perf.metrics, "JSHeapUsedSize"));
 			metrics.jsHeapTotalMb = bytesToMb(metricValue(perf.metrics, "JSHeapTotalSize"));
 			metrics.nodeCount = metricValue(perf.metrics, "Nodes");
@@ -97,7 +115,7 @@ export const createBoundaryProbe = async (
 		}
 
 		try {
-			const counters = await client.send("Memory.getDOMCounters");
+			const counters = await withDeadline(client.send("Memory.getDOMCounters"), 30000, "CDP DOM counters");
 			metrics.nodeCount = counters.nodes ?? metrics.nodeCount;
 			metrics.documentCount = counters.documents ?? metrics.documentCount;
 		} catch {
@@ -108,7 +126,7 @@ export const createBoundaryProbe = async (
 	};
 
 	const collectGarbage = async () => {
-		await client.send("HeapProfiler.collectGarbage").catch(() => undefined);
+		await withDeadline(client.send("HeapProfiler.collectGarbage"), 30000, "CDP garbage collection");
 	};
 
 	return {
@@ -119,9 +137,12 @@ export const createBoundaryProbe = async (
 		readMetrics,
 		collectGarbage,
 		close: async () => {
-			browser.off("disconnected", markBrowserDisconnected);
-			await client.detach().catch(() => undefined);
-			await context.close().catch(() => undefined);
+			try { await withDeadline(captureLabSnapshot(page), 5000, "boundary snapshot"); }
+			finally {
+				browser.off("disconnected", markBrowserDisconnected);
+				await withDeadline(client.detach(), 5000, "boundary CDP detach").catch(() => undefined);
+				await withDeadline(context.close(), 5000, "boundary page cleanup");
+			}
 		},
 	};
 };
