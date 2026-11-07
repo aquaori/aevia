@@ -1109,10 +1109,12 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 		await waitForPageIndicator(pageA.page, "2/2");
 		await drawLine(pageA.page, 260, 460, 460, 500, 10);
 		const newPageRegion = roiAround(360, 480);
-		await waitForVisibleScreenshotContent(pageA.page, { roi: newPageRegion, timeoutMs: 5000 });
+		await waitForVisibleScreenshotContent(pageA.page, { roi: newPageRegion, timeoutMs: 5000 })
+			.catch((error: Error) => { throw new Error(`new page stroke: ${error.message}`); });
 		await pageA.page.locator('button[title="上一页"]').click();
 		await waitForPageIndicator(pageA.page, "1/2");
-		const revisit = await waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 5000 });
+		const revisit = await waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 5000 })
+			.catch((error: Error) => { throw new Error(`returned page stroke: ${error.message}`); });
 		const pageIsolation = await waitForCanvasRegionBlank(pageA.page, newPageRegion, 5000);
 		const diff = await compareCanvasPages(pageA.page, pageB.page, {
 			diffPath: path.join(dir, "final-diff.png"),
