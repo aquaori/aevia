@@ -66,6 +66,8 @@ describe("worker acknowledgement isolation", () => {
 		let worker: { onmessage?: (event: { data: unknown }) => void };
 		vi.stubGlobal("Worker", class {
 			onmessage?: (event: { data: unknown }) => void;
+			// The test needs the constructed worker to deliver simulated messages.
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
 			constructor() { worker = this; }
 			postMessage() {}
 			terminate() {}
