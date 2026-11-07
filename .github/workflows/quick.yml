@@ -13,29 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  classify:
-    runs-on: ubuntu-latest
-    outputs:
-      has_pr: ${{ steps.check.outputs.has_pr }}
-    steps:
-      - id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref }}
-        shell: bash
-        run: |
-          has_pr=false
-          if [ "$EVENT_NAME" = push ] && [ "$REF_NAME" != refs/heads/main ]; then
-            pulls="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100" --jq '.[] | select(.state == "open") | [.head.repo.full_name, .head.ref] | @tsv')"
-            while IFS=$'\t' read -r repository branch; do
-              if [ "$repository" = "$GITHUB_REPOSITORY" ] && [ "$branch" = "${REF_NAME#refs/heads/}" ]; then has_pr=true; fi
-            done <<< "$pulls"
-          fi
-          echo "has_pr=$has_pr" >> "$GITHUB_OUTPUT"
   quick:
-    needs: classify
-    if: needs.classify.outputs.has_pr != 'true'
     name: quick checks
     runs-on: ubuntu-latest
     timeout-minutes: 15

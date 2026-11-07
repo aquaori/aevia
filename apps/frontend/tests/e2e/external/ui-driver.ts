@@ -1,8 +1,27 @@
-import type { Browser, CDPSession, Page } from "playwright";
+import type { Browser, CDPSession, Page, WebSocket as PlaywrightWebSocket } from "playwright";
 import type { BrowserPage, ExternalConfig, RoomUser } from "./types";
 import { CANVAS_OBSERVER_INIT_SCRIPT, installCanvasObserver } from "./canvas-observer";
 import { installPerformanceObserver } from "./performance-observer";
 import { captureLabSnapshot, installLabRuntime, trackLabPage } from "./lab/install";
+
+const pageSockets = new WeakMap<Page, Set<PlaywrightWebSocket>>();
+
+export const waitForPageChangeComplete = (page: Page, timeoutMs = 10000): Promise<void> => {
+	const sockets = pageSockets.get(page);
+	if (!sockets?.size) return Promise.reject(new Error("page-change observer has no WebSocket"));
+	return new Promise((resolve, reject) => {
+		const cleanup = () => { clearTimeout(timer); for (const socket of sockets) socket.off("framereceived", onFrame); };
+		const onFrame = ({ payload }: { payload: string | Buffer }) => {
+			if (typeof payload !== "string") return;
+			try {
+				const message = JSON.parse(payload) as { type?: string };
+				if (message.type === "page-change-complete" || message.type === "page-change-done") { cleanup(); resolve(); }
+			} catch { /* Non-JSON WebSocket frames are not page-change events. */ }
+		};
+		const timer = setTimeout(() => { cleanup(); reject(new Error("page-change completion timeout")); }, timeoutMs);
+		for (const socket of sockets) socket.on("framereceived", onFrame);
+	});
+};
 
 export const ROOM_RENDER_MEASUREMENT_SCRIPT = (config: {
 	timeoutMs: number;
@@ -77,6 +96,9 @@ const createRoomPage = async (browser: Browser, config: ExternalConfig) => {
 		recordVideo: undefined,
 	});
 	const page = await launchContext.newPage();
+	const sockets = new Set<PlaywrightWebSocket>();
+	pageSockets.set(page, sockets);
+	page.on("websocket", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
 	if (config.labEnabled) {
 		// Must be registered before the first navigation so the lab runtime exists
 		// before any application script runs.
