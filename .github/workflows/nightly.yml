@@ -1,23 +1,47 @@
 name: Aevia nightly lab
+run-name: Aevia nightly / ${{ inputs.ci_hub_request_id || github.run_number }}
 # Fixed Windows host for performance; Linux quality and race run independently.
 on:
   schedule:
     - cron: "0 18 * * *" # 02:00 Asia/Shanghai
   workflow_dispatch:
+    inputs:
+      ci_hub_request_id:
+        description: Optional CI hub request ID
+        required: false
+        type: string
+      ci_hub_expected_sha:
+        description: Commit confirmed in CI hub
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   nightly:
+    if: github.ref == 'refs/heads/main'
     name: nightly / Windows performance / ${{ matrix.browser }}
     runs-on: [self-hosted, windows, aevia-nightly]
+    outputs:
+      performance_verdict: ${{ steps.qualification.outputs.verdict }}
+    concurrency:
+      group: aevia-nightly-performance
+      cancel-in-progress: false
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         browser: [chromium]
     steps:
+      - name: Check CI hub commit
+        if: github.event_name == 'workflow_dispatch' && inputs.ci_hub_request_id != ''
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ci_hub_expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -40,10 +64,17 @@ jobs:
         env:
           AEVIA_TEST_BROWSER: ${{ matrix.browser }}
           AEVIA_TEST_JSON: "1"
+      - name: Select current report pointer
+        shell: pwsh
+        run: '"AEVIA_CI_RUN_ID_FILE=$env:RUNNER_TEMP/aevia-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT.id" >> $env:GITHUB_ENV'
       - name: Run managed nightly suite
         run: npm run test:nightly -- --lane=performance
         env:
           AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+      - name: Publish performance qualification
+        id: qualification
+        if: always()
+        run: node scripts/ci-performance-verdict.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -52,11 +83,27 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  performance_qualification:
+    if: always() && github.ref == 'refs/heads/main'
+    needs: nightly
+    name: Aevia performance qualification / ${{ needs.nightly.outputs.performance_verdict || 'inconclusive' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Performance qualification is recorded in the job name."
+
   quality:
     name: nightly / Linux correctness and race
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Check CI hub commit
+        if: github.event_name == 'workflow_dispatch' && inputs.ci_hub_request_id != ''
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ci_hub_expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

@@ -1,5 +1,11 @@
 # Lab Runner acceptance notes
 
+## Commit and CI checks
+
+Install the root dependencies with `npm install`; the `prepare` script installs the Husky hooks. Commit messages use conventional types such as `feat(lab): 增加报告入口`; Chinese descriptions are accepted. The pre-commit hook runs ESLint on staged JS/TS/Vue files without rewriting them, checks staged Go formatting, and selects the quick Vitest and Go suites for relevant changes. Tests read the working tree, so partial staging does not guarantee that the test ran on the staged snapshot. A 90-second overall timeout fails the hook.
+
+The `Aevia quick checks` workflow checks new commit messages after the `4c07a06` adoption baseline, checks the PR title, and validates changed files. The existing correctness workflow runs Linux/Chromium for PRs and main; its full browser/OS matrix is scheduled or manual. The Windows performance lane is restricted to main and serialized. These workflow changes need a real GitHub run before their remote behavior can be considered verified. Local hooks can be bypassed; branch protection must require the remote checks after they have been validated.
+
 The existing Go, Vitest unit/module/browser, and external suites remain in place.
 
 ## Evidence contract

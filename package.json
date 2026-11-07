@@ -49,9 +49,12 @@
     "benchmark:boundary": "npm run benchmark:external:boundary --workspace @collaborative-whiteboard/frontend",
     "benchmark:nightly": "npm run test:bench && npm run benchmark:external:learn --workspace @collaborative-whiteboard/frontend",
     "test:perf": "npm run test:benchmark",
-    "test:frontend": "npm run test --workspace @collaborative-whiteboard/frontend"
+    "test:frontend": "npm run test --workspace @collaborative-whiteboard/frontend",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
     "@eslint/js": "^10.0.1",
     "@vitejs/plugin-vue": "^6.0.1",
     "@vitest/browser": "^4.1.10",
@@ -62,6 +65,8 @@
     "eslint-plugin-vue": "^10.9.2",
     "globals": "^17.7.0",
     "happy-dom": "^20.0.11",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
     "playwright": "^1.58.2",
     "supertest": "^7.1.4",
     "tsx": "^4.23.0",

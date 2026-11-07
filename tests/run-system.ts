@@ -1189,6 +1189,7 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 	const runDir = path.join(canonicalRootDir, "tests", "reports", "summary", "runs", runId);
 	activeEvidenceDirectory = runDir;
 	mkdirSync(runDir, { recursive: true });
+	if (process.env.AEVIA_CI_RUN_ID_FILE) writeFileSync(process.env.AEVIA_CI_RUN_ID_FILE, runId, "utf8");
 	const source = readSourceIdentity(canonicalRootDir);
 	const catalogSnapshot = path.join(runDir, "catalog", "feature-obligations.json");
 	mkdirSync(path.dirname(catalogSnapshot), { recursive: true });
