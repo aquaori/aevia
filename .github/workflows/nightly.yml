@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   nightly:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.AEVIA_PERF_RUNNER_READY == 'true'
     name: nightly / Windows performance / ${{ matrix.browser }}
     runs-on: [self-hosted, windows, aevia-nightly]
     outputs:
@@ -87,13 +87,13 @@ jobs:
     if: always() && github.ref == 'refs/heads/main'
     needs: nightly
     name: Aevia performance qualification / ${{ needs.nightly.outputs.performance_verdict || 'inconclusive' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - run: echo "Performance qualification is recorded in the job name."
 
   quality:
     name: nightly / Linux correctness and race
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Check CI hub commit
