@@ -25,7 +25,7 @@ jobs:
   core:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     name: Linux / Chromium core
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     concurrency:
       group: correctness-${{ github.event.pull_request.number || github.ref }}
@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-latest, macos-latest]
         browser: [chromium, firefox, webkit]
     steps:
       - name: Check CI hub commit
