@@ -6,6 +6,14 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      test_package:
+        description: Test package
+        required: true
+        default: core
+        type: choice
+        options:
+          - core
+          - matrix
       ci_hub_request_id:
         description: Optional CI hub request ID
         required: false
@@ -22,7 +30,7 @@ permissions:
 
 jobs:
   core:
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.test_package == 'core')
     name: Linux / Chromium core
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -30,6 +38,13 @@ jobs:
       group: correctness-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     steps:
+      - name: Check CI hub commit
+        if: github.event_name == 'workflow_dispatch' && inputs.ci_hub_request_id != ''
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ci_hub_expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: '[[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]'
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -57,7 +72,7 @@ jobs:
           retention-days: 14
 
   correctness:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.test_package == 'matrix')
     name: ${{ matrix.os }} / ${{ matrix.browser }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
