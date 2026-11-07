@@ -18,7 +18,7 @@ import {
 	waitForCanvasChange,
 	waitForNonBlankCanvas,
 } from "./canvas-observer";
-import { drawLine, drawLineLowLatency, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo } from "./ui-driver";
+import { drawLine, drawLineLowLatency, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo, waitForPageChangeComplete } from "./ui-driver";
 import { readPerformanceObserver } from "./performance-observer";
 import { ensureDir } from "./reporter";
 import {
@@ -1105,13 +1105,13 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 			expected,
 			{ timeout: 5000 }
 		);
-		await pageA.page.locator('button[title="新建页面"]').click();
+		await Promise.all([waitForPageChangeComplete(pageA.page), pageA.page.locator('button[title="新建页面"]').click()]);
 		await waitForPageIndicator(pageA.page, "2/2");
 		await drawLine(pageA.page, 260, 460, 460, 500, 10);
 		const newPageRegion = roiAround(360, 480);
 		await waitForVisibleScreenshotContent(pageA.page, { roi: newPageRegion, timeoutMs: 5000 })
 			.catch((error: Error) => { throw new Error(`new page stroke: ${error.message}`); });
-		await pageA.page.locator('button[title="上一页"]').click();
+		await Promise.all([waitForPageChangeComplete(pageA.page), pageA.page.locator('button[title="上一页"]').click()]);
 		await waitForPageIndicator(pageA.page, "1/2");
 		const revisit = await waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 5000 })
 			.catch((error: Error) => { throw new Error(`returned page stroke: ${error.message}`); });

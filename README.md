@@ -339,7 +339,19 @@ const newWidth = clamp(lastWidth * 0.7 + targetWidth * 0.3, 1, baseSize + 2);
 
 ---
 
+## 测试与 CI
+
+提交前的 Git hooks 检查提交信息、相关文件与快速测试；首次安装依赖后通过 `npm install` 启用。可单独运行 `npm run test:quick`、`npm run test:smoke` 或 `npm run test:single -- --only=<选择器>`。`npm run test:ci` 执行核心正确性检查，`npm run test:nightly` 包含更完整的质量和性能场景；运行完成后报告保存在 `tests/reports/summary/runs/`。
+
+GitHub Actions 在 push 和 PR 时运行快速检查及 Linux/Chromium 核心链路；手动正确性工作流可选择核心检查或多平台浏览器矩阵。性能测试需要固定的 Windows runner，基线与运行环境绑定，不应直接比较不同主机的绝对耗时。
+
 ## 更新日志
+
+### 2026.11.08
+
+- 引入 Lab Runner 的测试档案、采集有效性门禁、统一报告和本地实时控制台。
+- 增加本地提交规范检查及分层 GitHub Actions；支持按工作流输入选择正确性测试范围。
+- 分页正确性测试等待页面切换完成事件后再绘制，避免把加载中的页面当作已就绪。
 
 ### 2026.09.05
 
