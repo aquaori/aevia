@@ -1,0 +1,110 @@
+name: Aevia correctness
+run-name: Aevia correctness / ${{ inputs.ci_hub_request_id || github.run_number }}
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ci_hub_request_id:
+        description: Optional CI hub request ID
+        required: false
+        type: string
+      ci_hub_expected_sha:
+        description: Commit confirmed in CI hub
+        required: false
+        type: string
+  schedule:
+    - cron: "0 19 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    name: Linux / Chromium core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    concurrency:
+      group: correctness-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:doctor
+        env:
+          AEVIA_TEST_BROWSER: chromium
+          AEVIA_TEST_JSON: "1"
+      - run: npm run test:ci
+        env:
+          AEVIA_TEST_BROWSER: chromium
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aevia-test-evidence-linux-chromium
+          path: tests/reports/summary/runs/
+          if-no-files-found: warn
+          retention-days: 14
+
+  correctness:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: ${{ matrix.os }} / ${{ matrix.browser }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+        browser: [chromium, firefox, webkit]
+    steps:
+      - name: Check CI hub commit
+        if: github.event_name == 'workflow_dispatch' && inputs.ci_hub_request_id != ''
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ci_hub_expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - run: npm ci
+      - name: Install browser engines and Linux dependencies
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Install browser engines
+        if: runner.os != 'Linux'
+        run: npx playwright install ${{ matrix.browser }}
+      - name: Check test environment
+        run: npm run test:doctor
+        env:
+          AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+          AEVIA_TEST_JSON: "1"
+      - name: Run managed correctness suite
+        run: npm run test:ci
+        env:
+          AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aevia-test-evidence-${{ matrix.os }}-${{ matrix.browser }}
+          path: tests/reports/summary/runs/
+          if-no-files-found: warn
+          retention-days: 14

@@ -4,6 +4,14 @@ import type {
 	InitRenderChunkCommandDictionaryEntry,
 	InitRenderChunkMetaPayload,
 } from "./collabDispatcherTypes";
+import { labEnabled, labMark, mergeWorkerMarks, type LabMark } from "../instrumentation/labMarks";
+import {
+	LAB_MARK_FRAME_FIRST_PAINT,
+	LAB_MARK_FRAME_RENDER_COMPLETE,
+	LAB_MARK_WORKER_ACK,
+	LAB_MARK_WORKER_FIRST_PAINT,
+	LAB_MARK_WORKER_RENDER_COMPLETE,
+} from "../instrumentation/labMarkNames";
 
 interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
@@ -228,8 +236,42 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			type: "module",
 		});
 
+		// Workers cannot see the harness-injected `window.__AEVIA_LAB__`; tell the
+		// worker once whether lab mode is on. Message order guarantees this lands
+		// before any init/render traffic.
+		if (labEnabled()) {
+			worker.postMessage({ type: "lab-configure", data: { enabled: true } });
+		}
+
 		worker.onmessage = (event) => {
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
+
+			if (type === "lab:marks") {
+				if (labEnabled()) {
+					const marks = (event.data.marks as LabMark[]) ?? [];
+					// Settle worker terminal paints on the main timeline: the span end is the
+					// moment the main thread learns about the paint, never a worker clock value.
+					for (const mark of marks) {
+						if (mark.name === LAB_MARK_WORKER_FIRST_PAINT) {
+							labMark(LAB_MARK_FRAME_FIRST_PAINT, mark.detail ?? {});
+						} else if (mark.name === LAB_MARK_WORKER_RENDER_COMPLETE) {
+							labMark(LAB_MARK_FRAME_RENDER_COMPLETE, mark.detail ?? {});
+						}
+					}
+					mergeWorkerMarks(marks);
+				}
+				return;
+			}
+
+			if (labEnabled()) {
+				labMark(LAB_MARK_WORKER_ACK, {
+					type: typeof type === "string" ? type : "unknown",
+					opId: typeof opId === "string" ? opId : "",
+				});
+			}
+
+			// Lab acknowledgements must not accumulate in business render wait state.
+			if (type === "lab:operation-rendered") return;
 
 			if (type === "scene-operation-rendered") {
 				const callback = typeof opId === "string" ? pendingSceneOperationRenders.get(opId) : undefined;

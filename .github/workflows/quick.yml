@@ -1,0 +1,96 @@
+name: Aevia quick checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: quick-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      has_pr: ${{ steps.check.outputs.has_pr }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+        shell: bash
+        run: |
+          has_pr=false
+          if [ "$EVENT_NAME" = push ] && [ "$REF_NAME" != refs/heads/main ]; then
+            pulls="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls?per_page=100" --jq '.[] | select(.state == "open") | [.head.repo.full_name, .head.ref] | @tsv')"
+            while IFS=$'\t' read -r repository branch; do
+              if [ "$repository" = "$GITHUB_REPOSITORY" ] && [ "$branch" = "${REF_NAME#refs/heads/}" ]; then has_pr=true; fi
+            done <<< "$pulls"
+          fi
+          echo "has_pr=$has_pr" >> "$GITHUB_OUTPUT"
+  quick:
+    needs: classify
+    if: needs.classify.outputs.has_pr != 'true'
+    name: quick checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - run: npm ci
+      - name: Select comparison base
+        id: base
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          base="$PR_BASE"
+          if [ -z "$base" ]; then base="$PUSH_BEFORE"; fi
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            base="$(git merge-base HEAD origin/main)"
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      - name: Check new commits and pull request title
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          CI_BASE: ${{ steps.base.outputs.sha }}
+        shell: bash
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            printf '%s\n' "$PR_TITLE" | npx --no -- commitlint
+          fi
+          baseline=4c07a06ce128871e07d2f0a95026c29cdd2f5d00
+          git cat-file -e "$baseline^{commit}"
+          while IFS= read -r commit; do
+            [ -z "$commit" ] || git log -1 --format=%B "$commit" | npx --no -- commitlint
+          done < <(git rev-list "$CI_BASE..HEAD" --not "$baseline" --no-merges)
+      - name: Inspect changed files
+        id: changes
+        env:
+          CI_BASE: ${{ steps.base.outputs.sha }}
+        run: node scripts/ci-changed.mjs
+      - if: steps.changes.outputs.frontend == 'true'
+        run: npm run test:quick:suite
+      - if: steps.changes.outputs.frontend == 'true'
+        run: npm run build:frontend
+      - if: steps.changes.outputs.backend == 'true'
+        run: npm run test:go
+      - if: steps.changes.outputs.backend == 'true'
+        run: npm run test:go:vet

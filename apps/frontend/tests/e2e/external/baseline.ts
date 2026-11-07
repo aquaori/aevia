@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { sameConditions } from "./conditions";
+import { assertReportEligible } from "./report-eligibility";
 import fs from "fs";
 import path from "path";
 import type {
@@ -76,6 +79,7 @@ const extractResultsArray = (raw: unknown): CaseResult[] => {
 export const loadReportResults = (inputPath: string) => {
 	const filePath = resolveResultsFile(inputPath);
 	const raw = readJson<unknown>(filePath);
+	assertReportEligible(raw, filePath);
 	return {
 		filePath,
 		results: extractResultsArray(raw),
@@ -95,6 +99,7 @@ export const createBaselineFromResults = (
 			runMode: result.runMode,
 			scale: result.scale,
 			metrics: result.metrics,
+			conditions: result.conditions,
 		};
 	}
 	return {
@@ -228,12 +233,18 @@ export const applyPerformanceRegressions = (
 		const key = caseKeyOf(result);
 		const checks: RegressionCheck[] = [];
 		const baselineSnapshot = baseline?.cases[key];
+		if (!sameConditions(result.conditions, baselineSnapshot?.conditions)) {
+			result.regression = { caseKey: key, id: result.id, environment: result.environment, status: "missing", checks: [] };
+			regressions.push(result.regression);
+			continue;
+		}
 		for (const metric of metrics) {
 			if (baselineSnapshot && typeof baselineSnapshot.metrics[metric] === "number") {
 				const check = evaluateBaselineCheck(config, result, metric, baselineSnapshot.metrics[metric] as number);
 				if (check) checks.push(check);
 			}
-			const budgetRule = budgets?.cases[key]?.metrics?.[metric];
+			const budgetMatches = baseline && budgets?.sourceBaselineSha256 === createHash("sha256").update(JSON.stringify(baseline.cases)).digest("hex");
+			const budgetRule = budgetMatches ? budgets?.cases[key]?.metrics?.[metric] : undefined;
 			if (budgetRule?.max !== undefined) {
 				const check = evaluateBudgetCheck(config, result, metric, budgetRule.max);
 				if (check) checks.push(check);
@@ -325,6 +336,9 @@ export const buildExternalReport = (
 			boundaryPointsPerStroke: config.boundaryPointsPerStroke,
 			freezeMs: config.freezeMs,
 			heapSnapshot: config.heapSnapshot,
+			caseIds: config.caseIds,
+			caseKeys: config.caseKeys,
+			labEnabled: config.labEnabled,
 		},
 		summary,
 		results,

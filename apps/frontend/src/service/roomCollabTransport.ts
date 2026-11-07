@@ -18,6 +18,12 @@ import {
 import { applyServerPressurePolicy, resetCollabPressurePolicy } from "./collabPressurePolicy";
 import { renewRoomSession as renewRoomSessionRequest } from "./sessionApi";
 import { wsBaseUrl } from "../config/endpoints";
+import { labEnabled, labMark } from "../instrumentation/labMarks";
+import {
+	LAB_MARK_WS_MESSAGE,
+	LAB_MARK_WS_OPEN,
+	LAB_MARK_WS_SEND,
+} from "../instrumentation/labMarkNames";
 
 type OutgoingPayload = Record<string, unknown> & {
 	cmd?: Command;
@@ -529,6 +535,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			return false;
 		}
 
+		if (labEnabled()) {
+			labMark(LAB_MARK_WS_SEND, { type });
+		}
+
 		let outgoing = data as OutgoingPayload;
 		if (outgoing && typeof outgoing === "object") {
 			outgoing = { ...outgoing };
@@ -629,6 +639,9 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			socket.value.binaryType = "arraybuffer";
 
 			socket.value.onopen = () => {
+				if (labEnabled()) {
+					labMark(LAB_MARK_WS_OPEN);
+				}
 				emitHook("collab:connected", undefined);
 				scheduleSessionRenewal();
 			};
@@ -637,6 +650,12 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				try {
 					if (typeof event.data === "string") {
 						const msg = JSON.parse(event.data);
+
+						if (labEnabled()) {
+							labMark(LAB_MARK_WS_MESSAGE, {
+								type: typeof msg?.type === "string" ? msg.type : "unknown",
+							});
+						}
 
 						if (msg.type === "init-meta" && typeof window !== "undefined") {
 							(window as Window & { __aeviaInitStreamStartedAt?: number }).__aeviaInitStreamStartedAt =
@@ -676,6 +695,9 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 					if (event.data instanceof ArrayBuffer) {
 						if (hasRealtimeBinaryMagic(event.data)) {
 							const msg = decodeRealtimeBinaryMessage(event.data);
+							if (labEnabled()) {
+								labMark(LAB_MARK_WS_MESSAGE, { type: msg.type });
+							}
 							emitHook("collab:message", { type: msg.type, payload: msg.data });
 							if (enableDeltaReplay) updateLastRoomSeq(msg.data);
 							dispatcher.handleMessage(msg);
@@ -691,6 +713,13 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 						const pendingChunk = pendingRenderBinaryChunk;
 						pendingRenderBinaryChunk = null;
+						if (labEnabled()) {
+							labMark(LAB_MARK_WS_MESSAGE, {
+								type: pendingChunk.kind === "init"
+									? "init-render-binary-chunk"
+									: "page-change-render-binary-chunk",
+							});
+						}
 						options.appendInitRenderBinaryChunk?.(pendingChunk.meta, event.data);
 						if (pendingChunk.kind === "init") {
 							dispatcher.handleInitRenderChunkBinary(pendingChunk.meta);

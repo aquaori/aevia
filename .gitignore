@@ -20,6 +20,10 @@ Thumbs.db
 
 .vscode/
 tests/reports/
+tests/.tmp/
+# Vitest browser mode writes failure screenshots/attachments into the test tree.
+.vitest-attachments/
+apps/*/tests/**/__screenshots__/
 
 # Local databases and benchmark scratch data. Benchmark runs can leave a
 # multi-gigabyte file here; `npm run benchmark:go -- --clean` removes it.
@@ -35,6 +39,7 @@ data/*.sqlite-*
 !.codex/skills/
 .codex/skills/*
 !.codex/skills/aevia-project-guide/
+!.codex/skills/aevia-testing/
 __pycache__/
 
 # Benchmark baselines and learned history are tracked as well, so regression

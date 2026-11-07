@@ -30,6 +30,8 @@
 	} from "../service/canvas";
 	import { createWhiteboardSession } from "../service/whiteboardSession";
 	import { createRoomCollabTransport } from "../service/roomCollabTransport";
+	import { createLabInstrumentationPlugin } from "../instrumentation/labPlugin";
+	import { labEnabled } from "../instrumentation/labMarks";
 	import { createRoomUiState } from "../states/roomUiState";
 	import { createCanvasRuntime } from "../service/canvasRuntime";
 	import { createRenderWorkerBridge } from "../service/renderWorkerBridge";
@@ -608,6 +610,9 @@
 		requestOverlayRender: roomCanvasOverlay.render,
 	});
 	roomSessionRef.value = session;
+	if (labEnabled()) {
+		session.use(createLabInstrumentationPlugin());
+	}
 	const roomLifecycleController = createRoomLifecycleController({
 		roomCanvasOverlay,
 		roomKeyboardController,

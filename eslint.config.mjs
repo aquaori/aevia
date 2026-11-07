@@ -52,6 +52,8 @@ export default defineConfig(
 	{
 		files: [
 			"eslint.config.mjs",
+			"commitlint.config.cjs",
+			"lint-staged.config.cjs",
 			"vitest.config.ts",
 			"scripts/**/*.mjs",
 			"tests/**/*.ts",

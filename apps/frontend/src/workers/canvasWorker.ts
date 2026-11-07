@@ -9,6 +9,11 @@ import {
 } from "@collaborative-whiteboard/shared";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 import { SceneEngine } from "../scene/sceneEngine";
+import { labDrainMarks, labEnabled, labMark, labSetEnabled } from "../instrumentation/labMarks";
+import {
+	LAB_MARK_WORKER_FIRST_PAINT,
+	LAB_MARK_WORKER_RENDER_COMPLETE,
+} from "../instrumentation/labMarkNames";
 
 interface Rect {
 	minX: number;
@@ -79,6 +84,34 @@ const INIT_RENDER_CHUNK_VERSION = 1;
 const INIT_RENDER_CHUNK_HEADER_SIZE = 20;
 const INIT_RENDER_CHUNK_RECORD_SIZE = 22;
 
+let firstPaintMarked = false;
+let workerMarkFlushRafId: number | null = null;
+
+const scheduleWorkerMarkFlush = () => {
+	if (workerMarkFlushRafId !== null) return;
+	workerMarkFlushRafId = requestAnimationFrame(() => {
+		workerMarkFlushRafId = null;
+		const marks = labDrainMarks();
+		if (marks.length === 0) return;
+		// Worker timestamps stay on the worker clock; the main thread settles
+		// cross-thread spans when it receives this batch.
+		self.postMessage({ type: "lab:marks", marks });
+	});
+};
+
+const markWorkerFirstPaint = (paintedRefs: number) => {
+	if (!labEnabled() || paintedRefs <= 0 || firstPaintMarked) return;
+	firstPaintMarked = true;
+	labMark(LAB_MARK_WORKER_FIRST_PAINT, { paintedRefs, pageId: currentPageId });
+	scheduleWorkerMarkFlush();
+};
+
+const markWorkerRenderComplete = (paintedRefs: number, reason = "render") => {
+	if (!labEnabled()) return;
+	labMark(LAB_MARK_WORKER_RENDER_COMPLETE, { paintedRefs, pageId: currentPageId, reason });
+	scheduleWorkerMarkFlush();
+};
+
 const cloneCommandMetadata = (cmd: Command): Command => ({
 	...cmd,
 	points: undefined,
@@ -119,9 +152,11 @@ const appendFlatPointsToCanvas = (points: FlatPoint[]) => {
 		appendSceneFlatPoint(point);
 		refs.push(...sceneEngine.ingestFlatPoint(point));
 	});
-	return mainCtx
+	const paintedRefs = mainCtx
 		? sceneEngine.renderAtomRefs(mainCtx, refs, viewport.width, viewport.height)
 		: 0;
+	markWorkerFirstPaint(paintedRefs);
+	return paintedRefs;
 };
 
 const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint[] => {
@@ -294,17 +329,21 @@ const appendInitRenderBinaryChunkToCanvas = (data: InitRenderBinaryChunkData) =>
 		}));
 	}
 
-	return sceneEngine.renderAtomRefs(mainCtx, refs, viewport.width, viewport.height);
+	const paintedRefs = sceneEngine.renderAtomRefs(mainCtx, refs, viewport.width, viewport.height);
+	markWorkerFirstPaint(paintedRefs);
+	return paintedRefs;
 };
 
 const renderFullScene = () => {
 	if (!mainCtx) return 0;
-	return sceneEngine.renderFull(
+	const paintedRefs = sceneEngine.renderFull(
 		mainCtx,
 		viewport.width,
 		viewport.height,
 		currentTransformingIds
 	);
+	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
+	return paintedRefs;
 };
 
 const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[]) => {
@@ -559,6 +598,18 @@ const mergeRects = (rects: Rect[]): Rect[] => {
 self.onmessage = (event: MessageEvent) => {
 	const { type, data } = event.data;
 
+	if (type === "lab-configure") {
+		labSetEnabled(data?.enabled === true);
+		if (!labEnabled()) {
+			if (workerMarkFlushRafId !== null) {
+				cancelAnimationFrame(workerMarkFlushRafId);
+				workerMarkFlushRafId = null;
+			}
+			firstPaintMarked = false;
+		}
+		return;
+	}
+
 	if (type === "init-canvas") {
 		offscreenCanvas = data.canvas as OffscreenCanvas;
 		viewport = { width: data.width, height: data.height, dpr: data.dpr };
@@ -604,6 +655,7 @@ self.onmessage = (event: MessageEvent) => {
 		sceneEngine.beginBulkLoad();
 		initRenderFinished = false;
 		initCanvasStarted = false;
+		firstPaintMarked = false;
 		pendingInitSceneCommands = [];
 		for (const [id, command] of liveSceneCommandsDuringInit) {
 			if (command.pageId !== currentPageId) liveSceneCommandsDuringInit.delete(id);
@@ -645,8 +697,9 @@ self.onmessage = (event: MessageEvent) => {
 		sceneEngine.endBulkLoad();
 		// Reconcile single-point and translucent strokes after their streamed atoms
 		// have already provided first paint. This does not gate progressive display.
-		renderFullScene();
+		const paintedRefs = renderFullScene();
 		applyPendingInitSceneOperations();
+		markWorkerRenderComplete(paintedRefs, "init-stream-final");
 		return;
 	}
 
@@ -709,6 +762,8 @@ self.onmessage = (event: MessageEvent) => {
 			renderSceneOperation(cmd.sceneOperation);
 			if (cmd.sceneOperation.kind === "element.transform") {
 				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId });
+			} else if (labEnabled()) {
+				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
 			}
 			return;
 		}
@@ -818,6 +873,11 @@ self.onmessage = (event: MessageEvent) => {
 		liveSceneCommandsDuringInit.clear();
 		initRenderFinished = false;
 		initCanvasStarted = false;
+		firstPaintMarked = false;
+		if (workerMarkFlushRafId !== null) {
+			cancelAnimationFrame(workerMarkFlushRafId);
+			workerMarkFlushRafId = null;
+		}
 		currentTransformingIds.clear();
 		offscreenCanvas = null;
 		mainCtx = null;

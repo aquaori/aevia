@@ -46,6 +46,11 @@ npm run test:bench      Vitest micro bench project
 npm run test:e2e:smoke  frontend external correctness-smoke suite
 npm run test:benchmark  frontend external performance-external suite
 npm run test:report     aggregate reports
+npm run test:smoke      managed smoke profile: catalog + vitest projects + correctness-smoke external
+npm run test:single     managed single-point run (--only=<selector> / --since=<git-ref>)
+npm run test:nightly    managed nightly profile: correctness + 4-environment performance matrix
+npm run lab:inventory   regenerate tests/catalog/module-obligations.json (add --check to verify)
+npm run lab:serve       local lab report server with one-click rerun
 ```
 
 Use the smallest relevant command. Do not assume `npm run test` is cheap; it chains build, Vitest, E2E smoke, benchmark, and report aggregation.
@@ -69,6 +74,7 @@ Backend defaults from `apps/backend/internal/config/config.go`:
 - `HOST=0.0.0.0`
 - `DEFAULT_ROOM_ID=123123`
 - `DB_PATH=<repo>/data/whiteboard-go.sqlite`
+- `DB_BUSY_TIMEOUT_MS=15000` (per-connection SQLite busy timeout; keeps room creation from failing with HTTP 500 while the batch writer is flushing)
 - `INIT_PRELOAD_PAGE_COUNT=2`
 - `PAGE_CACHE_RADIUS=1`
 - `INIT_COMMAND_CHUNK_SIZE=100`

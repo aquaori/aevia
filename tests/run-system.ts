@@ -1,9 +1,20 @@
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import path from "node:path";
+import { buildAggregate, writeAggregateReport } from "./report/aggregate";
+import { VALIDITY_CODES } from "./report/contract";
+import type { LabMode, RunManifest, RunStep, ValidityReason } from "./report/contract";
+import { readSourceIdentity } from "./report/provenance";
+import { browserAvailability, selectedBrowser } from "./browser-launch";
+import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
+import { resolveOnlySelectors, resolveSinceRef, type LabResolveResult } from "./lab/resolve-only";
+import { buildLabEvidencePlan, probeGoRaceDetector, withCanvasOracle, type LabPlanContext } from "./lab/evidence-plan";
+import { isLiveConsoleEnabled, startLiveConsole, type LiveConsole } from "./lab/live-console";
+import { describeSourceDrift, describeSourceDriftLines } from "./lab/source-drift";
 
 type Step = {
 	title: string;
@@ -29,7 +40,38 @@ type ExternalServices = {
 };
 
 type ExternalMode = "headless" | "headed";
-type Profile = "standard" | "boundary-small" | "boundary-full" | "nightly" | "custom";
+type ManagedProfile = "quick" | "ci" | "full" | "smoke" | "nightly" | "single";
+type Profile = ManagedProfile | "standard" | "boundary-small" | "boundary-full" | "custom";
+
+type CoreProfile = "quick" | "ci" | "full";
+const CORE_PROFILES: readonly CoreProfile[] = ["quick", "ci", "full"];
+const MANAGED_PROFILES: readonly ManagedProfile[] = ["quick", "ci", "full", "smoke", "nightly", "single"];
+const isManagedProfile = (value: Profile): value is ManagedProfile =>
+	(MANAGED_PROFILES as readonly string[]).includes(value);
+const isCoreProfile = (value: ManagedProfile): value is CoreProfile =>
+	(CORE_PROFILES as readonly string[]).includes(value);
+
+const managedModeOf = (profile: ManagedProfile): LabMode => {
+	if (profile === "single") return "single";
+	if (profile === "quick" || profile === "smoke") return "smoke";
+	if (profile === "ci") return "ci";
+	return "nightly";
+};
+
+type EvidenceStep = {
+	id: string;
+	title: string;
+	description: string;
+	command?: string;
+	cwd?: string;
+	timeoutMs?: number;
+	stdoutArtifact?: string;
+	env?: NodeJS.ProcessEnv;
+	requiresServices?: boolean;
+	/** Restart the isolated services with a brand-new SQLite file before this step. */
+	freshServices?: boolean;
+	action?: "source-check";
+};
 
 type Answers = {
 	profile: Profile;
@@ -45,7 +87,6 @@ type Answers = {
 	includeStandardBenchmark: boolean;
 	includeResilience: boolean;
 	includeBoundary: boolean;
-	includeReport: boolean;
 	scales: string;
 	boundaryScales: string;
 	concurrencyLevels: string;
@@ -62,6 +103,11 @@ const testTempDir = path.join(canonicalRootDir, "tests", ".tmp");
 const startedAt = Date.now();
 const spinnerFrames = ["-", "\\", "|", "/"];
 let activeExternalServices: ExternalServices | undefined;
+let activeServicesDbPath: string | undefined;
+let activeTestProcess: ChildProcess | undefined;
+let interruptedSignal: "SIGINT" | "SIGTERM" | undefined;
+let activeLiveConsole: LiveConsole | undefined;
+let activeEvidenceDirectory: string | undefined;
 
 const dateTag = () => new Date().toISOString().replace(/[:.]/g, "-");
 const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
@@ -107,9 +153,13 @@ const startManagedService = (
 		env: options.env,
 		stdio: ["ignore", "pipe", "pipe"],
 		windowsHide: true,
+		detached: process.platform !== "win32",
 	});
 	const service: ManagedService = { name, child, tail: [] };
+	const serviceLog = activeEvidenceDirectory ? path.join(activeEvidenceDirectory, "logs", `service-${name}-${randomUUID()}.log`) : undefined;
+	if (serviceLog) mkdirSync(path.dirname(serviceLog), { recursive: true });
 	const collect = (chunk: Buffer, source: "stdout" | "stderr") => {
+		if (serviceLog) appendFileSync(serviceLog, `[${source}] ${chunk.toString()}`, "utf8");
 		for (const line of chunk.toString().split(/\r?\n/)) {
 			if (!line.trim()) continue;
 			service.tail.push(`${source}: ${line}`);
@@ -171,7 +221,7 @@ const stopManagedService = async (service: ManagedService) => {
 			resolve();
 		});
 	});
-	service.child.kill("SIGTERM");
+	stopProcessTree(service.child);
 	await closed;
 	service.child.stdout?.destroy();
 	service.child.stderr?.destroy();
@@ -194,7 +244,8 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 	const frontendUrl = `http://127.0.0.1:${frontendPort}`;
 	const apiUrl = `http://127.0.0.1:${backendPort}`;
 	const wsUrl = `ws://127.0.0.1:${backendPort}/ws`;
-	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}.sqlite`);
+	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}-${randomUUID()}.sqlite`);
+	activeServicesDbPath = databasePath;
 	const backendExecutable = path.join(
 		testTempDir,
 		`aevia-backend-${process.pid}${process.platform === "win32" ? ".exe" : ""}`
@@ -271,7 +322,7 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 				// A force-killed Windows process can release SQLite handles asynchronously.
 			}
 		}
-		rmSync(backendExecutable, { force: true });
+		try { rmSync(backendExecutable, { force: true }); } catch { print("[lab] isolated executable retained: cleanup unavailable on this host"); }
 		try {
 			rmdirSync(testTempDir);
 		} catch {
@@ -301,11 +352,33 @@ const stopExternalServices = async () => {
 	activeExternalServices = undefined;
 };
 
+/**
+ * Restart the isolated backend/frontend with a clean SQLite file. Multi-million-point
+ * boundary seeding grows the database past the point where create-room starts failing
+ * with HTTP 500, so the boundary step runs on a fresh store instead of inheriting the
+ * accumulated rows of the correctness/performance steps.
+ */
+const resetExternalServices = async () => {
+	const dbPath = activeServicesDbPath;
+	await stopExternalServices();
+	if (dbPath) {
+		for (const suffix of ["", "-wal", "-shm"]) {
+			try {
+				rmSync(`${dbPath}${suffix}`, { force: true });
+			} catch {
+				// Windows may still hold the file for a moment; the next start recreates it.
+			}
+		}
+		print("    [services] resetting the isolated database for this step");
+	}
+	await startExternalServices();
+};
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
 	process.once(signal, () => {
-		void stopExternalServices().finally(() => {
-			process.exit(signal === "SIGINT" ? 130 : 143);
-		});
+		interruptedSignal = signal;
+		if (activeTestProcess) stopProcessTree(activeTestProcess);
+		void stopExternalServices();
 	});
 }
 
@@ -360,6 +433,24 @@ const argValue = (name: string) => {
 	return [...process.argv].reverse().find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
 };
 
+const argValues = (name: string) => {
+	const prefix = `--${name}=`;
+	return process.argv.filter((arg) => arg.startsWith(prefix)).map((arg) => arg.slice(prefix.length));
+};
+
+const liveConsoleRequested = (mode: string) => {
+	const raw = (argValue("live") || "").trim().toLowerCase();
+	if (raw === "off" || raw === "false" || raw === "0" || raw === "no") return false;
+	if (raw === "on" || raw === "true" || raw === "1" || raw === "yes") return true;
+	return isLiveConsoleEnabled(mode);
+};
+
+const liveConsoleOptions = () => ({
+	port: Math.max(0, Number(argValue("live-port") || process.env.AEVIA_LIVE_PORT || 0)) || 0,
+	open: hasArg("live-open") || process.env.AEVIA_LIVE_OPEN === "1",
+	graceMs: Math.max(0, Number(argValue("live-grace-ms") || process.env.AEVIA_LIVE_GRACE_MS || 30_000)) || 0,
+});
+
 const hasArg = (name: string) => process.argv.includes(`--${name}`);
 
 const argBoolean = (name: string, defaultValue: boolean) => {
@@ -383,15 +474,9 @@ const askNumber = async (rl: readline.Interface, question: string, defaultValue:
 };
 
 const normalizeProfile = (value: string | undefined): Profile => {
-	if (
-		value === "standard" ||
-		value === "boundary-small" ||
-		value === "boundary-full" ||
-		value === "nightly" ||
-		value === "custom"
-	) {
-		return value;
-	}
+	if (!value) return "standard";
+	if ((MANAGED_PROFILES as readonly string[]).includes(value)) return value as ManagedProfile;
+	if (value === "standard" || value === "boundary-small" || value === "boundary-full" || value === "custom") return value;
 	return "standard";
 };
 
@@ -401,15 +486,14 @@ const presetAnswers = (profile: Profile): Answers => ({
 	runs: 3,
 	warmup: 1,
 	matrix: profile === "nightly",
-	includeBuild: profile !== "custom",
+	includeBuild: profile !== "custom" && profile !== "quick",
 	includeUnit: profile !== "custom",
 	includeIntegration: profile !== "custom",
-	includeBrowser: profile !== "custom",
-	includeSmoke: profile !== "custom",
+	includeBrowser: profile !== "custom" && profile !== "quick",
+	includeSmoke: profile !== "custom" && profile !== "quick",
 	includeStandardBenchmark: profile === "standard" || profile === "boundary-small" || profile === "boundary-full" || profile === "nightly",
 	includeResilience: profile === "nightly",
 	includeBoundary: profile === "boundary-small" || profile === "boundary-full" || profile === "nightly",
-	includeReport: true,
 	scales: "10000,50000,100000",
 	boundaryScales: profile === "boundary-small" ? "10000,50000" : "100000,250000,500000,1000000,2000000,5000000",
 	concurrencyLevels: profile === "boundary-small" ? "5,10" : "10,25,50,100",
@@ -437,7 +521,6 @@ const collectAnswers = async (): Promise<Answers> => {
 			includeStandardBenchmark: argBoolean("benchmark", preset.includeStandardBenchmark),
 			includeResilience: argBoolean("resilience", preset.includeResilience),
 			includeBoundary: argBoolean("boundary", preset.includeBoundary),
-			includeReport: argBoolean("report", preset.includeReport),
 			scales: argValue("scales") || preset.scales,
 			boundaryScales: argValue("boundary-scales") || preset.boundaryScales,
 			concurrencyLevels: argValue("concurrency-levels") || preset.concurrencyLevels,
@@ -484,7 +567,6 @@ const collectAnswers = async (): Promise<Answers> => {
 			answers.includeStandardBenchmark = await askYesNo(rl, "Run standard external benchmark", true);
 			answers.includeResilience = await askYesNo(rl, "Run network resilience cases", false);
 			answers.includeBoundary = await askYesNo(rl, "Run boundary cases", false);
-			answers.includeReport = await askYesNo(rl, "Aggregate report at the end", true);
 		}
 
 		if (answers.includeStandardBenchmark || answers.includeResilience || answers.includeBoundary) {
@@ -514,6 +596,7 @@ const runStep = (step: Step, index: number, total: number) =>
 		print("");
 		print(`[${index}/${total}] ${step.title}`);
 		print(`    ${step.description}`);
+		activeLiveConsole?.stepStart(`legacy-${index}`);
 		const timer = setInterval(() => {
 			const frame = spinnerFrames[spinnerIndex % spinnerFrames.length];
 			spinnerIndex += 1;
@@ -525,7 +608,9 @@ const runStep = (step: Step, index: number, total: number) =>
 			shell: true,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: { ...process.env, FORCE_COLOR: "0" },
+			detached: process.platform !== "win32",
 		});
+		activeTestProcess = child;
 
 		const collect = (chunk: Buffer, isError = false) => {
 			for (const line of chunk.toString().split(/\r?\n/)) {
@@ -536,6 +621,7 @@ const runStep = (step: Step, index: number, total: number) =>
 				}
 				tail.push(`${isError ? "stderr" : "stdout"}: ${line}`);
 				if (tail.length > 30) tail.shift();
+				activeLiveConsole?.log(`legacy-${index}`, line, isError ? "stderr" : "stdout");
 			}
 		};
 
@@ -543,18 +629,37 @@ const runStep = (step: Step, index: number, total: number) =>
 		child.stderr?.on("data", (chunk) => collect(chunk, true));
 		child.on("error", (error) => {
 			clearInterval(timer);
+			if (activeTestProcess === child) activeTestProcess = undefined;
 			process.stdout.write(`\r${" ".repeat(100)}\r`);
+			activeLiveConsole?.stepEnd({
+				id: `legacy-${index}`,
+				status: "failed",
+				durationMs: Date.now() - stepStartedAt,
+				error: error.message,
+			});
 			reject(error);
 		});
 		child.on("close", (code) => {
 			clearInterval(timer);
+			if (activeTestProcess === child) activeTestProcess = undefined;
 			process.stdout.write(`\r${" ".repeat(100)}\r`);
 			if (code === 0) {
 				print(`    ✓ completed in ${formatDuration(Date.now() - stepStartedAt)}`);
+				activeLiveConsole?.stepEnd({
+					id: `legacy-${index}`,
+					status: "passed",
+					durationMs: Date.now() - stepStartedAt,
+				});
 				resolve();
 				return;
 			}
 			print(`    ✕ failed in ${formatDuration(Date.now() - stepStartedAt)} (exit ${code})`);
+			activeLiveConsole?.stepEnd({
+				id: `legacy-${index}`,
+				status: "failed",
+				durationMs: Date.now() - stepStartedAt,
+				error: `exited with code ${code}`,
+			});
 			if (step.failureReport) printVitestFailures(step.failureReport);
 			if (!step.streamOutput && tail.length > 0) {
 				print("    last output:");
@@ -671,14 +776,748 @@ const buildSteps = (answers: Answers): Step[] => {
 			requiresServices: true,
 		});
 	}
-	if (answers.includeReport) {
-		steps.push({ title: "Aggregate report", description: "Writing the latest combined HTML/JSON report.", command: "npm --silent run test:report" });
-	}
 	return steps;
 };
 
+const shellQuote = (value: string) => `"${value.replaceAll('"', '\\"')}"`;
+
+const listCoverageSources = () => {
+	const files: string[] = [];
+	const extensions = new Set([".ts", ".tsx", ".vue"]);
+	const visit = (directory: string) => {
+		for (const entry of readdirSync(directory, { withFileTypes: true })) {
+			const absolutePath = path.join(directory, entry.name);
+			if (entry.isDirectory()) visit(absolutePath);
+			else if (
+				entry.isFile() && extensions.has(path.extname(entry.name)) &&
+				!entry.name.endsWith(".d.ts") && !entry.name.endsWith(".spec.ts")
+			) files.push(absolutePath);
+		}
+	};
+	for (const directory of ["apps/frontend/src", "packages/shared/src"]) {
+		visit(path.join(canonicalRootDir, directory));
+	}
+	return files.sort();
+};
+
+const managedEvidencePlan = (profile: "quick" | "ci" | "full", runDir: string, runId: string, source: RunManifest["source"]) => {
+	const frontendReport = path.join(runDir, "frontend", "vitest.json");
+	const browserReport = path.join(runDir, "frontend", "browser.json");
+	const coverageDir = path.join(runDir, "frontend", "coverage");
+	const packageList = path.join(runDir, "backend", "packages.txt");
+	const goTests = path.join(runDir, "backend", "go-tests.jsonl");
+	const goCoverage = path.join(runDir, "backend", "coverage.out");
+	const externalDir = path.join(runDir, "external");
+	const quick = profile === "quick";
+	const artifacts: RunManifest["expectedArtifacts"] = quick
+		? [
+			{ id: "feature-obligations", stepId: "catalog-check", kind: "feature-catalog", path: "catalog/feature-obligations.json" },
+			{ id: "frontend-vitest", stepId: "frontend-test", kind: "vitest", path: "frontend/vitest.json" },
+		]
+		: [
+			{ id: "feature-obligations", stepId: "go-test", kind: "feature-catalog", path: "catalog/feature-obligations.json" },
+			{ id: "go-package-inventory", stepId: "go-package-list", kind: "package-list", path: "backend/packages.txt" },
+			{ id: "go-test", stepId: "go-test", kind: "go-test", path: "backend/go-tests.jsonl" },
+			{ id: "go-coverage", stepId: "go-test", kind: "go-coverage", path: "backend/coverage.out", expectedCases: [] },
+			{ id: "frontend-vitest", stepId: "frontend-test", kind: "vitest", path: "frontend/vitest.json" },
+			{
+				id: "frontend-coverage",
+				stepId: "frontend-test",
+				kind: "coverage",
+				path: "frontend/coverage/coverage-summary.json",
+				expectedSources: listCoverageSources(),
+			},
+			{ id: "frontend-browser", stepId: "browser-test", kind: "vitest", path: "frontend/browser.json" },
+			{
+				id: "external-correctness",
+				stepId: "external-e2e",
+				kind: "external",
+				path: "external/correctness-full-external-results.json",
+				expectedCases: CI_REQUIRED_EXTERNAL_CASE_IDS,
+			},
+			{
+				id: "external-correctness-gate",
+				stepId: "external-e2e",
+				kind: "lab-gate",
+				path: "external/correctness-full-lab-gate.json",
+			},
+		];
+	const steps: EvidenceStep[] = quick
+		? [
+			{
+				id: "catalog-check",
+				title: "Backend feature inventory",
+				description: "Checking backend HTTP/WS/scene and frontend route/tool surfaces against the reviewed catalog.",
+				command: "go test ./internal/gateway -run \"TestFeatureSurfaceCatalogMatchesBackendSources|TestCatalogSurfacePathsAreValidHTTPPatterns|TestV2PlaceholdersExplicitlyRejectUntilImplemented\" -count=1",
+				cwd: backendDir,
+				timeoutMs: 180000,
+			},
+			{
+				id: "frontend-test",
+				title: "Quick frontend and shared regression",
+				description: "Running deterministic unit, module and test-harness checks.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} run --project=shared-unit --project=frontend-unit --project=frontend-module --project=harness-unit --reporter=json --outputFile=${shellQuote(frontendReport)}`,
+				cwd: canonicalRootDir,
+				stdoutArtifact: undefined,
+				timeoutMs: 180000,
+			},
+			{ id: "source-check", title: "Source identity check", description: "Confirming source files did not change during this run.", action: "source-check" },
+		]
+		: [
+			{ id: "build", title: "Production build", description: "Building the backend and typechecking/building the frontend.", command: "npm --silent run build", timeoutMs: 300000 },
+			{ id: "go-vet", title: "Go static analysis", description: "Running go vet across all backend packages.", command: "go vet ./...", cwd: backendDir, timeoutMs: 180000 },
+			{
+				id: "go-package-list",
+				title: "Go package inventory",
+				description: "Recording the exact backend packages required in this run.",
+				command: "go list ./...",
+				cwd: backendDir,
+				stdoutArtifact: packageList,
+				timeoutMs: 60000,
+			},
+			{
+				id: "go-test",
+				title: "Go tests and coverage",
+				description: "Running every Go package once with cross-package statement coverage.",
+				command: `go test -json -coverpkg=./... -coverprofile=${shellQuote(goCoverage)} ./...`,
+				cwd: backendDir,
+				stdoutArtifact: goTests,
+				timeoutMs: 600000,
+			},
+			{
+				id: "frontend-test",
+				title: "Frontend and shared coverage tests",
+				description: "Running unit, module and harness suites with source coverage.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} run --project=shared-unit --project=frontend-unit --project=frontend-module --project=harness-unit --coverage --reporter=json --outputFile=${shellQuote(frontendReport)} --coverage.reportsDirectory=${shellQuote(coverageDir)}`,
+				cwd: canonicalRootDir,
+				timeoutMs: 600000,
+			},
+			{
+				id: "browser-test",
+				title: "Browser component tests",
+				description: "Running the browser component project in an isolated Vitest process.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} run --project=frontend-browser --reporter=json --outputFile=${shellQuote(browserReport)}`,
+				cwd: canonicalRootDir,
+				timeoutMs: 300000,
+			},
+			{
+				id: "external-e2e",
+				title: "External correctness E2E",
+				description: "Running the CI-required correctness subset in the selected browser against isolated services.",
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=correctness-full --case-ids=${CI_REQUIRED_EXTERNAL_CASE_IDS.join(",")} --mode=headless --reporter=json --report-dir=${shellQuote(externalDir)}`,
+				cwd: frontendDir,
+				requiresServices: true,
+				timeoutMs: 600000,
+				env: {
+					AEVIA_TEST_RUN_ID: runId,
+					AEVIA_TEST_SOURCE_REVISION: source.revision || "",
+					AEVIA_TEST_DIRTY_SHA256: source.dirtyPatchSha256,
+				},
+			},
+			{ id: "source-check", title: "Source identity check", description: "Confirming source files did not change during this run.", action: "source-check" },
+		];
+	if (profile === "full") {
+		steps.splice(steps.length - 1, 0,
+			{
+				id: "go-race",
+				title: "Go race detector",
+				description: "Running the backend suite with the Go race detector on this host and platform.",
+				command: "go test -race ./...",
+				cwd: backendDir,
+				timeoutMs: 900000,
+			},
+			{
+				id: "go-fuzz",
+				title: "Scene payload fuzz smoke",
+				description: "Fuzzing the public scene payload validator for 30 seconds with a bounded worker count.",
+				command: "go test ./internal/gateway -run=^$ -fuzz=FuzzValidateScenePayloadNeverPanics -fuzztime=30s -parallel=2",
+				cwd: backendDir,
+				timeoutMs: 180000,
+			}
+		);
+	}
+	return { steps, artifacts };
+};
+
+const persistManifest = (manifestPath: string, manifest: RunManifest) => {
+	const temporaryPath = `${manifestPath}.${process.pid}.tmp`;
+	writeFileSync(temporaryPath, JSON.stringify(manifest, null, 2), "utf8");
+	renameSync(temporaryPath, manifestPath);
+};
+
+const stopProcessTree = (child: ChildProcess) => {
+	if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+	if (process.platform === "win32") {
+		spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+		return;
+	}
+	try { process.kill(-child.pid, "SIGTERM"); }
+	catch { child.kill("SIGTERM"); }
+	const pid = child.pid;
+	const forceTimer = setTimeout(() => {
+		try { process.kill(-pid, "SIGKILL"); } catch { /* Process already exited. */ }
+	}, 2500);
+	forceTimer.unref();
+};
+
+type RawGate = {
+	status?: unknown;
+	aborted?: unknown;
+	cases?: unknown;
+	reasons?: unknown;
+};
+
+const GATE_FILE_BY_STEP: Record<string, string> = {
+	"external-smoke": "correctness-smoke-lab-gate.json",
+	"external-e2e": "correctness-full-lab-gate.json",
+	"external-performance": "performance-external-all-lab-gate.json",
+	"external-focused": "correctness-full-lab-gate.json",
+};
+
+const readGateForStep = (runDir: string, stepId: string, manifest: RunManifest): RawGate | null => {
+	const externalDir = path.join(runDir, "external");
+	const declared = manifest.expectedArtifacts.find(item => item.stepId === stepId && item.kind === "lab-gate");
+	if (declared) {
+		try { return JSON.parse(readFileSync(path.join(runDir, declared.path), "utf8")) as RawGate; } catch { return null; }
+	}
+	const expected = GATE_FILE_BY_STEP[stepId];
+	const candidates = expected
+		? [path.join(externalDir, expected)]
+		: [];
+	for (const filePath of candidates) {
+		if (!existsSync(filePath)) continue;
+		try {
+			return JSON.parse(readFileSync(filePath, "utf8")) as RawGate;
+		} catch {
+			return null;
+		}
+	}
+	return null;
+};
+
+const validityCodeOf = (value: unknown, fallback: ValidityReason["code"]): ValidityReason["code"] =>
+	typeof value === "string" && (VALIDITY_CODES as readonly string[]).includes(value) ? (value as ValidityReason["code"]) : fallback;
+
+const applyGateValidity = (runDir: string, manifest: RunManifest, stepId: string, exitCode: number | null) => {
+	const gate = readGateForStep(runDir, stepId, manifest);
+	const aborted = gate?.aborted === true || gate?.status === "invalid" || exitCode === 3;
+	if (!gate) {
+		if (aborted) {
+			manifest.validity = {
+				status: "invalid",
+				aborted: true,
+				reasons: [{ scope: "run", id: manifest.runId, code: "GATE_ABORTED", detail: "external harness aborted without a gate artifact" }],
+			};
+			manifest.recorded = false;
+		}
+		return;
+	}
+	const reasons: ValidityReason[] = [];
+	if (Array.isArray(gate.reasons)) {
+		for (const raw of gate.reasons) {
+			if (!raw || typeof raw !== "object") continue;
+			const reason = raw as Record<string, unknown>;
+			reasons.push({
+				scope: reason.scope === "case" || reason.scope === "scenario" ? reason.scope : "run",
+				id: typeof reason.id === "string" ? reason.id : manifest.runId,
+				code: validityCodeOf(reason.code, "GATE_ABORTED"),
+				detail: typeof reason.detail === "string" ? reason.detail : undefined,
+			});
+		}
+	}
+	const invalidCases = Array.isArray(gate.cases)
+		? gate.cases.filter(
+				(item): item is Record<string, unknown> =>
+					Boolean(item) && typeof item === "object" && (item as Record<string, unknown>).status === "invalid"
+			)
+		: [];
+	if (aborted) {
+		if (reasons.length === 0) {
+			for (const invalidCase of invalidCases.slice(0, 50)) {
+				reasons.push({
+					scope: "case",
+					id: typeof invalidCase.caseKey === "string" ? invalidCase.caseKey : manifest.runId,
+					code: validityCodeOf(Array.isArray(invalidCase.codes) ? invalidCase.codes[0] : undefined, "GATE_ABORTED"),
+					detail: Array.isArray(invalidCase.details) ? invalidCase.details.join("; ") : undefined,
+				});
+			}
+		}
+		manifest.validity = {
+			status: "invalid",
+			aborted: true,
+			reasons: reasons.length > 0
+				? reasons.slice(0, 50)
+				: [{ scope: "run", id: manifest.runId, code: "GATE_ABORTED", detail: "external harness aborted" }],
+		};
+		manifest.recorded = false;
+		return;
+	}
+	if (invalidCases.length > 0) {
+		manifest.validity = {
+			status: "degraded",
+			aborted: false,
+			reasons: invalidCases.slice(0, 50).map((invalidCase) => ({
+				scope: "case" as const,
+				id: typeof invalidCase.caseKey === "string" ? invalidCase.caseKey : manifest.runId,
+				code: validityCodeOf(Array.isArray(invalidCase.codes) ? invalidCase.codes[0] : undefined, "MISSING_MARK"),
+				detail: Array.isArray(invalidCase.details) ? invalidCase.details.join("; ") : undefined,
+			})),
+		};
+	}
+};
+
+const runEvidenceStep = async (
+	step: EvidenceStep,
+	record: RunStep,
+	manifest: RunManifest,
+	manifestPath: string,
+	runDir: string
+) => {
+	const startedAt = new Date();
+	record.status = "running";
+	record.startedAt = startedAt.toISOString();
+	persistManifest(manifestPath, manifest);
+	activeLiveConsole?.stepStart(step.id);
+	const logPath = path.join(runDir, "logs", `${step.id}.log`);
+	mkdirSync(path.dirname(logPath), { recursive: true });
+	writeFileSync(logPath, "", "utf8");
+	record.logPath = path.relative(runDir, logPath).replaceAll("\\", "/");
+	let stdout = "";
+	let stderr = "";
+	let errorMessage: string | undefined;
+	let exitCode: number | null = 0;
+	let timedOut = false;
+
+	try {
+		if (step.action === "source-check") {
+			const source = readSourceIdentity(canonicalRootDir);
+			const before = {
+				revision: manifest.source.revision,
+				dirtyPatchSha256: manifest.source.dirtyPatchSha256,
+				trackedChanges: manifest.source.trackedChanges,
+				untrackedFiles: manifest.source.untrackedFiles,
+				fileSha256: manifest.source.fileSha256,
+			};
+			const drift = describeSourceDrift(before, source);
+			if (drift.revisionChanged || drift.fingerprintChanged) {
+				throw new Error([
+					"Source revision or dirty-file fingerprint changed during the test run",
+					`expected=${manifest.source.revision}/${manifest.source.dirtyPatchSha256}`,
+					`actual=${source.revision}/${source.dirtyPatchSha256}`,
+					...describeSourceDriftLines(drift, before),
+				].filter(Boolean).join("\n"));
+			}
+		} else {
+			if (step.freshServices) await resetExternalServices();
+			else if (step.requiresServices && !activeExternalServices) await startExternalServices();
+			const childEnv: NodeJS.ProcessEnv = { ...process.env, ...step.env, AEVIA_TEST_RUN_ID: manifest.runId, FORCE_COLOR: "0" };
+			if (step.id === "browser-test") childEnv.AEVIA_TEST_BROWSER_PORT = String(await findAvailablePort());
+			const child = spawn(step.command || "", {
+				cwd: step.cwd || rootDir,
+				shell: true,
+				stdio: ["ignore", "pipe", "pipe"],
+				env: childEnv,
+				windowsHide: true,
+				detached: process.platform !== "win32",
+			});
+			activeTestProcess = child;
+			const timeout = setTimeout(() => {
+				timedOut = true;
+				stopProcessTree(child);
+			}, step.timeoutMs || 300000);
+			child.stdout?.on("data", (chunk) => {
+				const text = chunk.toString();
+				stdout += text;
+				appendFileSync(logPath, text, "utf8");
+				activeLiveConsole?.log(step.id, text, "stdout");
+			});
+			child.stderr?.on("data", (chunk) => {
+				const text = chunk.toString();
+				stderr += text;
+				appendFileSync(logPath, `[stderr] ${text}`, "utf8");
+				activeLiveConsole?.log(step.id, text, "stderr");
+				process.stderr.write(text);
+			});
+			try {
+				exitCode = await new Promise<number | null>((resolve, reject) => {
+					child.once("error", reject);
+					child.once("close", (code) => resolve(code));
+				});
+			} finally {
+				clearTimeout(timeout);
+				if (activeTestProcess === child) activeTestProcess = undefined;
+			}
+			if (exitCode !== 0) errorMessage = timedOut ? `Timed out after ${step.timeoutMs || 300000} ms` : `Process exited with code ${exitCode}`;
+			if (step.stdoutArtifact) {
+				mkdirSync(path.dirname(step.stdoutArtifact), { recursive: true });
+				writeFileSync(step.stdoutArtifact, stdout, "utf8");
+			}
+		}
+	} catch (error) {
+		errorMessage = error instanceof Error ? error.message : String(error);
+		exitCode = null;
+	}
+
+	mkdirSync(path.dirname(logPath), { recursive: true });
+	writeFileSync(logPath, `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}${errorMessage ? `\n[runner] ${errorMessage}\n` : ""}`, "utf8");
+	record.finishedAt = new Date().toISOString();
+	record.durationMs = Date.now() - startedAt.getTime();
+	record.exitCode = exitCode;
+	record.status = interruptedSignal ? "cancelled" : errorMessage ? "failed" : "passed";
+	if (errorMessage) record.error = errorMessage;
+	persistManifest(manifestPath, manifest);
+	activeLiveConsole?.stepEnd({
+		id: step.id,
+		status: record.status,
+		durationMs: record.durationMs,
+		error: record.error,
+	});
+	print(`    ${record.status === "passed" ? "✓" : "✕"} ${step.title} (${formatDuration(record.durationMs)})`);
+	if (record.status !== "passed" && errorMessage) {
+		for (const line of errorMessage.split(/\r?\n/)) print(`      ${line}`);
+		for (const line of `${stdout}\n${stderr}`.trim().split(/\r?\n/).slice(-20)) print(`      ${line}`);
+	}
+};
+
+type ManagedRunOptions = {
+	selection?: LabResolveResult;
+	rerunOf?: { ofRunId: string; scope: "run" | "scenario" | "case"; ids: string[] };
+};
+
+const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOptions = {}) => {
+	const runId = randomUUID();
+	const runDir = path.join(canonicalRootDir, "tests", "reports", "summary", "runs", runId);
+	activeEvidenceDirectory = runDir;
+	mkdirSync(runDir, { recursive: true });
+	if (process.env.AEVIA_CI_RUN_ID_FILE) writeFileSync(process.env.AEVIA_CI_RUN_ID_FILE, runId, "utf8");
+	const source = readSourceIdentity(canonicalRootDir);
+	const catalogSnapshot = path.join(runDir, "catalog", "feature-obligations.json");
+	mkdirSync(path.dirname(catalogSnapshot), { recursive: true });
+	writeFileSync(
+		catalogSnapshot,
+		readFileSync(path.join(canonicalRootDir, "tests", "catalog", "feature-obligations.json"), "utf8"),
+		"utf8"
+	);
+	const cleanTree = source.dirtyPatchSha256 === createHash("sha256").update("").digest("hex");
+	if (!cleanTree) {
+		print(
+			`[lab] working tree is dirty at start (${(source.trackedChanges || []).length} tracked, ${(source.untrackedFiles || []).length} untracked); source-check fails if anything changes before the run ends`
+		);
+	}
+	const planContext: LabPlanContext = {
+		runDir,
+		rootDir,
+		frontendDir,
+		backendDir,
+		canonicalRootDir,
+		shellQuote,
+		listCoverageSources,
+		externalEnv: {
+			AEVIA_TEST_RUN_ID: runId,
+			AEVIA_TEST_SOURCE_REVISION: source.revision || "",
+			AEVIA_TEST_DIRTY_SHA256: source.dirtyPatchSha256,
+			AEVIA_LAB: "on",
+		},
+		cleanTree,
+		perfRequest: argValue("perf") === "request",
+	};
+	const lane = argValue("lane") || "all";
+	if (lane !== "all" && lane !== "quality" && lane !== "performance") throw new Error("--lane must be all|quality|performance");
+	planContext.lane = lane;
+	const raceCapability = profile === "nightly" && lane !== "performance" ? probeGoRaceDetector(backendDir) : undefined;
+	planContext.goRaceSupported = raceCapability?.supported ?? false;
+	planContext.goRaceRequired = process.env.CI === "true" && process.platform === "linux";
+	const basePlan = isCoreProfile(profile)
+		? managedEvidencePlan(profile, runDir, runId, source)
+		: buildLabEvidencePlan(profile, planContext, options.selection);
+	const { steps, artifacts } = profile === "ci" || profile === "full" || profile === "nightly" ? withCanvasOracle(basePlan, planContext) : basePlan;
+	if (isCoreProfile(profile) && planContext.perfRequest) {
+		steps.splice(steps.length - 1, 0, { id: "perf-request", title: "Performance gate request", description: "Recording an optional performance request.", command: `node scripts/write-perf-request.mjs ${shellQuote(path.join(runDir, "perf-request.json"))}`, cwd: canonicalRootDir });
+		artifacts.push({ id: "perf-request", stepId: "perf-request", kind: "perf-request", path: "perf-request.json" });
+	}
+	if (profile === "nightly" && lane !== "performance" && !steps.some((step) => step.id === "go-race")) {
+		print(`[lab] go-race unavailable: ${raceCapability?.detail.trim()}`);
+	}
+	const mode = managedModeOf(profile);
+	const recorded = profile !== "single" && options.rerunOf === undefined && cleanTree;
+	const manifest: RunManifest = {
+		schemaVersion: 2,
+		runId,
+		profile,
+		mode,
+		status: "running",
+		source,
+		startedAt: new Date().toISOString(),
+		expectedSteps: steps.map((step) => step.id),
+		steps: steps.map((step) => ({ id: step.id, title: step.title, status: "pending" })),
+		expectedArtifacts: artifacts,
+		validity: { status: "valid", aborted: false, reasons: [] },
+		recorded,
+		rerun: options.rerunOf,
+		measurement: { policy: "prefer-instrumented" },
+		capabilities: { goRace: raceCapability },
+		lane,
+		selection: options.selection,
+	};
+	const manifestPath = path.join(runDir, "run-manifest.json");
+	persistManifest(manifestPath, manifest);
+	print(`Run ${runId} · profile=${profile} · source=${source.revision}`);
+	if (liveConsoleRequested(mode)) {
+		try {
+			activeLiveConsole = await startLiveConsole({
+				runId,
+				mode,
+				profile,
+				revision: source.revision || undefined,
+				startedAt: manifest.startedAt,
+				steps: steps.map((step) => ({ id: step.id, title: step.title })),
+				runDir,
+				print,
+				...liveConsoleOptions(),
+				onCancel: () => {
+					if (interruptedSignal) return;
+					interruptedSignal = "SIGTERM";
+					print("[lab-live] cancellation requested from the live console");
+					if (activeTestProcess) stopProcessTree(activeTestProcess);
+					void stopExternalServices();
+				},
+			});
+		} catch (error) {
+			print(`[lab-live] console disabled: ${error instanceof Error ? error.message : String(error)}`);
+			activeLiveConsole = undefined;
+		}
+	}
+	let failed = false;
+	try {
+		for (const step of steps) {
+			const record = manifest.steps.find((candidate) => candidate.id === step.id)!;
+			await runEvidenceStep(step, record, manifest, manifestPath, runDir);
+			if (record.status !== "passed") {
+				failed = true;
+				applyGateValidity(runDir, manifest, step.id, record.exitCode ?? null);
+				if (step.id === "source-check") {
+					manifest.validity = { status: "invalid", aborted: false, reasons: [{ scope: "run", id: runId, code: "SOURCE_CHANGED", detail: record.error }] };
+					manifest.recorded = false;
+				}
+				break;
+			}
+			if (step.id === "go-package-list") {
+				const packages = readFileSync(path.join(runDir, "backend", "packages.txt"), "utf8")
+					.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+				for (const artifact of artifacts.filter((item) => item.kind === "go-test" || item.kind === "go-coverage")) {
+					artifact.expectedCases = packages;
+				}
+			}
+		}
+	} catch (error) {
+		failed = true;
+		const runningStep = manifest.steps.find((step) => step.status === "running");
+		if (runningStep) {
+			runningStep.status = interruptedSignal ? "cancelled" : "failed";
+			runningStep.error = error instanceof Error ? error.message : String(error);
+			runningStep.finishedAt = new Date().toISOString();
+		}
+	} finally {
+		try { await stopExternalServices(); } catch (error) {
+			failed = true;
+			manifest.validity = { status: "invalid", aborted: false, reasons: [{ scope: "run", id: runId, code: "GATE_ABORTED", detail: `Service cleanup failed: ${error instanceof Error ? error.message : String(error)}` }] };
+			manifest.recorded = false;
+		}
+		for (const step of manifest.steps) {
+			if (step.status === "pending") step.status = interruptedSignal ? "cancelled" : "skipped";
+		}
+		manifest.status = interruptedSignal ? "cancelled" : failed ? "failed" : "passed";
+		manifest.finishedAt = new Date().toISOString();
+		persistManifest(manifestPath, manifest);
+	}
+
+	try {
+		let report = buildAggregate(manifest, runDir);
+		if (report.status !== "passed" && manifest.status === "passed") {
+			manifest.status = "failed";
+			persistManifest(manifestPath, manifest);
+			report = buildAggregate(manifest, runDir);
+		}
+		if (profile === "nightly" && lane !== "quality" && report.status === "passed" && manifest.recorded && manifest.validity.status === "valid") {
+			const { importHistoryFromReport } = await import("../apps/frontend/tests/e2e/external/learning");
+			const reportPath = path.join(runDir, "external", "performance-external-standard-external-results.json");
+			const payload = JSON.parse(readFileSync(reportPath, "utf8"));
+			importHistoryFromReport(payload.config, reportPath);
+		}
+		report = writeAggregateReport(manifestPath);
+		print(`Report: ${path.join(runDir, "test-report.html")}`);
+		print(`Measurement: ${manifest.validity.status}${manifest.validity.aborted ? " (aborted)" : ""}${manifest.recorded ? "" : " · not recorded"}`);
+		print(`Result: ${report.status}; ${report.failures.length} evidence issue(s)`);
+		if (manifest.validity.aborted) {
+			for (const reason of manifest.validity.reasons.slice(0, 10)) {
+				print(`[lab][abort] ${reason.scope}:${reason.id} ${reason.code}${reason.detail ? ` (${reason.detail})` : ""}`);
+			}
+		}
+		const liveExitCode = report.status === "passed" ? 0 : manifest.validity.aborted ? 3 : interruptedSignal ? 130 : 1;
+		const liveConsole = activeLiveConsole;
+		activeLiveConsole = undefined;
+		liveConsole?.finish({
+			status: manifest.status === "cancelled" ? "cancelled" : report.status === "passed" ? "passed" : "failed",
+			validity: manifest.validity.status,
+			recorded: manifest.recorded,
+			reportPath: path.join(runDir, "test-report.html"),
+			exitCode: liveExitCode,
+		});
+		if (report.status !== "passed") process.exitCode = manifest.validity.aborted ? 3 : interruptedSignal ? 130 : 1;
+	} catch (error) {
+		manifest.status = "failed";
+		manifest.recorded = false;
+		persistManifest(manifestPath, manifest);
+		try { writeAggregateReport(manifestPath); } catch { /* Original error is reported below. */ }
+		activeLiveConsole?.finish({
+			status: interruptedSignal ? "cancelled" : "failed",
+			validity: manifest.validity.status,
+			recorded: manifest.recorded,
+		});
+		activeLiveConsole = undefined;
+		print(`Report generation failed: ${error instanceof Error ? error.message : String(error)}`);
+		process.exitCode = 1;
+	}
+};
+
+const runDoctor = () => {
+	const goVersion = spawnSync("go", ["version"], { cwd: canonicalRootDir, encoding: "utf8" });
+	const browserName = selectedBrowser();
+	const browser = browserAvailability(browserName);
+	const checks = [
+		{
+			name: "node",
+			passed: Number(process.versions.node.split(".")[0]) >= 20,
+		detail: process.versions.node,
+		},
+		{
+			name: "git",
+			passed: spawnSync("git", ["rev-parse", "--verify", "HEAD"], { cwd: canonicalRootDir, encoding: "utf8" }).status === 0,
+			detail: "repository revision is readable",
+		},
+		{
+			name: "go",
+			passed: goVersion.status === 0,
+			detail: goVersion.stdout?.trim() || "Go is not on PATH",
+		},
+		{
+			name: "dependencies",
+			passed: existsSync(path.join(canonicalRootDir, "node_modules", "vitest", "package.json")) &&
+				existsSync(path.join(canonicalRootDir, "node_modules", "tsx", "package.json")),
+			detail: "Vitest and tsx are installed",
+		},
+		{
+			name: browserName,
+			passed: browser.available,
+			detail: browser.executablePath,
+		},
+	];
+	const result = { schemaVersion: 1, checkedAt: new Date().toISOString(), checks };
+	if (hasArg("json") || process.env.AEVIA_TEST_JSON === "1") print(JSON.stringify(result));
+	else {
+		print("Aevia test environment");
+		for (const check of checks) print(`${check.passed ? "PASS" : "FAIL"} ${check.name}: ${check.detail}`);
+	}
+	if (checks.some((check) => !check.passed)) process.exitCode = 1;
+};
+
+const runReplay = async () => {
+	const runId = argValue("run-id");
+	if (!runId || !/^[0-9a-f-]{36}$/i.test(runId)) throw new Error("Replay requires --run-id=<UUID> from a prior managed run");
+	const manifestPath = path.join(canonicalRootDir, "tests", "reports", "summary", "runs", runId, "run-manifest.json");
+	if (!existsSync(manifestPath)) throw new Error(`Run manifest not found: ${manifestPath}`);
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as RunManifest;
+	const source = readSourceIdentity(canonicalRootDir);
+	if (
+		manifest.runId !== runId ||
+		manifest.source.revision !== source.revision ||
+		manifest.source.dirtyPatchSha256 !== source.dirtyPatchSha256
+	) throw new Error("Replay refused: current source identity differs from the recorded run");
+	const replayProfile = manifest.profile as Profile;
+	if (!isManagedProfile(replayProfile) || replayProfile === "single") {
+		throw new Error(`Replay is not supported for profile: ${manifest.profile}`);
+	}
+	print(`Re-running profile=${replayProfile} from source-matched run=${runId}`);
+	await runEvidenceProfile(replayProfile);
+};
+
+const resolveRerunSelection = (scope: "run" | "scenario" | "case", ids: string[]): LabResolveResult | undefined => {
+	if (scope === "run" || ids.length === 0) return undefined;
+	if (scope === "scenario") {
+		const runId = argValue("rerun-of")!;
+		const report = JSON.parse(readFileSync(path.join(canonicalRootDir, "tests/reports/summary/runs", runId, "lab-report.json"), "utf8"));
+		ids = ids.flatMap(key => {
+			const scenario = report.rerun.scenarios.find((item: { scenarioKey: string }) => item.scenarioKey === key);
+			if (!scenario) throw new Error(`Unknown rerun scenario: ${key}`);
+			return scenario.ids as string[];
+		});
+	}
+	const selectors: string[] = [];
+	for (const id of ids) {
+		if (/^(go|file|test):/.test(id)) { selectors.push(id); continue; }
+		if (id.includes(".ts") || id.includes(".vue")) {
+			selectors.push(`file:${id}`);
+			continue;
+		}
+		selectors.push(`case:${id}`);
+	}
+	return selectors.length > 0 ? resolveOnlySelectors(selectors, canonicalRootDir) : undefined;
+};
+
+const resolveSingleSelection = (): LabResolveResult => {
+	const only = argValues("only");
+	const since = argValue("since");
+	const resolved = only.length > 0
+		? resolveOnlySelectors(only, canonicalRootDir)
+		: since
+			? resolveSinceRef(since, canonicalRootDir)
+			: undefined;
+	if (!resolved) throw new Error("single mode requires --only=<selector> or --since=<git-ref>");
+	for (const unresolved of resolved.unresolved) print(`[lab] unresolved selector: ${unresolved}`);
+	if (resolved.selections.length === 0) {
+		throw new Error(
+			`single mode resolved no executable targets${
+				resolved.unresolved.length > 0 ? ` (unresolved: ${resolved.unresolved.join(", ")})` : ""
+			}`
+		);
+	}
+	return resolved;
+};
+
+const buildManagedRunOptions = (profile: ManagedProfile): ManagedRunOptions & { effectiveProfile: ManagedProfile } => {
+	let selection: LabResolveResult | undefined;
+	const rerunId = argValue("rerun-of");
+	let rerunOf: ManagedRunOptions["rerunOf"];
+	if (rerunId) {
+		if (!/^[0-9a-f-]{36}$/i.test(rerunId)) throw new Error("--rerun-of must be a run UUID");
+		const scope = argValue("scope") || "run";
+		if (scope !== "run" && scope !== "scenario" && scope !== "case") throw new Error("--scope must be run|scenario|case");
+		const ids = (argValue("ids") || "").split(",").map((item) => item.trim()).filter(Boolean);
+		rerunOf = { ofRunId: rerunId, scope, ids };
+		selection = resolveRerunSelection(scope, ids);
+	}
+	if (profile === "single" && !selection) selection = resolveSingleSelection();
+	if (!rerunOf) return { selection, effectiveProfile: profile };
+	const effectiveProfile = selection && rerunOf.scope !== "run" ? "single" : profile;
+	return { selection, rerunOf, effectiveProfile };
+};
+
 const main = async () => {
+	if (process.argv.some(arg => arg === "--from-step" || arg.startsWith("--from-step="))) throw new Error("Checkpoint resume is not implemented; use an explicit case or scenario rerun");
+	if (hasArg("doctor")) {
+		runDoctor();
+		return;
+	}
+	if (hasArg("replay")) {
+		await runReplay();
+		return;
+	}
 	const answers = await collectAnswers();
+	if (isManagedProfile(answers.profile)) {
+		const options = buildManagedRunOptions(answers.profile);
+		await runEvidenceProfile(options.effectiveProfile, options);
+		return;
+	}
 	const steps = buildSteps(answers);
 
 	print("");
@@ -690,6 +1529,30 @@ const main = async () => {
 	}
 	print(`steps=${steps.length}`);
 	print("Detailed build/test tool output is hidden unless a step fails.");
+
+	if (liveConsoleRequested("custom")) {
+		try {
+			activeLiveConsole = await startLiveConsole({
+				runId: `legacy-${Date.now().toString(36)}`,
+				mode: "custom",
+				profile: answers.profile,
+				steps: steps.map((step, index) => ({ id: `legacy-${index + 1}`, title: step.title })),
+				runDir: canonicalRootDir,
+				print,
+				...liveConsoleOptions(),
+				onCancel: () => {
+					if (interruptedSignal) return;
+					interruptedSignal = "SIGTERM";
+					print("[lab-live] cancellation requested from the live console");
+					if (activeTestProcess) stopProcessTree(activeTestProcess);
+					void stopExternalServices();
+				},
+			});
+		} catch (error) {
+			print(`[lab-live] console disabled: ${error instanceof Error ? error.message : String(error)}`);
+			activeLiveConsole = undefined;
+		}
+	}
 
 	try {
 		for (const [index, step] of steps.entries()) {
@@ -704,14 +1567,22 @@ const main = async () => {
 		}
 		print("");
 		print(`✓ workflow completed in ${elapsed()}`);
-		print(`Report: ${path.join(rootDir, "tests", "reports", "summary", "latest", "test-report.html")}`);
+		print("The legacy interactive run wrote individual suite reports; use test:ci for managed evidence and aggregation.");
 	} catch (error: unknown) {
 		print("");
 		print(`✕ workflow failed: ${error instanceof Error ? error.message : String(error)}`);
 		process.exitCode = 1;
 	} finally {
 		await stopExternalServices();
+		const liveConsole = activeLiveConsole;
+		activeLiveConsole = undefined;
+		liveConsole?.finish({
+			status: interruptedSignal ? "cancelled" : process.exitCode ? "failed" : "passed",
+		});
 	}
 };
 
-void main();
+void main().catch((error) => {
+	print(`✕ ${error instanceof Error ? error.message : String(error)}`);
+	process.exitCode = interruptedSignal ? 130 : 1;
+});

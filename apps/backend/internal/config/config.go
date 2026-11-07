@@ -25,6 +25,7 @@ type Config struct {
 	Port                   int
 	Environment            string
 	DBPath                 string
+	DBBusyTimeout          time.Duration
 	JWTSecret              string
 	DefaultRoomID          string
 	SessionTTL             time.Duration
@@ -105,10 +106,14 @@ func (c Config) IsProduction() bool {
 
 func load() Config {
 	return Config{
-		Host:                   envString("HOST", "0.0.0.0"),
-		Port:                   envInt("PORT", 4646, 1, 65535),
-		Environment:            envString("APP_ENV", envString("NODE_ENV", "development")),
-		DBPath:                 envString("DB_PATH", filepath.Join("data", "whiteboard-go.sqlite")),
+		Host:        envString("HOST", "0.0.0.0"),
+		Port:        envInt("PORT", 4646, 1, 65535),
+		Environment: envString("APP_ENV", envString("NODE_ENV", "development")),
+		DBPath:      envString("DB_PATH", filepath.Join("data", "whiteboard-go.sqlite")),
+		// SQLite pragmas are per connection. Without a busy timeout a room insert that races
+		// the batch writer fails immediately with SQLITE_BUSY, and clients see HTTP 500 under
+		// heavy draw traffic (multi-million-point boundary seeding exposed this).
+		DBBusyTimeout:          time.Duration(envInt("DB_BUSY_TIMEOUT_MS", 15000, 0, 120000)) * time.Millisecond,
 		JWTSecret:              envString("JWT_SECRET", DevJWTSecret),
 		DefaultRoomID:          envString("DEFAULT_ROOM_ID", "123123"),
 		SessionTTL:             envDuration("SESSION_TOKEN_TTL", 30*time.Minute),

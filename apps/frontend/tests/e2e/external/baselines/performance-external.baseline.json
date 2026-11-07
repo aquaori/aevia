@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "createdAt": "2026-07-26T14:43:29.414Z",
-  "sourceReport": "apps/frontend/tests/e2e/external/reports/baseline-run/performance-external-standard-external-results.json",
+  "createdAt": "2026-10-31T11:49:59.085Z",
+  "sourceReport": "D:\\code\\web\\collaborative-whiteboard\\tests\\reports\\summary\\runs\\928f2f5b-71dc-4bd2-ab8e-a4c107cc5925\\external\\performance-external-standard-external-results.json",
   "suite": "performance-external",
   "cases": {
     "gpu_cpuHigh::full-render-10000": {
@@ -14,12 +14,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 2,
-        "invalidSampleCount": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 34.100000001490116,
-        "visuallyStableMsMedian": 43.900000002235174,
-        "nonBlankRatioMedian": 0.18094135802469136,
+        "firstNonBlankMsMedian": 248.30000001192093,
+        "visuallyStableMsMedian": 256.30000001192093,
+        "nonBlankRatioMedian": 0.17997685185185186,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -34,12 +34,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 3,
-        "invalidSampleCount": 0,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 62.80000000074506,
-        "visuallyStableMsMedian": 71.19999999925494,
-        "nonBlankRatioMedian": 0.21315586419753085,
+        "firstNonBlankMsMedian": 519.7000000178814,
+        "visuallyStableMsMedian": 530.5,
+        "nonBlankRatioMedian": 0.6358024691358025,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -57,11 +57,11 @@
         "validSampleCount": 2,
         "invalidSampleCount": 1,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 39.599999997764826,
-        "visuallyStableMsMedian": 54.69999999925494,
-        "nonBlankRatioMedian": 0.18229166666666666,
-        "longTaskCountMedian": 0,
-        "longTaskTotalMsMedian": 0
+        "firstNonBlankMsMedian": 830,
+        "visuallyStableMsMedian": 836.9000000059605,
+        "nonBlankRatioMedian": 0.7472993827160493,
+        "longTaskCountMedian": 2,
+        "longTaskTotalMsMedian": 151
       }
     },
     "gpu_cpuHigh::incremental-remote-first-pixel": {
@@ -75,9 +75,9 @@
         "warmup": 1,
         "validSampleCount": 2,
         "invalidSampleCount": 1,
-        "remoteFirstPixelMsMedian": 8.300000000745058,
-        "protocolDispatchOverheadMsMedian": 177.7809999985111,
-        "observerPollElapsedMsMedian": 8.300000000745058,
+        "remoteFirstPixelMsMedian": 8.800000011920929,
+        "protocolDispatchOverheadMsMedian": 176.71679998807667,
+        "observerPollElapsedMsMedian": 8.800000011920929,
         "framesToFirstPixelMedian": 1,
         "roiDiffRatioMedian": 0.0234375,
         "longTaskCountMedian": 0
@@ -92,13 +92,13 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 3,
-        "invalidSampleCount": 0,
-        "inputToFirstPixelMsMedian": 17,
-        "observerPollElapsedMsMedian": 17,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
+        "inputToFirstPixelMsMedian": 18,
+        "observerPollElapsedMsMedian": 18,
         "inputToFirstPixelFramesMedian": 3,
         "roiDiffRatioMedian": 0.0166015625,
-        "inputDelayMsMedian": 1.199999999254942,
+        "inputDelayMsMedian": 1,
         "longTaskCountMedian": 0
       }
     },
@@ -115,11 +115,11 @@
         "validSampleCount": 2,
         "invalidSampleCount": 1,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 82,
-        "visuallyStableMsMedian": 114.30000000074506,
-        "nonBlankRatioMedian": 0.18094135802469136,
-        "longTaskCountMedian": 2,
-        "longTaskTotalMsMedian": 210
+        "firstNonBlankMsMedian": 649.6999999880791,
+        "visuallyStableMsMedian": 664.7999999821186,
+        "nonBlankRatioMedian": 0.17997685185185186,
+        "longTaskCountMedian": 1,
+        "longTaskTotalMsMedian": 159
       }
     },
     "gpu_cpuLow::full-render-50000": {
@@ -132,14 +132,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 3,
-        "invalidSampleCount": 0,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 92.10000000149012,
-        "visuallyStableMsMedian": 123,
-        "nonBlankRatioMedian": 0.21122685185185186,
-        "longTaskCountMedian": 2,
-        "longTaskTotalMsMedian": 205
+        "firstNonBlankMsMedian": 686.5999999940395,
+        "visuallyStableMsMedian": 969.8000000119209,
+        "nonBlankRatioMedian": 0.6358024691358025,
+        "longTaskCountMedian": 3,
+        "longTaskTotalMsMedian": 316
       }
     },
     "gpu_cpuLow::full-render-100000": {
@@ -152,14 +152,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 2,
-        "invalidSampleCount": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 106.30000000074506,
-        "visuallyStableMsMedian": 124,
-        "nonBlankRatioMedian": 0.17978395061728394,
-        "longTaskCountMedian": 2,
-        "longTaskTotalMsMedian": 213
+        "firstNonBlankMsMedian": 824.6999999880791,
+        "visuallyStableMsMedian": 1122.0999999940395,
+        "nonBlankRatioMedian": 0.6711033950617284,
+        "longTaskCountMedian": 6,
+        "longTaskTotalMsMedian": 516
       }
     },
     "gpu_cpuLow::incremental-remote-first-pixel": {
@@ -171,11 +171,11 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 3,
-        "invalidSampleCount": 0,
-        "remoteFirstPixelMsMedian": 25.5,
-        "protocolDispatchOverheadMsMedian": 267.75869999925635,
-        "observerPollElapsedMsMedian": 25.5,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
+        "remoteFirstPixelMsMedian": 22.599999994039536,
+        "protocolDispatchOverheadMsMedian": 251.96660000595875,
+        "observerPollElapsedMsMedian": 22.599999994039536,
         "framesToFirstPixelMedian": 1,
         "roiDiffRatioMedian": 0.0234375,
         "longTaskCountMedian": 3
@@ -192,11 +192,11 @@
         "warmup": 1,
         "validSampleCount": 3,
         "invalidSampleCount": 0,
-        "inputToFirstPixelMsMedian": 65.20000000298023,
-        "observerPollElapsedMsMedian": 65.20000000298023,
+        "inputToFirstPixelMsMedian": 59.79999998211861,
+        "observerPollElapsedMsMedian": 59.79999998211861,
         "inputToFirstPixelFramesMedian": 3,
         "roiDiffRatioMedian": 0.0166015625,
-        "inputDelayMsMedian": 26.5,
+        "inputDelayMsMedian": 22.80000001192093,
         "longTaskCountMedian": 2
       }
     },
@@ -210,12 +210,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 2,
-        "invalidSampleCount": 1,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 50.600000001490116,
-        "visuallyStableMsMedian": 83.30000000074506,
-        "nonBlankRatioMedian": 0.18171296296296297,
+        "firstNonBlankMsMedian": 262.80000001192093,
+        "visuallyStableMsMedian": 297.2000000178814,
+        "nonBlankRatioMedian": 0.18306327160493827,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -230,12 +230,12 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 3,
-        "invalidSampleCount": 0,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 66.19999999925494,
-        "visuallyStableMsMedian": 98.80000000074506,
-        "nonBlankRatioMedian": 0.21431327160493827,
+        "firstNonBlankMsMedian": 620.8000000119209,
+        "visuallyStableMsMedian": 653.1999999880791,
+        "nonBlankRatioMedian": 0.6404320987654321,
         "longTaskCountMedian": 0,
         "longTaskTotalMsMedian": 0
       }
@@ -253,11 +253,11 @@
         "validSampleCount": 3,
         "invalidSampleCount": 0,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 60.5,
-        "visuallyStableMsMedian": 93.5,
-        "nonBlankRatioMedian": 0.18441358024691357,
-        "longTaskCountMedian": 0,
-        "longTaskTotalMsMedian": 0
+        "firstNonBlankMsMedian": 1032.2000000178814,
+        "visuallyStableMsMedian": 1065.5,
+        "nonBlankRatioMedian": 0.748070987654321,
+        "longTaskCountMedian": 1,
+        "longTaskTotalMsMedian": 63
       }
     },
     "noGpu_cpuHigh::incremental-remote-first-pixel": {
@@ -269,11 +269,11 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 2,
-        "invalidSampleCount": 1,
-        "remoteFirstPixelMsMedian": 13.300000000745058,
-        "protocolDispatchOverheadMsMedian": 169.0207000022492,
-        "observerPollElapsedMsMedian": 13.300000000745058,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
+        "remoteFirstPixelMsMedian": 11.700000017881393,
+        "protocolDispatchOverheadMsMedian": 174.83569998212624,
+        "observerPollElapsedMsMedian": 11.700000017881393,
         "framesToFirstPixelMedian": 1,
         "roiDiffRatioMedian": 0.0234375,
         "longTaskCountMedian": 0
@@ -288,13 +288,13 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 3,
-        "invalidSampleCount": 0,
-        "inputToFirstPixelMsMedian": 25.100000001490116,
-        "observerPollElapsedMsMedian": 25.100000001490116,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
+        "inputToFirstPixelMsMedian": 26.700000017881393,
+        "observerPollElapsedMsMedian": 26.700000017881393,
         "inputToFirstPixelFramesMedian": 2,
         "roiDiffRatioMedian": 0.01708984375,
-        "inputDelayMsMedian": 14.5,
+        "inputDelayMsMedian": 1.2999999821186066,
         "longTaskCountMedian": 0
       }
     },
@@ -311,11 +311,11 @@
         "validSampleCount": 2,
         "invalidSampleCount": 1,
         "scaleMedian": 10000,
-        "firstNonBlankMsMedian": 119.69999999925494,
-        "visuallyStableMsMedian": 164.59999999776483,
-        "nonBlankRatioMedian": 0.18171296296296297,
+        "firstNonBlankMsMedian": 697.0999999940395,
+        "visuallyStableMsMedian": 724.7999999821186,
+        "nonBlankRatioMedian": 0.18306327160493827,
         "longTaskCountMedian": 2,
-        "longTaskTotalMsMedian": 278
+        "longTaskTotalMsMedian": 219
       }
     },
     "noGpu_cpuLow::full-render-50000": {
@@ -328,14 +328,14 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 3,
-        "invalidSampleCount": 0,
+        "validSampleCount": 2,
+        "invalidSampleCount": 1,
         "scaleMedian": 50000,
-        "firstNonBlankMsMedian": 108.19999999925494,
-        "visuallyStableMsMedian": 138.09999999776483,
-        "nonBlankRatioMedian": 0.21180555555555555,
-        "longTaskCountMedian": 2,
-        "longTaskTotalMsMedian": 216
+        "firstNonBlankMsMedian": 829.4000000059605,
+        "visuallyStableMsMedian": 870.4000000059605,
+        "nonBlankRatioMedian": 0.43209876543209874,
+        "longTaskCountMedian": 3,
+        "longTaskTotalMsMedian": 376
       }
     },
     "noGpu_cpuLow::full-render-100000": {
@@ -351,11 +351,11 @@
         "validSampleCount": 3,
         "invalidSampleCount": 0,
         "scaleMedian": 100000,
-        "firstNonBlankMsMedian": 111.39999999850988,
-        "visuallyStableMsMedian": 142.70000000298023,
-        "nonBlankRatioMedian": 0.18036265432098766,
+        "firstNonBlankMsMedian": 824.5,
+        "visuallyStableMsMedian": 882.5,
+        "nonBlankRatioMedian": 0.298804012345679,
         "longTaskCountMedian": 2,
-        "longTaskTotalMsMedian": 219
+        "longTaskTotalMsMedian": 224
       }
     },
     "noGpu_cpuLow::incremental-remote-first-pixel": {
@@ -367,11 +367,11 @@
         "runMode": "headless",
         "runs": 3,
         "warmup": 1,
-        "validSampleCount": 2,
-        "invalidSampleCount": 1,
-        "remoteFirstPixelMsMedian": 26.399999998509884,
-        "protocolDispatchOverheadMsMedian": 264.1247000000003,
-        "observerPollElapsedMsMedian": 26.399999998509884,
+        "validSampleCount": 3,
+        "invalidSampleCount": 0,
+        "remoteFirstPixelMsMedian": 27.80000001192093,
+        "protocolDispatchOverheadMsMedian": 255.55539998807944,
+        "observerPollElapsedMsMedian": 27.80000001192093,
         "framesToFirstPixelMedian": 1,
         "roiDiffRatioMedian": 0.0234375,
         "longTaskCountMedian": 3
@@ -388,28 +388,13 @@
         "warmup": 1,
         "validSampleCount": 3,
         "invalidSampleCount": 0,
-        "inputToFirstPixelMsMedian": 67.60000000149012,
-        "observerPollElapsedMsMedian": 67.60000000149012,
+        "inputToFirstPixelMsMedian": 66.30000001192093,
+        "observerPollElapsedMsMedian": 66.30000001192093,
         "inputToFirstPixelFramesMedian": 3,
         "roiDiffRatioMedian": 0.01708984375,
-        "inputDelayMsMedian": 27.899999998509884,
-        "longTaskCountMedian": 2
+        "inputDelayMsMedian": 26.200000017881393,
+        "longTaskCountMedian": 3
       }
     }
-  },
-  "conditions": {
-    "suite": "performance-external",
-    "mode": "headless",
-    "matrix": true,
-    "runs": 3,
-    "warmup": 1,
-    "scales": [
-      10000,
-      50000,
-      100000
-    ],
-    "backend": "apps/backend (Go), fresh database",
-    "command": "npx tsx tests/e2e/external/runner.ts --suite=performance-external --mode=headless --matrix=true --runs=3 --warmup=1 --scales=10000,50000,100000",
-    "note": "Compare only against a run produced with this same command on the same host. Do not compare against numbers recorded on other machines or dates."
   }
 }

@@ -1,4 +1,5 @@
 import path from "path";
+import { fileURLToPath } from "node:url";
 import type {
 	CaseSet,
 	EnvironmentId,
@@ -59,6 +60,8 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 		args.get("source") ||
 		envValue("npm_config_baseline_source", "npm_config_source", "BASELINE_SOURCE");
 	const failOnPerformance = (args.get("fail-on-performance") || "confirmed") as FailOnPerformance;
+	const labFlag = (args.get("lab") ?? envValue("AEVIA_LAB") ?? "on").trim().toLowerCase();
+	const labEnabled = labFlag !== "off" && labFlag !== "false" && labFlag !== "0";
 
 	return {
 		action,
@@ -91,7 +94,7 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 		budgetsFile: args.get("budgets-file") || path.join(externalRoot, "budgets.json"),
 		historyFile:
 			args.get("history-file") ||
-			path.join(externalRoot, "history", `${suite}.history.jsonl`),
+			fileURLToPath(new URL(`../../../../../tests/reports/lab-history/${suite}.history.jsonl`, import.meta.url)),
 		noisePercent: Math.max(0, Number(args.get("noise-percent") || "10")),
 		regressionPercent: Math.max(0, Number(args.get("regression-percent") || "20")),
 		regressionAbsoluteMs: Math.max(0, Number(args.get("regression-absolute-ms") || "8")),
@@ -108,6 +111,9 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 		boundaryPointsPerStroke: Math.max(1, Number(args.get("boundary-points-per-stroke") || "2048")),
 		freezeMs: Math.max(1000, Number(args.get("freeze-ms") || "5000")),
 		heapSnapshot: args.get("heap-snapshot") === "true",
+		caseIds: parseList(args.get("case-ids")),
+		caseKeys: parseList(args.get("case-keys")),
+		labEnabled,
 	};
 };
 

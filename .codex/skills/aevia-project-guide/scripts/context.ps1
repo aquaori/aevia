@@ -49,20 +49,24 @@ $topics = @{
     benchmark = @{
         references = @("references/testing-benchmarks.md")
         files = @(
+            ".codex/skills/aevia-testing/SKILL.md",
             "apps/frontend/tests/e2e/external/runner.ts",
             "apps/frontend/tests/e2e/external/config.ts",
             "apps/frontend/tests/e2e/external/suites.ts",
             "apps/frontend/tests/e2e/external/reporter.ts",
-            "tests/report/aggregate.ts"
+            "tests/report/contract.ts",
+            "tests/report/provenance.ts",
+            "tests/report/aggregate.ts",
+            "tests/run-system.ts"
         )
         searches = @("rg `"performance-external|correctness-smoke|baseline|report-dir`" apps/frontend/tests/e2e/external tests/report")
-        verify = @("cmd /c npm run test:report")
+        verify = @("npm run test:perf", "npm run test:quick")
     }
     tests = @{
         references = @("references/testing-benchmarks.md")
-        files = @("vitest.config.ts", "tests/report/aggregate.ts", "apps/frontend/tests/e2e/external/runner.ts")
+        files = @(".codex/skills/aevia-testing/SKILL.md", "vitest.config.ts", "tests/run-system.ts", "tests/report/contract.ts", "tests/report/provenance.ts", "tests/report/aggregate.ts", "tests/report/aggregate.spec.ts", "tests/browser-launch.ts", ".github/workflows/ci.yml", "apps/frontend/tests/e2e/external/runner.ts")
         searches = @("rg `"projects|testMatch|reporter|outputFile`" vitest.config.ts package.json apps/frontend/package.json")
-        verify = @("cmd /c npm run test:unit")
+        verify = @("npm run test:quick", "npm run test:ci")
     }
     rendering = @{
         references = @("references/frontend.md", "references/protocol.md")

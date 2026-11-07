@@ -1,4 +1,5 @@
 import path from "path";
+import { writeFileSync } from "node:fs";
 import type { CaseCategory, CaseResult, CaseSample, MetricMap, MetricStats, SuiteContext } from "./types";
 import {
 	assertFrontendReachable,
@@ -13,6 +14,7 @@ import {
 	captureCanvasSample,
 	roiAround,
 	saveCanvasPng,
+	waitForVisibleScreenshotContent,
 	waitForCanvasChange,
 	waitForNonBlankCanvas,
 } from "./canvas-observer";
@@ -26,66 +28,237 @@ import {
 	waitForScreenshotChange,
 } from "./cdp-observer";
 import { logCaseEnd, logCaseStart, logStep } from "./cli-progress";
+import { EXTERNAL_CASES } from "../../../../../tests/catalog/external-cases";
+import {
+	aggregateMedians,
+	deriveInstrumentedMetrics,
+	deriveWitness,
+} from "./lab/contracts";
+import { evaluateCase, failedCollectionEvaluation, labScenarioKey, neutralCaseEvaluation } from "./lab/evaluate";
+import { beginLabScope, captureLabSnapshot, collectLabSnapshots, endLabScope, waitForLabSentinel } from "./lab/install";
+import { withDeadline } from "./deadline";
+import { resolveLabPolicy } from "./lab/policy";
+import type { LabCaseEvaluation, LabPageSnapshot, LabPolicy, LabSpanViolation } from "./lab/types";
+import { caseKeyOf, isCaseSelected } from "./lab/select";
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Canvas-readback version of "this region is blank". Visible-page screenshots include UI overlays
+ * (remote cursor, hover rings, selection chrome), so a region that is genuinely empty on the canvas
+ * can still report a small non-blank ratio and time out. Readback inspects the canvas pixels only.
+ */
+export const waitForCanvasRegionBlank = async (
+	page: Parameters<typeof captureCanvasSample>[0],
+	region: ReturnType<typeof roiAround>,
+	timeoutMs = 12000
+) => {
+	const startedAt = Date.now();
+	let sample = await captureCanvasSample(page, region, { sampleSize: Math.ceil(Math.max(region.width, region.height)), nonBlankThreshold: 255 });
+	while (true) {
+		if (sample.nonBlankRatio === 0) return sample;
+		if (Date.now() - startedAt >= timeoutMs) break;
+		await page.waitForTimeout(120);
+		sample = await captureCanvasSample(page, region, { sampleSize: Math.ceil(Math.max(region.width, region.height)), nonBlankThreshold: 255 });
+	}
+	throw new Error(`canvas region still not blank after ${timeoutMs}ms: ratio=${sample.nonBlankRatio}`);
+};
+
+const LAB_POLICY: LabPolicy = resolveLabPolicy();
+
+/** Lab evidence collected for one case (or one sample of a sampled case). */
+type LabCaseEvidence = {
+	snapshots: LabPageSnapshot[];
+	instrumented: MetricMap;
+	witnessDeltaMs: MetricMap;
+	violations: LabSpanViolation[];
+	pageErrors: string[];
+	invalidSampleCount: number;
+};
+
+const deriveCaseEvidence = (
+	caseId: string,
+	snapshots: LabPageSnapshot[],
+	externalMetrics: MetricMap,
+	invalidSampleCount = 0
+): LabCaseEvidence => {
+	const instrumented: MetricMap = {};
+	const violations: LabSpanViolation[] = [];
+	for (const snapshot of snapshots) {
+		const derived = deriveInstrumentedMetrics(caseId, snapshot.marks, LAB_POLICY);
+		for (const [key, value] of Object.entries(derived.instrumented)) {
+			if (!(key in instrumented)) instrumented[key] = value;
+		}
+		violations.push(...derived.violations);
+	}
+	const witness = deriveWitness(caseId, instrumented, externalMetrics, LAB_POLICY);
+	violations.push(...witness.violations);
+	const pageErrors: string[] = [];
+	for (const snapshot of snapshots) {
+		for (const error of snapshot.pageErrors) {
+			if (!pageErrors.includes(error.message)) pageErrors.push(error.message);
+		}
+	}
+	return {
+		snapshots,
+		instrumented,
+		witnessDeltaMs: witness.witnessDeltaMs,
+		violations,
+		pageErrors,
+		invalidSampleCount,
+	};
+};
+
+const scenarioKeyOf = (context: SuiteContext, id: string) => labScenarioKey(context.config.suite, context.config.caseSet, id);
+
+const caseKeyOfCase = (context: SuiteContext, id: string, scale?: number) =>
+	caseKeyOf(id, context.config.environment, scale);
+
+/** Preserve the independent witness while using validated spans for performance policy. */
+export const promoteInstrumentedMetrics = (result: CaseResult): void => {
+	if (result.lab?.status !== "valid" || !result.instrumented) return;
+	result.externalMetrics = { ...result.metrics };
+	for (const [metric, value] of Object.entries(result.instrumented)) {
+		const key = `${metric}Median` in result.metrics ? `${metric}Median` : metric;
+		if (typeof value === "number" && Number.isFinite(value) && key in result.metrics) result.metrics[key] = value;
+	}
+};
+
+const applyLabEvidence = (
+	context: SuiteContext,
+	id: string,
+	result: CaseResult,
+	evidence: LabCaseEvidence,
+	sampleCount: number,
+	expectedSampleCount: number,
+	scale?: number
+): CaseResult => {
+	if (!context.config.labEnabled) return result;
+	if (result.status !== "passed") {
+		// Keep product failures distinct; known harness failures invalidate collection.
+		result.lab = (result.failureType === "harness" ? failedCollectionEvaluation : neutralCaseEvaluation)({
+			caseId: id,
+			caseKey: caseKeyOfCase(context, id, scale),
+			scenarioKey: scenarioKeyOf(context, id),
+			detail: "case failed before the measurement gate judged collection",
+		});
+		if (result.lab.status === "invalid") console.error(`[lab][invalid-case] scenario=${result.lab.scenarioKey} case=${result.lab.caseKey} codes=COLLECTION_FAILED detail=${result.error || "harness collection failed"}`);
+		return result;
+	}
+	const evaluation: LabCaseEvaluation = evaluateCase({
+		caseId: id,
+		caseKey: caseKeyOfCase(context, id, scale),
+		scenarioKey: scenarioKeyOf(context, id),
+		snapshots: evidence.snapshots,
+		instrumented: evidence.instrumented,
+		external: result.metrics,
+		sampleCount,
+		expectedSampleCount,
+		invalidSampleCount: evidence.invalidSampleCount,
+		sampleViolations: evidence.violations,
+		witnessDeltaMs: evidence.witnessDeltaMs,
+		pageErrors: evidence.pageErrors,
+		policy: LAB_POLICY,
+		labEnabled: true,
+	});
+	result.lab = evaluation;
+	if (Object.keys(evidence.instrumented).length > 0) {
+		result.instrumented = evidence.instrumented;
+		result.measurementSource = evaluation.measurementSource;
+		result.witnessDeltaMs = evidence.witnessDeltaMs;
+		promoteInstrumentedMetrics(result);
+	}
+	if (evaluation.status === "invalid") {
+		const codes = evaluation.codes.join(",");
+		const detail = evaluation.details.join("; ").slice(0, 800);
+		console.error(
+			`[lab][invalid-case] scenario=${evaluation.scenarioKey} case=${evaluation.caseKey} codes=${codes} detail=${detail}`
+		);
+		if (result.status === "passed") {
+			result.status = "failed";
+			result.failureType = "harness";
+			result.error = `[lab] invalid measurement (${codes}): ${detail}`;
+		} else {
+			result.error = `${result.error ? `${result.error}; ` : ""}[lab] invalid measurement (${codes}): ${detail}`;
+		}
+	}
+	return result;
+};
+
+const isSelected = (context: SuiteContext, id: string, scale?: number) =>
+	isCaseSelected(context.config, id, context.config.environment, scale ?? null);
+
+const optionalCase = async (
+	context: SuiteContext,
+	id: string,
+	fn: () => Promise<Omit<CaseResult, "id" | "durationMs">>
+): Promise<CaseResult[]> => (isSelected(context, id) ? [await runCase(context, id, fn)] : []);
+
+const optionalSampledCase = async (
+	context: SuiteContext,
+	id: string,
+	fn: (sampleIndex: number, warmup: boolean) => Promise<MetricMap>,
+	options: { scale?: number } = {}
+): Promise<CaseResult[]> =>
+	isSelected(context, id, options.scale) ? [await runSampledCase(context, id, fn, options)] : [];
+
 const CASE_META: Record<string, { title: string; description: string; category: CaseCategory }> = {
-	"harness-health": {
+	[EXTERNAL_CASES.harnessHealth.id]: {
 		title: "Harness health",
 		description: "验证前端可访问、后端 create/join、WebSocket 握手、协议驱动远端绘制和 canvas ROI 外部观测链路。",
 		category: "harness",
 	},
-	"correctness-smoke": {
+	[EXTERNAL_CASES.correctnessSmoke.id]: {
 		title: "Correctness smoke",
-		description: "双端真实绘制互相可见，撤销/重做后最终 canvas 截图一致，并覆盖基础翻页返回。",
+		description: "双端绘制互相可见；撤销时目标区域消失且其他笔画保留，重做后恢复；分页返回用可见截图断言内容隔离。",
 		category: "correctness",
 	},
-	"concurrent-crossing-visual-consistency": {
+	[EXTERNAL_CASES.concurrentCrossing.id]: {
 		title: "Concurrent crossing consistency",
 		description: "两个浏览器同时交叉绘制，最终只用 canvas 截图和 pixel diff 验证视觉一致性。",
 		category: "correctness",
 	},
-	"late-joiner-visual-consistency": {
+	[EXTERNAL_CASES.lateJoiner.id]: {
 		title: "Late joiner consistency",
 		description: "后加入用户加载已有历史内容后，与原用户最终 canvas 截图保持一致。",
 		category: "correctness",
 	},
-	"protocol-multipage-isolation": {
+	[EXTERNAL_CASES.multipageIsolation.id]: {
 		title: "Protocol multipage isolation",
 		description: "通过公开协议制造多页历史，验证 late observer 切页后不同页内容可见且可返回。",
 		category: "correctness",
 	},
-	"full-render": {
+	[EXTERNAL_CASES.fullRenderPerformance.id]: {
 		title: "Full render late joiner",
 		description: "公开 WebSocket 协议制造大量历史点，测量 late joiner 首个非空画面和视觉稳定时间。",
 		category: "performance",
 	},
-	"incremental-remote-first-pixel": {
+	[EXTERNAL_CASES.remoteFirstPixelPerformance.id]: {
 		title: "Incremental remote first pixel",
 		description: "从测试侧发送公开 WebSocket 远端笔画，到 observer 目标 ROI 首次出现像素变化。",
 		category: "performance",
 	},
-	"local-realtime-first-pixel": {
+	[EXTERNAL_CASES.localFirstPixelPerformance.id]: {
 		title: "Local realtime first pixel",
 		description: "Playwright 真实 pointer 绘制后，目标 ROI 首次出现像素变化的耗时和帧数。",
 		category: "performance",
 	},
-	"boundary-full-render-until-crash": {
+	[EXTERNAL_CASES.fullRenderBoundary.id]: {
 		title: "Boundary full render until crash",
 		description: "外部协议制造阶梯历史数据，用 Playwright/CDP 硬指标寻找全量初始化的 renderer/page/browser 边界。",
 		category: "boundary",
 	},
-	"boundary-same-page-heap-growth": {
+	[EXTERNAL_CASES.heapGrowthBoundary.id]: {
 		title: "Boundary same-page heap growth",
 		description: "同一页多轮注入和重载后，通过 CDP JS heap 与 DOM counter 观察内存增长边界。",
 		category: "boundary",
 	},
-	"boundary-incremental-redraw-freeze": {
+	[EXTERNAL_CASES.redrawFreezeBoundary.id]: {
 		title: "Boundary incremental redraw freeze",
 		description: "多协议客户端并发局部重绘，用外部截图、CDP heap 和输入耗时观察软卡死边界。",
 		category: "boundary",
 	},
-	"resilience-network-recovery": {
+	[EXTERNAL_CASES.networkRecovery.id]: {
 		title: "Network latency recovery",
 		description: "通过 CDP 网络模拟长延迟和离线恢复，观测页面恢复到可绘制状态的时间。",
 		category: "performance",
@@ -93,7 +266,8 @@ const CASE_META: Record<string, { title: string; description: string; category: 
 };
 
 const withMeta = (context: SuiteContext, id: string, result: CaseResult): CaseResult => {
-	const key = id.startsWith("full-render-") ? "full-render" : id;
+	const fullRenderPrefix = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
+	const key = id.startsWith(fullRenderPrefix) ? EXTERNAL_CASES.fullRenderPerformance.id : id;
 	const meta = CASE_META[key];
 	return {
 		...result,
@@ -111,11 +285,19 @@ const runCase = async (
 	fn: () => Promise<Omit<CaseResult, "id" | "durationMs">>
 ): Promise<CaseResult> => {
 	const startedAt = performance.now();
-	const meta = CASE_META[id.startsWith("full-render-") ? "full-render" : id];
+	const fullRenderPrefix = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
+	const meta = CASE_META[id.startsWith(fullRenderPrefix) ? EXTERNAL_CASES.fullRenderPerformance.id : id];
 	logCaseStart(id, meta?.title || id, meta?.description);
+	const labOn = context.config.labEnabled;
+	if (labOn) beginLabScope();
 	try {
 		const result = await fn();
-		const finalResult = withMeta(context, id, { id, durationMs: performance.now() - startedAt, ...result });
+		let finalResult = withMeta(context, id, { id, durationMs: performance.now() - startedAt, ...result });
+		if (labOn) {
+			const snapshots = await collectLabSnapshots();
+			const evidence = deriveCaseEvidence(id, snapshots, finalResult.metrics);
+			finalResult = applyLabEvidence(context, id, finalResult, evidence, 1, 1);
+		}
 		logCaseEnd(finalResult);
 		return finalResult;
 	} catch (error: unknown) {
@@ -139,6 +321,8 @@ const runCase = async (
 		});
 		logCaseEnd(finalResult);
 		return finalResult;
+	} finally {
+		if (labOn) await endLabScope();
 	}
 };
 
@@ -198,7 +382,7 @@ const assessSampleQuality = (id: string, samples: CaseSample[]) => {
 		sample.qualityStatus = "valid";
 	}
 
-	if (id.startsWith("full-render-")) {
+	if (id.startsWith(`${EXTERNAL_CASES.fullRenderPerformance.id}-`)) {
 		const ratios = measuredPassed
 			.map((sample) => sample.metrics.nonBlankRatio)
 			.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
@@ -216,7 +400,7 @@ const assessSampleQuality = (id: string, samples: CaseSample[]) => {
 	const validMeasured = measuredPassed.filter((sample) => sample.qualityStatus === "valid");
 	if (validMeasured.length < 3) return;
 
-	const outlierMetrics = id.startsWith("full-render-")
+	const outlierMetrics = id.startsWith(`${EXTERNAL_CASES.fullRenderPerformance.id}-`)
 		? ["firstNonBlankMs", "visuallyStableMs"]
 		: id === "incremental-remote-first-pixel"
 			? ["remoteFirstPixelMs"]
@@ -254,7 +438,8 @@ const runSampledCase = async (
 ): Promise<CaseResult> => {
 	const startedAt = performance.now();
 	const samples: CaseSample[] = [];
-	const meta = CASE_META[id.startsWith("full-render-") ? "full-render" : id];
+	const fullRenderPrefix = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;
+	const meta = CASE_META[id.startsWith(fullRenderPrefix) ? EXTERNAL_CASES.fullRenderPerformance.id : id];
 	logCaseStart(
 		id,
 		meta?.title || id,
@@ -265,21 +450,36 @@ const runSampledCase = async (
 			`warmup=${context.config.warmup}`,
 		].filter(Boolean).join(" ")
 	);
+	const labOn = context.config.labEnabled;
+	const measuredLabEvidence: LabCaseEvidence[] = [];
 	for (let index = 0; index < context.config.warmup + context.config.runs; index += 1) {
 		const warmup = index < context.config.warmup;
 		const run = warmup ? index + 1 : index - context.config.warmup + 1;
 		const sampleStartedAt = performance.now();
 		logStep(`${id}: ${warmup ? "warmup" : "run"} ${run}/${warmup ? context.config.warmup : context.config.runs}`);
+		if (labOn) beginLabScope();
 		try {
-			const metrics = await fn(run, warmup);
-			samples.push({
+			const metrics = await withDeadline(fn(run, warmup), context.config.caseTimeoutMs, `${id} sample ${run}`);
+			const snapshots = labOn ? await collectLabSnapshots() : [];
+			const sample: CaseSample = {
 				run,
 				warmup,
 				status: "passed",
 				durationMs: performance.now() - sampleStartedAt,
 				metrics,
-			});
+			};
+			if (labOn && !warmup) {
+				const evidence = deriveCaseEvidence(id, snapshots, metrics);
+				sample.instrumented = evidence.instrumented;
+				sample.witnessDeltaMs = evidence.witnessDeltaMs;
+				sample.measurementSource = Object.keys(evidence.instrumented).length > 0 ? "hybrid" : "external";
+				sample.labCodes = [...new Set(evidence.violations.map((violation) => violation.code))];
+				sample.pageErrors = evidence.pageErrors;
+				measuredLabEvidence.push(evidence);
+			}
+			samples.push(sample);
 		} catch (error: unknown) {
+			console.error(`[external-e2e] sample failed: ${id} ${warmup ? "warmup" : "run"} ${run}: ${errorMessage(error)}`);
 			samples.push({
 				run,
 				warmup,
@@ -288,6 +488,8 @@ const runSampledCase = async (
 				metrics: {},
 				error: errorMessage(error),
 			});
+		} finally {
+			if (labOn) await endLabScope();
 		}
 	}
 	assessSampleQuality(id, samples);
@@ -299,6 +501,16 @@ const runSampledCase = async (
 	const invalidSamples = measuredSamples.filter(
 		(sample) => sample.status === "passed" && sample.qualityStatus && sample.qualityStatus !== "valid"
 	);
+	const caseEvidence: LabCaseEvidence = {
+		snapshots: measuredLabEvidence.flatMap((evidence) => evidence.snapshots),
+		instrumented: aggregateMedians(measuredLabEvidence.map((evidence) => evidence.instrumented)),
+		witnessDeltaMs: aggregateMedians(measuredLabEvidence.map((evidence) => evidence.witnessDeltaMs)),
+		violations: measuredLabEvidence.flatMap((evidence) => evidence.violations),
+		pageErrors: [...new Set(measuredLabEvidence.flatMap((evidence) => evidence.pageErrors))],
+		invalidSampleCount: measuredLabEvidence.filter(
+			(evidence) => evidence.violations.length > 0 || evidence.pageErrors.length > 0
+		).length,
+	};
 	if (!failedSample && validSamples.length === 0) {
 		const finalResult = withMeta(context, id, {
 			id,
@@ -318,8 +530,17 @@ const runSampledCase = async (
 			aggregate: {},
 			error: invalidSamples.map((sample) => sample.qualityReason || "invalid sample").join("；"),
 		});
-		logCaseEnd(finalResult);
-		return finalResult;
+		const gatedResult = applyLabEvidence(
+			context,
+			id,
+			finalResult,
+			caseEvidence,
+			measuredSamples.length,
+			context.config.runs,
+			options.scale
+		);
+		logCaseEnd(gatedResult);
+		return gatedResult;
 	}
 	const aggregate = aggregateSamples(validSamples);
 	const finalResult = withMeta(context, id, {
@@ -341,8 +562,17 @@ const runSampledCase = async (
 		aggregate,
 		error: failedSample?.error,
 	});
-	logCaseEnd(finalResult);
-	return finalResult;
+	const gatedResult = applyLabEvidence(
+		context,
+		id,
+		finalResult,
+		caseEvidence,
+		measuredSamples.length,
+		context.config.runs,
+		options.scale
+	);
+	logCaseEnd(gatedResult);
+	return gatedResult;
 };
 
 const artifactDir = (context: SuiteContext, name: string) => {
@@ -351,23 +581,41 @@ const artifactDir = (context: SuiteContext, name: string) => {
 	return dir;
 };
 
-const openBoundaryRoomPage = async (context: SuiteContext, user: { token: string; userName: string }) => {
+const openBoundaryRoomPage = async (context: SuiteContext, user: { token: string; userName: string }, expectedContent = true) => {
 	const probe = await createBoundaryProbe(context.browser, { cpuThrottle: context.config.cpuThrottle });
 	const loadStartedAt = performance.now();
-	await probe.page.goto(context.config.frontendUrl);
-	await probe.page.evaluate(({ token, userName }: { token: string; userName: string }) => {
-		sessionStorage.setItem("user", JSON.stringify({ token, userId: "", username: userName }));
-		localStorage.setItem("wb_username", userName);
-	}, { token: user.token, userName: user.userName });
-	await probe.page.goto(`${context.config.frontendUrl}/room`, {
-		waitUntil: "domcontentloaded",
-		timeout: context.config.caseTimeoutMs,
-	});
-	await probe.page.locator("canvas").first().waitFor({ timeout: context.config.caseTimeoutMs });
-	return {
-		probe,
-		roomLoadMs: performance.now() - loadStartedAt,
-	};
+	try {
+		return await withDeadline((async () => {
+			await probe.page.goto(context.config.frontendUrl);
+			await probe.page.evaluate(({ token, userName }: { token: string; userName: string }) => {
+				sessionStorage.setItem("user", JSON.stringify({ token, userId: "", username: userName }));
+				localStorage.setItem("wb_username", userName);
+			}, { token: user.token, userName: user.userName });
+			await probe.page.goto(`${context.config.frontendUrl}/room`, {
+				waitUntil: "domcontentloaded",
+				timeout: context.config.caseTimeoutMs,
+			});
+			await probe.page.locator("canvas").first().waitFor({ timeout: context.config.caseTimeoutMs });
+			if (expectedContent) {
+				await probe.page.waitForFunction(() => {
+					const runtime = (window as unknown as { __AEVIA_LAB__?: { marks: { name: string; detail?: { reason?: string } }[] } }).__AEVIA_LAB__;
+					return runtime?.marks.some(mark => mark.name === "aevia.frame.render-complete" && mark.detail?.reason === "init-stream-final");
+				}, undefined, { timeout: context.config.caseTimeoutMs });
+				await waitForNonBlankCanvas(probe.page, { timeoutMs: context.config.caseTimeoutMs });
+			} else { await waitForLabSentinel(probe.page); }
+			return {
+				probe,
+				roomLoadMs: performance.now() - loadStartedAt,
+			};
+		})(), context.config.caseTimeoutMs, "boundary room initialization");
+	} catch (error) {
+		const observedCrash = classifyCrash(probe.crash);
+		const dir = artifactDir(context, `${user.userName.replace(/[^a-zA-Z0-9_-]/g, "_")}-failed-load`);
+		const snapshot = await withDeadline(captureLabSnapshot(probe.page), 5000, "failed-load snapshot").catch(() => null);
+		writeFileSync(path.join(dir, "lab-snapshot.json"), JSON.stringify({ error: errorMessage(error), observedCrash, snapshot }, null, 2));
+		await probe.close().catch(() => undefined);
+		throw Object.assign(new Error(errorMessage(error)), { boundaryCrashType: observedCrash });
+	}
 };
 
 const seedRoomPoints = async (
@@ -388,12 +636,14 @@ const seedRoomPoints = async (
 	const pointsPerStroke = options.pointsPerStroke || context.config.boundaryPointsPerStroke;
 	const strokes = Math.max(1, Math.ceil(pointCount / pointsPerStroke));
 	let nextProgressPercent = 10;
+	let lastOperationId = "";
 	try {
 		for (let index = 0; index < strokes; index += 1) {
 			if (options.deadlineAt && Date.now() > options.deadlineAt) {
 				throw new Error(`${options.progressLabel || "seed"} exceeded ${context.config.seedTimeoutMs}ms while injecting ${pointCount} points`);
 			}
-			await bot.sendCommittedStroke({
+			lastOperationId = await bot.sendCommittedStroke({
+				waitForCommit: true,
 				points: createDistributedStrokePoints(
 					Math.min(pointsPerStroke, pointCount - index * pointsPerStroke),
 					index,
@@ -411,61 +661,23 @@ const seedRoomPoints = async (
 	} finally {
 		bot.close();
 	}
-	return { roomId, user };
+	return { roomId, user, lastOperationId };
 };
 
 const maxNumber = (...values: Array<number | undefined>) =>
 	Math.max(0, ...values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)));
 
-type BoundaryFullRenderSeed = {
-	roomId: string;
-	seedDurationMs: number;
-};
-
-let boundaryFullRenderSeedCache:
-	| {
-			key: string;
-			rooms: Map<number, BoundaryFullRenderSeed>;
-	  }
-	| null = null;
-
-const boundarySeedCacheKey = (context: SuiteContext) =>
-	[
-		context.config.apiUrl,
-		context.config.wsUrl,
-		context.config.boundaryScales.join(","),
-		context.config.boundaryPointsPerStroke,
-	].join("|");
-
-const prepareBoundaryFullRenderRooms = async (context: SuiteContext) => {
-	const key = boundarySeedCacheKey(context);
-	if (boundaryFullRenderSeedCache?.key === key) {
-		logStep(`boundary full render: reusing ${boundaryFullRenderSeedCache.rooms.size} preseeded rooms`);
-		return boundaryFullRenderSeedCache.rooms;
-	}
-
-	const rooms = new Map<number, BoundaryFullRenderSeed>();
-	boundaryFullRenderSeedCache = { key, rooms };
-	logStep(`boundary full render: preseed ${context.config.boundaryScales.length} reusable rooms`);
-	for (const scale of context.config.boundaryScales) {
-		const startedAt = performance.now();
-		const deadlineAt = Date.now() + context.config.seedTimeoutMs;
-		logStep(`boundary full render preseed: scale=${scale}`);
-		const { roomId } = await seedRoomPoints(context, scale, {
-			deadlineAt,
-			progressLabel: `boundary full render preseed scale=${scale}`,
-		});
-		rooms.set(scale, {
-			roomId,
-			seedDurationMs: performance.now() - startedAt,
-		});
-	}
-	return rooms;
+const prepareBoundaryFullRenderRoom = async (context: SuiteContext, scale: number) => {
+	const startedAt = performance.now();
+	const { roomId } = await seedRoomPoints(context, scale, {
+		deadlineAt: Date.now() + context.config.seedTimeoutMs,
+		progressLabel: `boundary full render seed scale=${scale}`,
+	});
+	return { roomId, seedDurationMs: performance.now() - startedAt };
 };
 
 const runBoundaryFullRender = async (context: SuiteContext) =>
-	runCase(context, "boundary-full-render-until-crash", async () => {
-		const preseededRooms = await prepareBoundaryFullRenderRooms(context);
+	runCase(context, EXTERNAL_CASES.fullRenderBoundary.id, async () => {
 		const records: MetricMap[] = [];
 		let lastSurvivedScale = 0;
 		let firstCrashScale = 0;
@@ -478,10 +690,7 @@ const runBoundaryFullRender = async (context: SuiteContext) =>
 			const scaleStartedAt = performance.now();
 			let probe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
 			try {
-				const seed = preseededRooms.get(scale);
-				if (!seed) {
-					throw new Error(`boundary full render scale=${scale} has no preseeded room`);
-				}
+				const seed = await prepareBoundaryFullRenderRoom(context, scale);
 				const { roomId } = seed;
 				const observerUser = await joinRoom(context.config, roomId, `BoundaryObserver${scale}`);
 				const opened = await openBoundaryRoomPage(context, observerUser);
@@ -515,12 +724,14 @@ const runBoundaryFullRender = async (context: SuiteContext) =>
 				}
 				lastSurvivedScale = scale;
 			} catch (error: unknown) {
-				firstCrashScale = scale;
 				const message = errorMessage(error);
-				crashType = message.includes("exceeded") ? "scale-timeout" : message.includes("crash") ? "page-crash" : "harness-or-cdp-error";
+				const observed = probe ? classifyCrash(probe.crash) : error instanceof Error && "boundaryCrashType" in error ? String(error.boundaryCrashType) : "none";
+				const productCrash = ["page-crash", "browser-disconnected", "cdp-detached", "page-closed"].includes(observed);
+				firstCrashScale = productCrash ? scale : 0;
+				crashType = productCrash ? observed : "harness-or-cdp-error";
 				records.push({
 					scale,
-					status: "crashed",
+					status: productCrash ? "crashed" : "inconclusive",
 					crashType,
 					error: message,
 					durationMs: performance.now() - scaleStartedAt,
@@ -532,8 +743,8 @@ const runBoundaryFullRender = async (context: SuiteContext) =>
 		}
 
 		return {
-			status: "passed",
-			failureType: "none",
+			status: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "failed" : "passed",
+			failureType: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "harness" : "none",
 			metrics: {
 				boundaryKind: "hard-boundary",
 				lastSurvivedScale,
@@ -547,7 +758,7 @@ const runBoundaryFullRender = async (context: SuiteContext) =>
 	});
 
 const runBoundaryHeapGrowth = async (context: SuiteContext) =>
-	runCase(context, "boundary-same-page-heap-growth", async () => {
+	runCase(context, EXTERNAL_CASES.heapGrowthBoundary.id, async () => {
 		const scale = context.config.boundaryScales[0] || context.config.scales[0] || 100000;
 		const records: MetricMap[] = [];
 		let roomId: string | null = null;
@@ -556,25 +767,34 @@ const runBoundaryHeapGrowth = async (context: SuiteContext) =>
 		let peakJsHeapMb = 0;
 		let crashType = "none";
 
-		for (let round = 1; round <= 3; round += 1) {
-			logStep(`same-page heap growth: round=${round}/3 inject=${scale} points`);
-			const deadlineAt = Date.now() + context.config.seedTimeoutMs;
-			let probe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
-			try {
-				const seeded = await seedRoomPoints(context, scale, {
+		let probe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
+		try {
+			for (let round = 1; round <= 3; round += 1) {
+				logStep(`same-page heap growth: round=${round}/3 inject=${scale} points`);
+				const deadlineAt = Date.now() + context.config.seedTimeoutMs;
+				try {
+					const seeded = await seedRoomPoints(context, scale, {
 					roomId: roomId || undefined,
 					userName: `HeapBot${round}`,
 					deadlineAt,
 					progressLabel: `same-page heap round=${round}`,
 				});
 				roomId = seeded.roomId;
-				const observerUser = await joinRoom(context.config, roomId, `HeapObserver${round}`);
-				const opened = await openBoundaryRoomPage(context, observerUser);
-				probe = opened.probe;
-				await probe.page.waitForTimeout(300);
-				const metrics = await probe.readMetrics();
-				await probe.collectGarbage();
-				const postGc = await probe.readMetrics();
+					let roomLoadMs = 0;
+					if (!probe) {
+						const observerUser = await joinRoom(context.config, roomId, "HeapObserver");
+						const opened = await openBoundaryRoomPage(context, observerUser);
+						probe = opened.probe;
+						roomLoadMs = opened.roomLoadMs;
+					} else {
+						await probe.page.waitForFunction(opId => {
+							const runtime = (window as unknown as { __AEVIA_LAB__?: { marks: { name: string; detail?: { opId?: string } }[] } }).__AEVIA_LAB__;
+							return runtime?.marks.some(mark => mark.name === "aevia.worker.ack" && mark.detail?.opId === opId);
+						}, seeded.lastOperationId, { timeout: context.config.caseTimeoutMs });
+					}
+					const metrics = await probe.readMetrics();
+					await probe.collectGarbage();
+					const postGc = await probe.readMetrics();
 				const postGcHeapMb = postGc.usedHeapMb ?? postGc.jsHeapUsedMb ?? 0;
 				if (round === 1) baselinePostGcHeapMb = postGcHeapMb;
 				latestPostGcHeapMb = postGcHeapMb;
@@ -584,10 +804,10 @@ const runBoundaryHeapGrowth = async (context: SuiteContext) =>
 					round,
 					scale,
 					totalInjectedPoints: scale * round,
-					roomLoadMs: opened.roomLoadMs,
-					usedHeapMb: metrics.usedHeapMb,
-					jsHeapUsedMb: metrics.jsHeapUsedMb,
-					postGcHeapMb,
+						roomLoadMs,
+						usedHeapMb: metrics.usedHeapMb,
+						jsHeapUsedMb: metrics.jsHeapUsedMb,
+						postGcHeapMb,
 					heapGrowthMb: Number((postGcHeapMb - baselinePostGcHeapMb).toFixed(2)),
 					nodeCount: metrics.nodeCount,
 					documentCount: metrics.documentCount,
@@ -600,15 +820,14 @@ const runBoundaryHeapGrowth = async (context: SuiteContext) =>
 			} catch (error: unknown) {
 				crashType = "harness-or-cdp-error";
 				records.push({ round, scale, error: errorMessage(error), crashType });
-				break;
-			} finally {
-				await probe?.close();
+					break;
+				}
 			}
-		}
 
+		} finally { await probe?.close(); }
 		return {
-			status: "passed",
-			failureType: "none",
+			status: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "failed" : "passed",
+			failureType: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "harness" : "none",
 			metrics: {
 				boundaryKind: "hard-boundary",
 				scale,
@@ -617,13 +836,15 @@ const runBoundaryHeapGrowth = async (context: SuiteContext) =>
 				baselinePostGcHeapMb,
 				latestPostGcHeapMb,
 				heapGrowthMb: Number((latestPostGcHeapMb - baselinePostGcHeapMb).toFixed(2)),
+				heapScope: "page-main-isolate",
+				observerPageCount: 1,
 				scaleRecords: JSON.stringify(records),
 			},
 		};
 	});
 
 const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
-	runCase(context, "boundary-incremental-redraw-freeze", async () => {
+	runCase(context, EXTERNAL_CASES.redrawFreezeBoundary.id, async () => {
 		const records: MetricMap[] = [];
 		let lastSurvivedConcurrency = 0;
 		let firstCrashConcurrency = 0;
@@ -637,7 +858,7 @@ const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
 			try {
 				const { roomId } = await createRoomWithUsers(context.config, ["IncBoundarySeed"]);
 				const observerUser = await joinRoom(context.config, roomId, `IncObserver${concurrency}`);
-				const opened = await openBoundaryRoomPage(context, observerUser);
+				const opened = await openBoundaryRoomPage(context, observerUser, false);
 				observerProbe = opened.probe;
 				const roi = roiAround(480, 330, 260);
 				const baseline = await capturePagePng(observerProbe.page, roi);
@@ -698,8 +919,8 @@ const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
 		}
 
 		return {
-			status: "passed",
-			failureType: "none",
+			status: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "failed" : "passed",
+			failureType: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "harness" : "none",
 			metrics: {
 				boundaryKind: "soft-freeze-boundary",
 				lastSurvivedConcurrency,
@@ -712,7 +933,7 @@ const runBoundaryIncrementalFreeze = async (context: SuiteContext) =>
 	});
 
 const runNetworkRecovery = async (context: SuiteContext) =>
-	runCase(context, "resilience-network-recovery", async () => {
+	runCase(context, EXTERNAL_CASES.networkRecovery.id, async () => {
 		const records: MetricMap[] = [];
 		let worstRecoveryMs = 0;
 		for (const latencyMs of context.config.latencies) {
@@ -720,29 +941,40 @@ const runNetworkRecovery = async (context: SuiteContext) =>
 			let probe: Awaited<ReturnType<typeof createBoundaryProbe>> | null = null;
 			try {
 				const { users } = await createRoomWithUsers(context.config, ["NetworkObserver", "NetworkBot"]);
-				const opened = await openBoundaryRoomPage(context, users[0]!);
+				const opened = await openBoundaryRoomPage(context, users[0]!, false);
 				probe = opened.probe;
-				await probe.client.send("Network.enable").catch(() => undefined);
+				await probe.page.waitForFunction(() => (window as unknown as { __labNetworkProbe: { opens: number } }).__labNetworkProbe.opens > 0);
+				const opensBefore = await probe.page.evaluate(() => (window as unknown as { __labNetworkProbe: { opens: number } }).__labNetworkProbe.opens);
+				await probe.client.send("Network.enable");
 				await probe.client.send("Network.emulateNetworkConditions", {
 					offline: false,
 					latency: latencyMs,
 					downloadThroughput: 64 * 1024,
 					uploadThroughput: 64 * 1024,
-				}).catch(() => undefined);
+				});
 				await probe.client.send("Network.emulateNetworkConditions", {
 					offline: true,
 					latency: 0,
 					downloadThroughput: 0,
 					uploadThroughput: 0,
-				}).catch(() => undefined);
-				await probe.page.waitForTimeout(500);
+				});
+				await probe.page.evaluate(() => {
+					const state = (window as unknown as { __labNetworkProbe: { sockets: WebSocket[] } }).__labNetworkProbe;
+					for (const socket of state.sockets) if (socket.readyState === WebSocket.OPEN) socket.close(4001, "lab interruption");
+				});
+				await probe.page.waitForFunction(() => (window as unknown as { __labNetworkProbe: { closes: number } }).__labNetworkProbe.closes > 0);
+				const offline = await probe.page.evaluate(async () => {
+					try { await fetch(`${location.origin}/?lab-offline-probe`, { cache: "no-store" }); return false; } catch { return true; }
+				});
+				if (!offline) throw new Error("network fault injection did not block a fresh request");
 				const recoveryStartedAt = performance.now();
 				await probe.client.send("Network.emulateNetworkConditions", {
 					offline: false,
 					latency: latencyMs,
 					downloadThroughput: 64 * 1024,
 					uploadThroughput: 64 * 1024,
-				}).catch(() => undefined);
+				});
+				await probe.page.waitForFunction(count => (window as unknown as { __labNetworkProbe: { opens: number } }).__labNetworkProbe.opens > count, opensBefore, { timeout: context.config.caseTimeoutMs });
 				const bot = new ProtocolClient(context.config, users[1]!);
 				await bot.connect();
 				const roi = roiAround(520, 330, 260);
@@ -763,6 +995,8 @@ const runNetworkRecovery = async (context: SuiteContext) =>
 				const metrics = await probe.readMetrics();
 				records.push({
 					latencyMs,
+					disconnectVerified: true,
+					reconnectVerified: true,
 					recoveryMs,
 					firstScreenshotChangeMs: changed.elapsedMs,
 					roiDiffRatio: changed.diffRatio,
@@ -785,8 +1019,8 @@ const runNetworkRecovery = async (context: SuiteContext) =>
 		};
 	});
 
-export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResult[]> => [
-	await runCase(context, "harness-health", async () => {
+export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResult[]> =>
+	optionalCase(context, EXTERNAL_CASES.harnessHealth.id, async () => {
 		await assertFrontendReachable(context.config);
 		const { users } = await createRoomWithUsers(context.config, ["HealthObserver", "HealthBot"]);
 		const observer = await openRoomPage(context.browser, context.config, users[0]!);
@@ -804,6 +1038,11 @@ export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResul
 			minDiffRatio: 0.005,
 			sampleSize: 72,
 		});
+		if (context.config.labEnabled) {
+			// Sentinel round-trip: proves the product instrumentation is alive on this
+			// document before the gate certifies the external measurement.
+			await waitForLabSentinel(observer.page);
+		}
 		bot.close();
 		await observer.close();
 		return {
@@ -815,13 +1054,12 @@ export const runHarnessHealth = async (context: SuiteContext): Promise<CaseResul
 				roiDiffRatio: changed.diffRatio,
 			},
 		};
-	}),
-];
+	});
 
 export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseResult[]> => [
 	...(await runHarnessHealth(context)),
-	await runCase(context, "correctness-smoke", async () => {
-		const dir = artifactDir(context, "correctness-smoke");
+	...(await optionalCase(context, EXTERNAL_CASES.correctnessSmoke.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.correctnessSmoke.id);
 		const { users } = await createRoomWithUsers(context.config, ["SmokeA", "SmokeB"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
 		const pageB = await openRoomPage(context.browser, context.config, users[1]!);
@@ -844,10 +1082,40 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 			sampleSize: 72,
 		});
 
-		await pressUndo(pageA.page);
-		await pageB.page.waitForTimeout(900);
-		await pressRedo(pageA.page);
-		await pageB.page.waitForTimeout(1200);
+		const firstStrokeRegion = roiAround(320, 290);
+		const secondStrokeRegion = roiAround(730, 350);
+		await pressUndo(pageB.page);
+		const [undoneA, undoneB, preservedA, preservedB] = await Promise.all([
+			waitForCanvasRegionBlank(pageA.page, secondStrokeRegion),
+			waitForCanvasRegionBlank(pageB.page, secondStrokeRegion),
+			waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
+			waitForVisibleScreenshotContent(pageB.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
+		]);
+		const undoBlankPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-target-blank.png"), secondStrokeRegion);
+		const undoPreservedPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-other-stroke-retained.png"), firstStrokeRegion);
+		await pressRedo(pageB.page);
+		const [redoneA, redoneB] = await Promise.all([
+			waitForVisibleScreenshotContent(pageA.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
+			waitForVisibleScreenshotContent(pageB.page, { roi: secondStrokeRegion, timeoutMs: 12000 }),
+		]);
+		const redoVisiblePath = await saveCanvasPng(pageA.page, path.join(dir, "redo-target-visible.png"), secondStrokeRegion);
+
+		const waitForPageIndicator = (page: typeof pageA.page, expected: string) => page.waitForFunction(
+			(pageNumber) => document.querySelector('button[title="页面概览"]')?.textContent?.replace(/\s+/g, "") === pageNumber,
+			expected,
+			{ timeout: 5000 }
+		);
+		await pageA.page.locator('button[title="新建页面"]').click();
+		await waitForPageIndicator(pageA.page, "2/2");
+		await drawLine(pageA.page, 260, 460, 460, 500, 10);
+		const newPageRegion = roiAround(360, 480);
+		await waitForVisibleScreenshotContent(pageA.page, { roi: newPageRegion, timeoutMs: 5000 })
+			.catch((error: Error) => { throw new Error(`new page stroke: ${error.message}`); });
+		await pageA.page.locator('button[title="上一页"]').click();
+		await waitForPageIndicator(pageA.page, "1/2");
+		const revisit = await waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 5000 })
+			.catch((error: Error) => { throw new Error(`returned page stroke: ${error.message}`); });
+		const pageIsolation = await waitForCanvasRegionBlank(pageA.page, newPageRegion, 5000);
 		const diff = await compareCanvasPages(pageA.page, pageB.page, {
 			diffPath: path.join(dir, "final-diff.png"),
 			threshold: 0.01,
@@ -855,14 +1123,12 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 		const artifacts = [
 			await saveCanvasPng(pageA.page, path.join(dir, "page-a.png")),
 			await saveCanvasPng(pageB.page, path.join(dir, "page-b.png")),
+			undoBlankPath,
+			undoPreservedPath,
+			redoVisiblePath,
+			await saveCanvasPng(pageA.page, path.join(dir, "returned-page-isolated.png")),
 			path.join(dir, "final-diff.png"),
 		];
-
-		await pageA.page.keyboard.press("ArrowRight");
-		await drawLine(pageA.page, 260, 460, 460, 500, 10);
-		await pageA.page.keyboard.press("ArrowLeft");
-		await pageA.page.waitForTimeout(500);
-		const revisit = await captureCanvasSample(pageA.page);
 
 		await pageA.close();
 		await pageB.close();
@@ -887,17 +1153,25 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 				remoteFirstPixelMsBtoA: aChanged.elapsedMs,
 				framesToFirstPixelBtoA: aChanged.frames,
 				finalConsistencyDiffRatio: diff.diffRatio,
-				revisitNonBlankRatio: revisit.nonBlankRatio,
+				undoTargetBlankRatioA: undoneA.nonBlankRatio,
+				undoTargetBlankRatioB: undoneB.nonBlankRatio,
+				undoOtherStrokeRatioA: preservedA.sample.nonBlankRatio,
+				undoOtherStrokeRatioB: preservedB.sample.nonBlankRatio,
+				redoTargetVisibleRatioA: redoneA.sample.nonBlankRatio,
+				redoTargetVisibleRatioB: redoneB.sample.nonBlankRatio,
+				pageReturnVisibleRatio: revisit.sample.nonBlankRatio,
+				pageTwoLeakRatioAfterReturn: pageIsolation.nonBlankRatio,
+				visibleScreenshotOracle: true,
 			},
 			artifacts,
 		};
-	}),
+	})),
 ];
 
 export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseResult[]> => [
 	...(await runCorrectnessSmoke(context)),
-	await runCase(context, "concurrent-crossing-visual-consistency", async () => {
-		const dir = artifactDir(context, "concurrent-crossing-visual-consistency");
+	...(await optionalCase(context, EXTERNAL_CASES.concurrentCrossing.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.concurrentCrossing.id);
 		const { users } = await createRoomWithUsers(context.config, ["CrossA", "CrossB"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
 		const pageB = await openRoomPage(context.browser, context.config, users[1]!);
@@ -929,9 +1203,9 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			error: diff.diffRatio <= diff.passThreshold ? undefined : `concurrent crossing mismatch: ${diff.diffRatio}`,
 			artifacts,
 		};
-	}),
-	await runCase(context, "late-joiner-visual-consistency", async () => {
-		const dir = artifactDir(context, "late-joiner-visual-consistency");
+	})),
+	...(await optionalCase(context, EXTERNAL_CASES.lateJoiner.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.lateJoiner.id);
 		const { roomId, users } = await createRoomWithUsers(context.config, ["LateA"]);
 		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
 		await drawLine(pageA.page, 200, 200, 500, 380, 30);
@@ -958,39 +1232,61 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			error: diff.diffRatio <= diff.passThreshold ? undefined : `late joiner mismatch: ${diff.diffRatio}`,
 			artifacts,
 		};
-	}),
-	await runCase(context, "protocol-multipage-isolation", async () => {
-		const dir = artifactDir(context, "protocol-multipage-isolation");
+	})),
+	...(await optionalCase(context, EXTERNAL_CASES.multipageIsolation.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.multipageIsolation.id);
 		const { roomId, users } = await createRoomWithUsers(context.config, ["PageObserver", "PageBot"]);
 		const bot = new ProtocolClient(context.config, users[1]!);
 		await bot.connect();
-		bot.sendRaw("cmd-page-add", {
+		await bot.sendRawAndWaitFor("cmd-page-add", {
 			userId: users[1]!.userId,
 			username: users[1]!.userName,
 			totalPages: 2,
-		});
-		bot.sendStroke({
+		}, "ack.committed", (message) => typeof message.data?.roomSeq === "number" && message.data.roomSeq > 0);
+		await bot.sendCommittedStroke({
 			pageId: 0,
 			points: createLinePoints(36, { x: 0.18, y: 0.28 }, { x: 0.006, y: 0.003 }),
 			color: "#111827",
 			size: 5,
+			waitForCommit: true,
 		});
-		bot.sendStroke({
+		await bot.sendCommittedStroke({
 			pageId: 1,
 			points: createLinePoints(36, { x: 0.62, y: 0.32 }, { x: -0.005, y: 0.004 }),
 			color: "#2563eb",
 			size: 5,
+			waitForCommit: true,
 		});
 
 		const observerUser = await joinRoom(context.config, roomId, "PageLateObserver");
 		const observer = await openRoomPage(context.browser, context.config, observerUser);
-		const page0 = await waitForNonBlankCanvas(observer.page, { timeoutMs: 15000 });
+		const waitForPageIndicator = (expected: string) => observer.page.waitForFunction(
+			(pageNumber) => document.querySelector('button[title="页面概览"]')?.textContent?.replace(/\s+/g, "") === pageNumber,
+			expected,
+			{ timeout: 5000 }
+		);
+		await waitForPageIndicator("1/2");
+		const canvasBounds = await observer.page.locator("canvas").first().boundingBox();
+		if (!canvasBounds) throw new Error("multipage canvas bounds unavailable");
+		const regionSize = Math.max(96, Math.min(canvasBounds.width * 0.16, canvasBounds.height * 0.28));
+		const page0Region = roiAround(canvasBounds.width * 0.285, canvasBounds.height * 0.33, regionSize);
+		const page1Region = roiAround(canvasBounds.width * 0.53, canvasBounds.height * 0.39, regionSize);
+		logStep(`multipage regions: canvas=${canvasBounds.width}x${canvasBounds.height} p0=${JSON.stringify(page0Region)} p1=${JSON.stringify(page1Region)}`);
 		const page0Path = await saveCanvasPng(observer.page, path.join(dir, "page-0.png"));
-		await observer.page.keyboard.press("ArrowRight");
-		const page1 = await waitForNonBlankCanvas(observer.page, { timeoutMs: 15000 });
+		const page0Own = await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page0Region });
+		const page0Leak = await waitForCanvasRegionBlank(observer.page, page1Region, 1500);
+		await saveCanvasPng(observer.page, page0Path);
+		const pageSwitchStartedAt = performance.now();
+		await observer.page.locator('button[title="下一页"]').click();
+		await waitForPageIndicator("2/2");
 		const page1Path = await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
-		await observer.page.keyboard.press("ArrowLeft");
-		await waitForNonBlankCanvas(observer.page, { timeoutMs: 15000 });
+		const page1 = await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page1Region });
+		const page1ClickToObservedScreenshotMs = performance.now() - pageSwitchStartedAt;
+		const page1Leak = await waitForCanvasRegionBlank(observer.page, page0Region, 1500);
+		await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
+		await observer.page.locator('button[title="上一页"]').click();
+		await waitForPageIndicator("1/2");
+		await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page0Region });
 		const page0ReturnPath = await saveCanvasPng(observer.page, path.join(dir, "page-0-return.png"));
 		bot.close();
 		await observer.close();
@@ -998,24 +1294,171 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 			status: "passed",
 			failureType: "none",
 			metrics: {
-				page0NonBlankRatio: page0.sample.nonBlankRatio,
-				page1SwitchVisibleMs: page1.elapsedMs,
-				page1FramesToFirstPixel: page1.frames,
-				page1NonBlankRatio: page1.sample.nonBlankRatio,
+				page0ExpectedRegionRatio: page0Own.sample.nonBlankRatio,
+				page0OtherPageRegionRatio: page0Leak.nonBlankRatio,
+				page1ClickToObservedScreenshotMs,
+				page1ExpectedRegionRatio: page1.sample.nonBlankRatio,
+				page1OtherPageRegionRatio: page1Leak.nonBlankRatio,
+				pixelOracleSource: "canvas-readback-leak+visible-content",
 			},
 			artifacts: [page0Path, page1Path, page0ReturnPath],
 		};
-	}),
+	})),
+	...(await optionalCase(context, EXTERNAL_CASES.undoRedoConvergence.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.undoRedoConvergence.id);
+		const { users } = await createRoomWithUsers(context.config, ["UndoA", "UndoB"]);
+		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
+		const pageB = await openRoomPage(context.browser, context.config, users[1]!);
+		const firstRegion = roiAround(320, 290);
+		const secondRegion = roiAround(730, 350);
+		await drawLine(pageA.page, 220, 220, 420, 360, 16);
+		await drawLine(pageA.page, 640, 260, 820, 440, 16);
+		await pageA.page.waitForTimeout(1800);
+		await pageB.page.waitForTimeout(1800);
+		const beforeUndo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "before-undo-diff.png"),
+			threshold: 0.012,
+		});
+
+		// Undo the second stroke first: the history.toggle soft delete must reach both peers.
+		await pressUndo(pageA.page);
+		const [secondBlankA, secondBlankB] = await Promise.all([
+			waitForCanvasRegionBlank(pageA.page, secondRegion),
+			waitForCanvasRegionBlank(pageB.page, secondRegion),
+		]);
+		const [firstKeptA] = await Promise.all([
+			waitForVisibleScreenshotContent(pageA.page, { roi: firstRegion, timeoutMs: 5000 }),
+		]);
+		const afterFirstUndo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "after-first-undo-diff.png"),
+			threshold: 0.012,
+		});
+
+		// Undo the first stroke too: both peers must converge on an empty page.
+		await pressUndo(pageA.page);
+		const [firstBlankA, firstBlankB] = await Promise.all([
+			waitForCanvasRegionBlank(pageA.page, firstRegion),
+			waitForCanvasRegionBlank(pageB.page, firstRegion),
+		]);
+		const afterSecondUndo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "after-second-undo-diff.png"),
+			threshold: 0.012,
+		});
+
+		// Redo both strokes in order; convergence must hold again.
+		await pressRedo(pageA.page);
+		await waitForVisibleScreenshotContent(pageA.page, { roi: firstRegion, timeoutMs: 12000 });
+		await waitForVisibleScreenshotContent(pageB.page, { roi: firstRegion, timeoutMs: 12000 });
+		await pressRedo(pageA.page);
+		await waitForVisibleScreenshotContent(pageA.page, { roi: secondRegion, timeoutMs: 12000 });
+		const [secondRestoredB] = await Promise.all([
+			waitForVisibleScreenshotContent(pageB.page, { roi: secondRegion, timeoutMs: 12000 }),
+		]);
+		const afterRedo = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "after-redo-diff.png"),
+			threshold: 0.012,
+		});
+		const artifacts = [
+			await saveCanvasPng(pageA.page, path.join(dir, "page-a.png")),
+			await saveCanvasPng(pageB.page, path.join(dir, "page-b.png")),
+			path.join(dir, "before-undo-diff.png"),
+			path.join(dir, "after-first-undo-diff.png"),
+			path.join(dir, "after-second-undo-diff.png"),
+			path.join(dir, "after-redo-diff.png"),
+		];
+		await pageA.close();
+		await pageB.close();
+		const diffs = [beforeUndo, afterFirstUndo, afterSecondUndo, afterRedo];
+		const failedDiff = diffs.find((diff) => diff.diffRatio > diff.passThreshold);
+		if (failedDiff) {
+			return {
+				status: "failed",
+				failureType: "correctness",
+				metrics: { finalDiffRatio: failedDiff.diffRatio, passThreshold: failedDiff.passThreshold },
+				error: `undo/redo canvas divergence: diffRatio=${failedDiff.diffRatio}`,
+				artifacts,
+			};
+		}
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				beforeUndoDiffRatio: beforeUndo.diffRatio,
+				afterFirstUndoDiffRatio: afterFirstUndo.diffRatio,
+				afterSecondUndoDiffRatio: afterSecondUndo.diffRatio,
+				afterRedoDiffRatio: afterRedo.diffRatio,
+				undoneSecondStrokeRatioA: secondBlankA.nonBlankRatio,
+				undoneSecondStrokeRatioB: secondBlankB.nonBlankRatio,
+				retainedFirstStrokeRatioA: firstKeptA.sample.nonBlankRatio,
+				undoneFirstStrokeRatioA: firstBlankA.nonBlankRatio,
+				undoneFirstStrokeRatioB: firstBlankB.nonBlankRatio,
+				restoredSecondStrokeRatioB: secondRestoredB.sample.nonBlankRatio,
+			},
+			artifacts,
+		};
+	})),
+	...(await optionalCase(context, EXTERNAL_CASES.lateJoinerUndoConsistency.id, async () => {
+		const dir = artifactDir(context, EXTERNAL_CASES.lateJoinerUndoConsistency.id);
+		const { roomId, users } = await createRoomWithUsers(context.config, ["LateUndoA"]);
+		const pageA = await openRoomPage(context.browser, context.config, users[0]!);
+		const keptRegion = roiAround(300, 280);
+		const undoneRegion = roiAround(730, 350);
+		await drawLine(pageA.page, 220, 220, 400, 360, 22);
+		await drawLine(pageA.page, 640, 260, 820, 440, 22);
+		await pageA.page.waitForTimeout(1200);
+		await pressUndo(pageA.page);
+		const undoneOnA = await waitForCanvasRegionBlank(pageA.page, undoneRegion);
+		await waitForVisibleScreenshotContent(pageA.page, { roi: keptRegion, timeoutMs: 5000 });
+
+		const lateUser = await joinRoom(context.config, roomId, "LateUndoB");
+		const pageB = await openRoomPage(context.browser, context.config, lateUser);
+		// One retained stroke covers well under 1% of the canvas, so wait for that
+		// region instead of the generic whole-canvas non-blank threshold.
+		const keptOnB = await waitForVisibleScreenshotContent(pageB.page, { roi: keptRegion, timeoutMs: 15000 });
+		const undoneOnB = await waitForCanvasRegionBlank(pageB.page, undoneRegion);
+		const diff = await compareCanvasPages(pageA.page, pageB.page, {
+			diffPath: path.join(dir, "late-undo-diff.png"),
+			threshold: 0.01,
+		});
+		const artifacts = [
+			await saveCanvasPng(pageA.page, path.join(dir, "page-a.png")),
+			await saveCanvasPng(pageB.page, path.join(dir, "page-b.png")),
+			path.join(dir, "late-undo-diff.png"),
+		];
+		await pageA.close();
+		await pageB.close();
+		if (diff.diffRatio > diff.passThreshold) {
+			return {
+				status: "failed",
+				failureType: "correctness",
+				metrics: { diffRatio: diff.diffRatio, passThreshold: diff.passThreshold },
+				error: `late joiner replay after undo diverged: diffRatio=${diff.diffRatio}`,
+				artifacts,
+			};
+		}
+		return {
+			status: "passed",
+			failureType: "none",
+			metrics: {
+				diffRatio: diff.diffRatio,
+				passThreshold: diff.passThreshold,
+				undoneRegionRatioOnA: undoneOnA.nonBlankRatio,
+				undoneRegionRatioOnB: undoneOnB.nonBlankRatio,
+				keptRegionRatioOnB: keptOnB.sample.nonBlankRatio,
+			},
+			artifacts,
+		};
+	})),
 ];
 
 export const runPerformanceExternal = async (context: SuiteContext): Promise<CaseResult[]> => {
 	const results: CaseResult[] = [];
 	if (context.config.caseSet === "standard" || context.config.caseSet === "all") {
 		for (const scale of context.config.scales) {
-			results.push(await runSampledCase(context, `full-render-${scale}`, async (run, warmup) => {
+			results.push(...(await optionalSampledCase(context, `${EXTERNAL_CASES.fullRenderPerformance.id}-${scale}`, async (run, warmup) => {
 				const dir = artifactDir(
 					context,
-					`full-render-${scale}-${context.config.environment}-${warmup ? "warmup" : "run"}-${run}`
+					`${EXTERNAL_CASES.fullRenderPerformance.id}-${scale}-${context.config.environment}-${warmup ? "warmup" : "run"}-${run}`
 				);
 				const { roomId, users } = await createRoomWithUsers(context.config, ["PerfBot"]);
 				const bot = new ProtocolClient(context.config, users[0]!);
@@ -1024,6 +1467,7 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 				const strokes = Math.max(1, Math.ceil(scale / pointsPerStroke));
 				for (let index = 0; index < strokes; index += 1) {
 					await bot.sendCommittedStroke({
+						waitForCommit: true,
 						points: createDistributedStrokePoints(
 							Math.min(pointsPerStroke, scale - index * pointsPerStroke),
 							index,
@@ -1033,7 +1477,6 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 						size: 2 + (index % 3),
 					});
 				}
-				await new Promise((resolve) => setTimeout(resolve, Math.min(800, 60 + strokes * 2)));
 				bot.close();
 				const observerUser = await joinRoom(context.config, roomId, "PerfObserver");
 				const observer = await openMeasuredRoomPage(context.browser, context.config, observerUser);
@@ -1046,14 +1489,15 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 					scale,
 					firstNonBlankMs: observer.initialRender.firstNonBlankMs,
 					visuallyStableMs: observer.initialRender.visuallyStableMs,
+					stabilityConfirmedMs: observer.initialRender.stabilityConfirmedMs,
 					nonBlankRatio: observer.initialRender.nonBlankRatio,
 					longTaskCount: perf.longTaskCount,
 					longTaskTotalMs: perf.longTaskTotalMs,
 				};
-			}, { scale }));
+			}, { scale })));
 		}
 
-		results.push(await runSampledCase(context, "incremental-remote-first-pixel", async () => {
+		results.push(...(await optionalSampledCase(context, EXTERNAL_CASES.remoteFirstPixelPerformance.id, async () => {
 			const { users } = await createRoomWithUsers(context.config, ["IncObserver", "IncBot"]);
 			const observer = await openRoomPage(context.browser, context.config, users[0]!);
 			const bot = new ProtocolClient(context.config, users[1]!);
@@ -1083,9 +1527,9 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 				roiDiffRatio: changed.diffRatio,
 				longTaskCount: perf.longTaskCount,
 			};
-		}));
+		})));
 
-		results.push(await runSampledCase(context, "local-realtime-first-pixel", async () => {
+		results.push(...(await optionalSampledCase(context, EXTERNAL_CASES.localFirstPixelPerformance.id, async () => {
 			const { users } = await createRoomWithUsers(context.config, ["RealtimeUser"]);
 			const page = await openRoomPage(context.browser, context.config, users[0]!);
 			const roi = roiAround(360, 330, 280);
@@ -1108,17 +1552,17 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 				inputDelayMs: perf.eventDelayMaxMs,
 				longTaskCount: perf.longTaskCount,
 			};
-		}));
+		})));
 	}
 
 	if (context.config.caseSet === "resilience" || context.config.caseSet === "all") {
-		results.push(await runNetworkRecovery(context));
+		if (isSelected(context, EXTERNAL_CASES.networkRecovery.id)) results.push(await runNetworkRecovery(context));
 	}
 
 	if (context.config.caseSet === "boundary" || context.config.caseSet === "all") {
-		results.push(await runBoundaryFullRender(context));
-		results.push(await runBoundaryHeapGrowth(context));
-		results.push(await runBoundaryIncrementalFreeze(context));
+		if (isSelected(context, EXTERNAL_CASES.fullRenderBoundary.id)) results.push(await runBoundaryFullRender(context));
+		if (isSelected(context, EXTERNAL_CASES.heapGrowthBoundary.id)) results.push(await runBoundaryHeapGrowth(context));
+		if (isSelected(context, EXTERNAL_CASES.redrawFreezeBoundary.id)) results.push(await runBoundaryIncrementalFreeze(context));
 	}
 
 	return results;
