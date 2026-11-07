@@ -3,7 +3,6 @@ run-name: Aevia correctness / ${{ inputs.ci_hub_request_id || github.run_number 
 
 on:
   push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
