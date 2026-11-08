@@ -1283,14 +1283,14 @@ export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseRes
 		const page0Leak = await waitForCanvasRegionBlank(observer.page, page1Region, 1500);
 		await saveCanvasPng(observer.page, page0Path);
 		const pageSwitchStartedAt = performance.now();
-		await observer.page.locator('button[title="下一页"]').click();
+		await Promise.all([waitForPageChangeComplete(observer.page), observer.page.locator('button[title="下一页"]').click()]);
 		await waitForPageIndicator("2/2");
 		const page1Path = await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
 		const page1 = await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page1Region });
 		const page1ClickToObservedScreenshotMs = performance.now() - pageSwitchStartedAt;
 		const page1Leak = await waitForCanvasRegionBlank(observer.page, page0Region, 1500);
 		await saveCanvasPng(observer.page, path.join(dir, "page-1.png"));
-		await observer.page.locator('button[title="上一页"]').click();
+		await Promise.all([waitForPageChangeComplete(observer.page), observer.page.locator('button[title="上一页"]').click()]);
 		await waitForPageIndicator("1/2");
 		await waitForVisibleScreenshotContent(observer.page, { timeoutMs: 15000, roi: page0Region });
 		const page0ReturnPath = await saveCanvasPng(observer.page, path.join(dir, "page-0-return.png"));
