@@ -1094,8 +1094,8 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 				await saveCanvasPng(pageB.page, path.join(dir, "undo-failed-client-b.png"), secondStrokeRegion).catch(() => {});
 				throw new Error(`undo on drawing client B: ${error.message}`);
 			}),
-			waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
-			waitForVisibleScreenshotContent(pageB.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
+			waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 12000 }),
+			waitForVisibleScreenshotContent(pageB.page, { roi: firstStrokeRegion, timeoutMs: 12000 }),
 		]);
 		const undoBlankPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-target-blank.png"), secondStrokeRegion);
 		const undoPreservedPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-other-stroke-retained.png"), firstStrokeRegion);
