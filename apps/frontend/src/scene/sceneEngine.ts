@@ -335,16 +335,19 @@ export class SceneEngine {
 		this.operations.splice(insertAt, 0, operation);
 		this.indexOperation(operation);
 		const tail = insertAt === this.operations.length - 1;
+		if (operation.kind === "history.toggle") {
+			const newerToggle = this.operations.slice(insertAt + 1).some((candidate) =>
+				candidate.kind === "history.toggle" && candidate.payload.targetHistoryGroupId === operation.payload.targetHistoryGroupId
+			);
+			if (!newerToggle) this.applyHistoryToggle(operation);
+			return operationTargets(operation);
+		}
 		if (!tail) {
 			if (operation.kind === "page.clear") {
 				this.rebuildV2Elements();
 			} else {
 				this.rebuildElements(new Set(operationTargets(operation)));
 			}
-			return operationTargets(operation);
-		}
-		if (operation.kind === "history.toggle") {
-			this.applyHistoryToggle(operation);
 			return operationTargets(operation);
 		}
 		this.applyOperationIncremental(operation);
