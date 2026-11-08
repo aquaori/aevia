@@ -18,7 +18,7 @@ import {
 	waitForCanvasChange,
 	waitForNonBlankCanvas,
 } from "./canvas-observer";
-import { drawLine, drawLineLowLatency, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo, waitForPageChangeComplete } from "./ui-driver";
+import { drawLine, drawLineLowLatency, observeUndoDispatch, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo, waitForPageChangeComplete } from "./ui-driver";
 import { readPerformanceObserver } from "./performance-observer";
 import { ensureDir } from "./reporter";
 import {
@@ -1084,6 +1084,7 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 
 		const firstStrokeRegion = roiAround(320, 290);
 		const secondStrokeRegion = roiAround(730, 350);
+		const finishUndoObservation = observeUndoDispatch(pageB.page);
 		await pressUndo(pageB.page);
 		const [undoneA, undoneB, preservedA, preservedB] = await Promise.all([
 			waitForCanvasRegionBlank(pageA.page, secondStrokeRegion).catch(async (error: Error) => {
@@ -1096,7 +1097,10 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 			}),
 			waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 12000 }),
 			waitForVisibleScreenshotContent(pageB.page, { roi: firstStrokeRegion, timeoutMs: 12000 }),
-		]);
+		]).catch((error: Error) => {
+			throw new Error(`${error.message}; undo command sent: ${finishUndoObservation()}`);
+		});
+		finishUndoObservation();
 		const undoBlankPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-target-blank.png"), secondStrokeRegion);
 		const undoPreservedPath = await saveCanvasPng(pageA.page, path.join(dir, "undo-other-stroke-retained.png"), firstStrokeRegion);
 		await pressRedo(pageB.page);
