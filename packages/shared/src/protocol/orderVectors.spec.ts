@@ -54,12 +54,8 @@ describe("cross-runtime order golden vectors", () => {
 		}
 	});
 
-	it("only uses ASCII ids, where JS code-unit order matches Go byte order", () => {
-		const ids = [
-			...vectors.commands.flatMap((vector) => vector.items.map((item) => item.id)),
-			...vectors.renderKeys.flatMap((vector) => vector.items.map((item) => item.opId)),
-		];
-		for (const id of ids) expect(id).toMatch(/^[\x20-\x7e]+$/);
+	it("orders legacy non-ASCII IDs by UTF-8 bytes", () => {
+		expect(compareCommandIds("\ue000", "\ud800\udc00")).toBeLessThan(0);
 	});
 
 	it("orders command ids with compareCommandOrder", () => {

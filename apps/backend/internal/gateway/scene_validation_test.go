@@ -60,6 +60,33 @@ func TestValidateSceneCommandAcceptsV2Create(t *testing.T) {
 	}
 }
 
+func TestSceneOperationIDCharacterSet(t *testing.T) {
+	for _, id := range []string{"op-1", "element_1:initial:0", "page:0"} {
+		if !validID(id) {
+			t.Errorf("expected valid ID %q", id)
+		}
+	}
+	for _, id := range []string{"", "a b", "é", "a/b"} {
+		if validID(id) {
+			t.Errorf("expected invalid ID %q", id)
+		}
+	}
+}
+
+func TestSceneOperationsCanReferenceLegacyUnicodeIDs(t *testing.T) {
+	data := validScenePush()
+	op := data["cmd"].(map[string]any)["sceneOperation"].(map[string]any)
+	op["elementId"] = "旧对象"
+	if _, _, ok := validateSceneCommand(sceneTestClient(), "push-cmd", data); ok {
+		t.Fatal("accepted a new non-ASCII element ID")
+	}
+	op["kind"] = "element.delete"
+	op["payload"] = map[string]any{"elementIds": []any{"旧对象"}}
+	if code, reason, ok := validateSceneCommand(sceneTestClient(), "push-cmd", data); !ok {
+		t.Fatalf("legacy reference rejected: %s %s", code, reason)
+	}
+}
+
 func TestValidateSceneCommandAcceptsPointlessElementCreate(t *testing.T) {
 	data := validScenePush()
 	op := data["cmd"].(map[string]any)["sceneOperation"].(map[string]any)

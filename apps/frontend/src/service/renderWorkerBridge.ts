@@ -16,6 +16,7 @@ import {
 interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
 	onDirtyRects?: (rects: aabbBox[]) => void;
+	onSceneResyncRequired?: () => void;
 }
 
 interface FlatPointRequest {
@@ -245,6 +246,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 		worker.onmessage = (event) => {
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
+			if (type === "scene-resync-required") { options.onSceneResyncRequired?.(); return; }
 
 			if (type === "lab:marks") {
 				if (labEnabled()) {

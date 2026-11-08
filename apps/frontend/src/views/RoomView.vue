@@ -23,6 +23,7 @@
 		finishIncrementalStroke,
 		renderWithPoints,
 		renderSceneCommands,
+		hasPendingSceneDependencies,
 		hitTestScene,
 		querySceneElements,
 		renderIncrementPoint,
@@ -179,6 +180,14 @@
 		}
 	};
 
+	let lastIntegrityResyncAt = 0;
+	let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
+	const requestSceneIntegrityResync = () => {
+		const now = Date.now();
+		if (now - lastIntegrityResyncAt < 5000) return;
+		lastIntegrityResyncAt = now;
+		queueMicrotask(() => roomPageService.requestCurrentPageResync());
+	};
 	const renderCanvas = () => {
 		if (!canvasRef.value) return;
 		if (workerBridge.isOffscreenEnabled()) {
@@ -193,7 +202,13 @@
 			...c,
 			points: c.points ? toRaw(c.points) : [],
 		}));
-		renderSceneCommands(rawCommands, currentPageId.value, transformingCmdIds.value);
+		if (renderSceneCommands(rawCommands, currentPageId.value, transformingCmdIds.value)) requestSceneIntegrityResync();
+		if (hasPendingSceneDependencies() && !dependencyTimer) {
+			dependencyTimer = setTimeout(() => {
+				dependencyTimer = undefined;
+				if (hasPendingSceneDependencies()) requestSceneIntegrityResync();
+			}, 5000);
+		}
 	};
 
 	const renderIncrementalCommand = (
@@ -282,6 +297,7 @@
 			renderWithPoints(currentPagePoints);
 		},
 		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects),
+		onSceneResyncRequired: requestSceneIntegrityResync,
 	});
 
 	const roomPointerControllerRef = ref<ReturnType<typeof createRoomPointerController> | null>(null);
@@ -635,6 +651,7 @@
 		document.addEventListener("visibilitychange", handleVisibilityChange);
 	});
 	onUnmounted(() => {
+		if (dependencyTimer) clearTimeout(dependencyTimer);
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		roomLifecycleController.unmount();
 	});

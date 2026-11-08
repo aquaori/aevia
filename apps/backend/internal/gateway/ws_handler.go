@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/auth"
@@ -127,6 +128,8 @@ type wsClient struct {
 	id          room.ClientID
 	pageID      int
 	send        chan room.Outbound
+	abort       chan struct{}
+	abortOnce   sync.Once
 	limits      wsClientLimits
 	events      *wsEventLimiter
 	heartbeat   time.Duration
@@ -138,6 +141,7 @@ func newWSClient(conn *websocket.Conn, actor *room.Actor, claims auth.Claims, pa
 		conn: conn, actor: actor, claims: claims, pageID: pageID,
 		id:     room.ClientID(randomID()),
 		send:   make(chan room.Outbound, cfg.ConnectionSendMessages),
+		abort:  make(chan struct{}),
 		events: newWSEventLimiter(cfg),
 		limits: wsClientLimits{
 			maxPointsPerUpdate:  cfg.WSMaxPointsPerUpdate,
@@ -149,10 +153,21 @@ func newWSClient(conn *websocket.Conn, actor *room.Actor, claims auth.Claims, pa
 	}
 }
 
+func (c *wsClient) abortConnection() {
+	c.abortOnce.Do(func() {
+		if c.abort != nil {
+			close(c.abort)
+		}
+		if c.conn != nil {
+			go c.conn.CloseNow()
+		}
+	})
+}
+
 func (c *wsClient) info() room.ClientInfo {
 	return room.ClientInfo{
 		ID: c.id, UserID: c.claims.UserID, UserName: c.claims.UserName,
-		PageID: c.pageID, Send: c.send,
+		PageID: c.pageID, Send: c.send, Abort: c.abortConnection,
 	}
 }
 
@@ -189,6 +204,9 @@ func (c *wsClient) writePump(ctx context.Context) {
 	defer ping.Stop()
 	for {
 		select {
+		case <-c.abort:
+			_ = c.conn.Close(websocket.StatusTryAgainLater, "stream failed")
+			return
 		case msg := <-c.send:
 			if msg.Close {
 				_ = c.conn.Close(websocket.StatusTryAgainLater, "resync required")
@@ -197,6 +215,7 @@ func (c *wsClient) writePump(ctx context.Context) {
 			if err := c.writeOutbound(ctx, msg); err != nil {
 				// A failed write means the connection is gone; returning here
 				// cancels readPump so the client is reaped instead of lingering.
+				_ = c.conn.Close(websocket.StatusTryAgainLater, "write failed")
 				return
 			}
 		case <-ping.C:

@@ -160,3 +160,22 @@ export const decodeRealtimeBinaryMessage = (payload: ArrayBuffer): CollabIncomin
 
 	throw new Error(`unsupported binary realtime frame type: ${frameType}`);
 };
+
+// V2 append frame: magic, JSON metadata length, point count, metadata, then float64 points.
+export const encodeSceneAppendBinary = (data: { cmd?: import("@collaborative-whiteboard/shared").Command; [key: string]: unknown }) => {
+ const operation = data.cmd?.sceneOperation;
+ if (!operation || operation.kind !== "element.append") throw new Error("Expected scene append");
+ const points = operation.payload.points;
+ const metadata = encoder.encode(JSON.stringify({ ...data, cmd: { ...data.cmd, sceneOperation: { ...operation, payload: { ...operation.payload, points: [] } } } }));
+ const buffer = new ArrayBuffer(12 + metadata.length + points.length * 32);
+ const view = new DataView(buffer);
+ view.setUint32(0, 0x41563250, false);
+ view.setUint32(4, metadata.length, false);
+ view.setUint32(8, points.length, false);
+ new Uint8Array(buffer).set(metadata, 12);
+ let offset = 12 + metadata.length;
+ for (const point of points) {
+  for (const value of [point.x, point.y, point.p, point.lamport]) { view.setFloat64(offset, value, false); offset += 8; }
+ }
+ return buffer;
+};

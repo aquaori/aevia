@@ -675,6 +675,13 @@
       "owner": "apps/backend/internal/protocol/realtime_test.go"
     },
     {
+      "id": "go:apps/backend/internal/protocol/scene_append.go",
+      "kind": "go",
+      "path": "apps/backend/internal/protocol/scene_append.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/protocol/realtime_test.go"
+    },
+    {
       "id": "go:apps/backend/internal/room/actor.go",
       "kind": "go",
       "path": "apps/backend/internal/room/actor.go",

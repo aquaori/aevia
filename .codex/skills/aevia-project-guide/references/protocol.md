@@ -51,6 +51,7 @@ Scene atoms use `(lamport, opId byte order, sourceIndex, subIndex)`. Use `compar
 - Transform, erase, delete, clear, undo, and redo append operations; they never replace stored commands or points.
 - The Go gateway requires matching command/operation IDs, identity, room/page, Lamport value, recipe capability, numeric ranges, and `schemaVersion: 2`.
 - V1 path commands remain readable through the SceneEngine adapter. V1 mutation messages are rejected with `UPGRADE_REQUIRED`.
+- New scene identifiers use ASCII letters, digits, `_`, `-`, or `:`. A negotiated `scene-append-v2-binary` client-to-server frame carries append point fields as float64; decoded operations use the normal JSON validation and persistence path, and outgoing broadcasts remain JSON. `VITE_SCENE_APPEND_BINARY=0` disables its client use.
 - A protocol-only client must take its trusted `userId` from WebSocket `init-meta`; `/join-room` does not expose the token's user ID.
 
 ## Coupling Rules

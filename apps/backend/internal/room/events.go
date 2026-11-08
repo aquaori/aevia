@@ -1,6 +1,8 @@
 package room
 
 import (
+	"bytes"
+	"encoding/json"
 	"log/slog"
 
 	"collaborative-whiteboard/apps/backend/internal/domain"
@@ -51,7 +53,14 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 		return
 	}
 	if cmd.Type() == "scene-op" {
-		if _, exists := a.state.Commands[cmd.ID()]; exists {
+		if existing, exists := a.state.Commands[cmd.ID()]; exists {
+			oldOperation, oldErr := json.Marshal(sceneOperation(existing))
+			newOperation, newErr := json.Marshal(sceneOperation(cmd))
+			seq, seqOK := domain.Int(existing.Get("roomSeq"))
+			if existing.UserID() == client.UserID && oldErr == nil && newErr == nil && seqOK && seq > 0 && bytes.Equal(oldOperation, newOperation) {
+				a.ack(client, "accepted", map[string]any{"cmdId": cmd.ID(), "opId": cmd.ID(), "roomSeq": seq})
+				return
+			}
 			a.reject(client, msg.Type, "DUPLICATE_OPERATION", "Immutable scene operation id already exists.", cmd.ID())
 			return
 		}
@@ -194,9 +203,11 @@ func (a *Actor) handlePageAdd(client ClientInfo, msg clientEventMessage) {
 
 func (a *Actor) reject(client ClientInfo, opType, code, reason, cmdID string) {
 	slog.Warn("operation rejected", "room", a.roomID, "op", opType, "code", code, "cmd", cmdID, "user", client.UserID)
-	sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "op-rejected", Data: map[string]any{
+	if !sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "op-rejected", Data: map[string]any{
 		"opType": opType, "code": code, "reason": reason, "cmdId": cmdID, "roomId": a.roomID, "shouldRefresh": true,
-	}}})
+	}}}) && client.Abort != nil {
+		client.Abort()
+	}
 }
 
 func withTrustedIdentity(client ClientInfo, data map[string]any) map[string]any {

@@ -3,7 +3,9 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/protocol"
 	"collaborative-whiteboard/apps/backend/internal/room"
 	"collaborative-whiteboard/apps/backend/internal/storage"
 	"github.com/coder/websocket"
@@ -520,6 +523,19 @@ func TestWebsocketSceneWriteSurvivesGatewayRestart(t *testing.T) {
 		t.Fatalf("restart snapshot version did not recover the committed sequence: got %v want %v", restartMeta.Data["snapshotVersion"], roomSeq)
 	}
 	readGatewayInitCommandIDs(t, rejoined)
+	writeGatewayWSJSON(t, rejoined, testScenePush("persisted-op", userID, roomID))
+	retryAck := readGatewayWSType(t, rejoined, "ack.accepted")
+	if retryAck.Data["roomSeq"] != roomSeq {
+		t.Fatalf("retry changed sequence: got %v want %v", retryAck.Data["roomSeq"], roomSeq)
+	}
+	conflict := testScenePush("persisted-op", userID, roomID)
+	conflictCommand := conflict["data"].(map[string]any)["cmd"].(map[string]any)
+	conflictCommand["sceneOperation"].(map[string]any)["lamport"] = float64(2)
+	conflictCommand["lamport"] = float64(2)
+	writeGatewayWSJSON(t, rejoined, conflict)
+	if rejected := readGatewayWSType(t, rejoined, "op-rejected"); rejected.Data["code"] != "DUPLICATE_OPERATION" {
+		t.Fatalf("expected conflicting duplicate rejection, got %+v", rejected.Data)
+	}
 	if err := rejoined.Close(websocket.StatusNormalClosure, "session restored"); err != nil {
 		t.Fatalf("close restored session websocket: %v", err)
 	}
@@ -546,5 +562,46 @@ func TestWebsocketSceneWriteSurvivesGatewayRestart(t *testing.T) {
 	}
 	if !persisted || forged {
 		t.Fatalf("later join snapshot commands persisted=%v forged=%v ids=%v chunkSummary=%v", persisted, forged, commandIDs, laterMeta.Data["chunkSummary"])
+	}
+}
+
+func TestWebsocketSceneAppendBinaryUsesNormalWritePath(t *testing.T) {
+	server := newTestServer(t)
+	const roomID = "700009"
+	do(t, server, "POST", "/create-room", map[string]any{"roomId": roomID, "roomName": "Binary"}, "")
+	_, joined := do(t, server, "POST", "/join-room", map[string]any{"roomId": roomID, "userName": "Writer"}, "")
+	client := dialGatewayWebsocket(t, server, joined.Data["sessionToken"].(string))
+	defer client.Close(websocket.StatusNormalClosure, "done")
+	meta := readGatewayWSType(t, client, "init-meta")
+	userID := meta.Data["userId"].(string)
+	readGatewayWSType(t, client, "init-complete")
+	message := testScenePush("binary-op", userID, roomID)
+	data := message["data"].(map[string]any)
+	op := data["cmd"].(map[string]any)["sceneOperation"].(map[string]any)
+	op["kind"] = "element.append"
+	op["payload"] = map[string]any{"sourceStart": 0, "points": []any{}, "isComplete": true}
+	metadata, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := make([]byte, 12+len(metadata)+32)
+	binary.BigEndian.PutUint32(frame, protocol.SceneAppendMagic)
+	binary.BigEndian.PutUint32(frame[4:], uint32(len(metadata)))
+	binary.BigEndian.PutUint32(frame[8:], 1)
+	copy(frame[12:], metadata)
+	for i, value := range []float64{0.125, 0.25, 0.5, 1} {
+		binary.BigEndian.PutUint64(frame[12+len(metadata)+8*i:], math.Float64bits(value))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Write(ctx, websocket.MessageBinary, frame); err != nil {
+		t.Fatal(err)
+	}
+	if ack := readGatewayWSType(t, client, "ack.accepted"); ack.Data["opId"] != "binary-op" {
+		t.Fatalf("unexpected ack: %+v", ack.Data)
+	}
+	writeGatewayWSJSON(t, client, message)
+	if rejection := readGatewayWSType(t, client, "op-rejected"); rejection.Data["code"] != "DUPLICATE_OPERATION" {
+		t.Fatalf("expected conflicting operation rejection: %+v", rejection.Data)
 	}
 }

@@ -53,6 +53,32 @@ const eraseOperation: SceneOperationEnvelopeV2 = {
 };
 
 describe("SceneEngine", () => {
+	it("buffers missing stroke points and completes only after the gap closes", () => {
+		const engine = new SceneEngine();
+		const create = { ...createOperation, payload: { ...createOperation.payload, points: [points[0]!], isComplete: false } } as SceneOperationEnvelopeV2;
+		engine.applyOperation(create);
+		engine.applyOperation({ ...base("later", 3), kind: "element.append", payload: { sourceStart: 2, points: [points[2]!], isComplete: true } });
+		expect(engine.exportFlatPoints()).toHaveLength(1);
+		engine.applyOperation({ ...base("missing", 4), kind: "element.append", payload: { sourceStart: 1, points: [points[1]!] } });
+		expect(engine.exportFlatPoints().map((point) => point.x)).toEqual([0.1, 0.4, 0.8]);
+	});
+
+	it("detects conflicting overlapping point ranges", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(createOperation);
+		engine.applyOperation({ ...base("conflict", 9), kind: "element.append", payload: { sourceStart: 1, points: [{ ...points[1]!, x: 0.9 }] } });
+		expect(engine.needsResync).toBe(true);
+	});
+
+	it("keeps a delete for a character that arrives later, and restores it on undo", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation({ ...base("text-create", 1), kind: "element.create", payload: { descriptor: { elementKind: "text", toolId: "text", recipeId: "glyph", style: { color: "#111", size: 2 }, text: "" } } });
+		engine.applyOperation({ ...base("text-delete", 2), kind: "text.patch", payload: { patches: [{ type: "delete", charId: "char-a" }] } });
+		engine.applyOperation({ ...base("text-insert", 3), kind: "text.patch", payload: { patches: [{ type: "insert", charId: "char-a", afterId: null, grapheme: "A" }] } });
+		expect(engine.getStats().visibleAtoms).toBe(0);
+		engine.applyOperation({ ...base("undo-delete", 4), kind: "history.toggle", payload: { targetHistoryGroupId: "text-delete", enabled: false } });
+		expect(engine.getStats().visibleAtoms).toBe(1);
+	});
 	it("converges when immutable operations arrive in different orders", () => {
 		const first = new SceneEngine();
 		const second = new SceneEngine();
@@ -143,6 +169,7 @@ describe("SceneEngine", () => {
 		points.forEach((point, pointIndex) => {
 			engine.ingestFlatPoint({
 				...point,
+				x: Math.fround(point.x), y: Math.fround(point.y), p: Math.fround(point.p),
 				cmdId: "element-a",
 				orderOpId: pointIndex === 0 ? "create" : "append",
 				pointIndex,
@@ -168,6 +195,7 @@ describe("SceneEngine", () => {
 		});
 
 		expect(engine.getStats().atoms).toBe(atomsBeforeOperations);
+		expect(engine.needsResync).toBe(false);
 		expect(engine.getVisibleAtomOrder().map((atom) => atom.order.opId)).toEqual([
 			"create", "append", "append", "append",
 		]);

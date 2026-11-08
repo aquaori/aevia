@@ -70,6 +70,8 @@ Worker and fallback paths both use `SceneEngine`; do not add a second tool-speci
 
 New drawing writes are immutable `element.create`/`element.append` scene operations. Stroke rendering compiles midpoint-based quadratic atoms once as points enter the scene, and `isComplete` commits the stable tail atom. `cmd-start/update/stop` remains only in V1 read/rejection compatibility code and must not be used for a new write path.
 
+SceneEngine buffers missing append ranges and text dependencies, and requests page resync on conflicting ranges or excessive unresolved dependencies. Hydrated render-stream points use float32 geometry; compare them to authoritative operation points at float32 precision. The transport advances its recovery cursor only through the contiguous prefix accepted into local command state and retries unconfirmed immutable writes by their original IDs.
+
 Selection transforms are preview matrices until pointer-up, then one multi-target `element.transform` is appended. Erasure stores explicit quantized atom intervals (or whole-object targets); neither feature may rewrite historical point arrays. Undo/redo appends `history.toggle`.
 
 The worker must not mirror complete point geometry in `sceneCommands`; SceneEngine owns compiled geometry and point hydration. Init command streams carry V2 operations because the backend render-point stream contains only legacy path points. Live commands arriving before init commands complete are merged into the snapshot rather than overwritten.

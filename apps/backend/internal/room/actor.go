@@ -347,21 +347,39 @@ func (a *Actor) handleJoin(msg joinMessage) {
 	client := msg.Client
 	client.PageID = normalizePageID(msg.PageID, a.state.Room.TotalPage)
 	a.state.Clients[client.ID] = client
-	deltas, ok := a.state.Deltas.Since(msg.LastRoomSeq)
-	if msg.LastRoomSeq == 0 || !ok {
-		deltas = nil
-	}
+	resume, deltas := decideResume(a.state.Deltas, msg.LastRoomSeq, a.state.RoomSeq)
 	online := len(a.state.Clients)
 	members := a.state.OnlineMembers()
-	result := JoinResult{Room: a.state.Room, Deltas: deltas, Online: online, Members: members}
-	if len(deltas) == 0 {
+	result := JoinResult{Room: a.state.Room, Deltas: deltas, Resume: resume, ResumeSeq: msg.LastRoomSeq, Online: online, Members: members}
+	if resume == "snapshot" {
 		a.builder.SendLiveInitStream(client.Send, a.state, client, online, members)
-		result.InitStreamed = true
+	} else {
+		SendInitStream(client.Send, a.state.Room.Name, client, result)
 	}
+	result.InitStreamed = true
 	msg.Reply <- result
 	a.broadcastExcept(client.ID, Envelope{Type: "online-count-change", Data: map[string]any{
 		"onlineCount": len(a.state.Clients), "userId": client.UserID, "userName": client.UserName, "type": "join",
 	}}, nil)
+}
+
+func decideResume(buffer *DeltaBuffer, last, head uint64) (string, []DeltaEvent) {
+	deltas, ok := buffer.Since(last)
+	resume := "snapshot"
+	if last > 0 && last <= head {
+		if last == head {
+			resume = "current"
+		} else if ok && len(deltas) > 0 && deltas[0].RoomSeq == last+1 && deltas[len(deltas)-1].RoomSeq == head {
+			resume = "delta"
+			for i, delta := range deltas {
+				if delta.RoomSeq != last+1+uint64(i) {
+					resume = "snapshot"
+					break
+				}
+			}
+		}
+	}
+	return resume, deltas
 }
 
 func (a *Actor) handleLeave(msg leaveMessage) {
@@ -386,7 +404,7 @@ func (a *Actor) handlePageChange(msg pageChangeMessage) {
 		client.PageID = normalizePageID(*msg.Request.NextPageID, a.state.Room.TotalPage)
 	}
 	a.state.Clients[msg.ClientID] = client
-	sendPageChangeStream(client.Send, stream)
+	sendPageChangeStream(client.Send, client.Abort, stream)
 }
 
 func (a *Actor) broadcastExcept(exclude ClientID, json any, binary []byte) {
@@ -397,6 +415,9 @@ func (a *Actor) broadcastExcept(exclude ClientID, json any, binary []byte) {
 		}
 		if !sendOutbound(client.Send, msg) {
 			a.metrics.SlowClients.Add(1)
+			if client.Abort != nil {
+				client.Abort()
+			}
 		}
 	}
 }
@@ -406,6 +427,9 @@ func (a *Actor) broadcastAll(json any, binary []byte) {
 	for _, client := range a.state.Clients {
 		if !sendOutbound(client.Send, msg) {
 			a.metrics.SlowClients.Add(1)
+			if client.Abort != nil {
+				client.Abort()
+			}
 		}
 	}
 }

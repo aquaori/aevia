@@ -468,6 +468,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			initStreamState.renderReady &&
 			initStreamState.commandsReady
 		) {
+			options.onInitSnapshotCommitted?.(initStreamState.snapshotVersion);
 			initStreamState = null;
 		}
 	};
@@ -509,6 +510,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		if (labEnabled()) {
 			labMark(LAB_MARK_INIT_RENDER_COMPLETE);
 		}
+		tryFinalizeInitCommands();
 		tryCompleteInitStream();
 	};
 
@@ -537,7 +539,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	const tryFinalizeInitCommands = () => {
-		if (!initStreamState || !initStreamState.commandsDoneReceived) return;
+		if (!initStreamState || !initStreamState.commandsDoneReceived || !initStreamState.completeReceived || !initStreamState.renderReady) return;
 		if (
 			typeof initStreamState.commandsExpectedChunkCount === "number" &&
 			initStreamState.commandsNextChunkIndex < initStreamState.commandsExpectedChunkCount
@@ -550,6 +552,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			initStreamState.commandsBuffer.map((command) => [command.id, command] as const)
 		);
 		for (const command of initStreamState.liveCommands) commandsById.set(command.id, command);
+		for (const command of options.getInitLocalCommands?.() ?? []) commandsById.set(command.id, command);
 		const mergedCommands = Array.from(commandsById.values());
 		options.replaceLoadedPageWindow(initStreamState.loadedPageIds, mergedCommands);
 		options.loadedPageIds.value = initStreamState.loadedPageIds;
@@ -655,6 +658,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(meta.totalChunks ?? meta.totalPointChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (initStreamState.renderExpectedChunkCount !== null && initStreamState.renderExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			initStreamState.renderExpectedChunkCount = expectedChunkCountRaw;
 		}
 	};
@@ -716,6 +720,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(donePayload.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (initStreamState.renderExpectedChunkCount !== null && initStreamState.renderExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			initStreamState.renderExpectedChunkCount = expectedChunkCountRaw;
 		}
 		initStreamState.renderDoneReceived = true;
@@ -738,6 +743,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(meta.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (initStreamState.commandsExpectedChunkCount !== null && initStreamState.commandsExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			initStreamState.commandsExpectedChunkCount = expectedChunkCountRaw;
 		}
 	};
@@ -775,6 +781,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(donePayload.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (initStreamState.commandsExpectedChunkCount !== null && initStreamState.commandsExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			initStreamState.commandsExpectedChunkCount = expectedChunkCountRaw;
 		}
 		initStreamState.commandsDoneReceived = true;
@@ -792,6 +799,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			return;
 		}
 		initStreamState.completeReceived = true;
+		tryFinalizeInitCommands();
 		tryCompleteInitStream();
 	};
 
@@ -804,7 +812,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	 * overlay, scheduling session renewal) still have to run, otherwise a
 	 * delta-resumed reconnect leaves the UI stuck in "reconnecting".
 	 */
-	const handleDeltaReplayMeta = (_msg: CollabIncomingMessage) => {
+	const handleDeltaReplayMeta = (msg: CollabIncomingMessage) => {
+		if (typeof msg.data.userId === "string") options.userId.value = msg.data.userId;
+		if (typeof msg.data.onlineCount === "number") options.onlineCount.value = msg.data.onlineCount;
+		if (Array.isArray(msg.data.memberList)) options.memberList.value = msg.data.memberList;
 		if (labEnabled()) {
 			labMark(LAB_MARK_DELTA_META);
 			labSpanStart(LAB_SPAN_DELTA_REPLAY);
