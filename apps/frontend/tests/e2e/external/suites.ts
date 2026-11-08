@@ -1086,8 +1086,14 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 		const secondStrokeRegion = roiAround(730, 350);
 		await pressUndo(pageB.page);
 		const [undoneA, undoneB, preservedA, preservedB] = await Promise.all([
-			waitForCanvasRegionBlank(pageA.page, secondStrokeRegion),
-			waitForCanvasRegionBlank(pageB.page, secondStrokeRegion),
+			waitForCanvasRegionBlank(pageA.page, secondStrokeRegion).catch(async (error: Error) => {
+				await saveCanvasPng(pageA.page, path.join(dir, "undo-failed-observer-a.png"), secondStrokeRegion).catch(() => {});
+				throw new Error(`undo on observer A: ${error.message}`);
+			}),
+			waitForCanvasRegionBlank(pageB.page, secondStrokeRegion).catch(async (error: Error) => {
+				await saveCanvasPng(pageB.page, path.join(dir, "undo-failed-client-b.png"), secondStrokeRegion).catch(() => {});
+				throw new Error(`undo on drawing client B: ${error.message}`);
+			}),
 			waitForVisibleScreenshotContent(pageA.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
 			waitForVisibleScreenshotContent(pageB.page, { roi: firstStrokeRegion, timeoutMs: 3000 }),
 		]);
