@@ -23,6 +23,7 @@ tests/reports/
 tests/.tmp/
 # Vitest browser mode writes failure screenshots/attachments into the test tree.
 .vitest-attachments/
+.codex-attachments/
 apps/*/tests/**/__screenshots__/
 
 # Local databases and benchmark scratch data. Benchmark runs can leave a
