@@ -134,7 +134,7 @@ if (outIndex >= 0) {
 }
 
 if (checkMode) {
-	const current = existsSync(catalogPath) ? readFileSync(catalogPath, "utf8") : "";
+	const current = existsSync(catalogPath) ? readFileSync(catalogPath, "utf8").replace(/\r\n/g, "\n") : "";
 	if (current !== text) {
 		console.error("[lab-inventory] catalog is stale; run `npm run lab:inventory` and commit tests/catalog/module-obligations.json");
 		process.exit(1);
