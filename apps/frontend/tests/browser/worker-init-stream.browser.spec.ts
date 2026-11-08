@@ -6,6 +6,7 @@ import type { SelectionState } from "../../src/utils/editorTypes";
 import type { RemoteCursor } from "../../src/utils/type";
 import { ctx } from "../../src/service/canvas";
 import { createWhiteboardSession } from "../../src/service/whiteboardSession";
+import { createRenderWorkerBridge } from "../../src/service/renderWorkerBridge";
 
 const WIDTH = 320;
 const HEIGHT = 240;
@@ -147,7 +148,7 @@ describe("canvas worker init render stream", () => {
 	});
 
 	if (typeof HTMLCanvasElement.prototype.transferControlToOffscreen !== "function") {
-		it("uses the mounted 2D canvas when worker canvas transfer is unavailable", () => {
+		it("uses the mounted 2D canvas and decodes the requested page without canvas transfer", async () => {
 			const canvas = document.createElement("canvas");
 			const uiCanvas = document.createElement("canvas");
 			const session = createWhiteboardSession({
@@ -160,13 +161,25 @@ describe("canvas worker init render stream", () => {
 				connect: () => {}, disconnect: () => {}, setTool: () => {}, undo: () => {}, redo: () => {},
 				goToPage: () => {}, requestRender: () => {}, requestOverlayRender: () => {},
 			});
+			let resolvePoints!: (points: Array<{ pageId: number }>) => void;
+			const decoded = new Promise<Array<{ pageId: number }>>((resolve) => { resolvePoints = resolve; });
+			const bridge = createRenderWorkerBridge({ onMainPoints: resolvePoints });
 			try {
 				session.mountCanvas({ canvas, uiCanvas });
 				expect(ctx.value).not.toBeNull();
 				ctx.value!.fillStyle = "#000000";
 				ctx.value!.fillRect(0, 0, 1, 1);
 				expect(ctx.value!.getImageData(0, 0, 1, 1).data[3]).toBe(255);
+				bridge.init();
+				bridge.beginInitRenderStream(1);
+				bridge.appendInitRenderBinaryChunk(
+					{ snapshotVersion: 1, chunkIndex: 0, isLastChunk: true, pointCount: 1, commands: commandDictionary },
+					buildChunk([{ x: 0.5, y: 0.5, p: 0.5, lamport: 1, cmdIndex: 0 }])
+				);
+				bridge.finishInitRenderStream();
+				expect((await decoded)[0]?.pageId).toBe(1);
 			} finally {
+				bridge.dispose();
 				session.unmount();
 			}
 		});

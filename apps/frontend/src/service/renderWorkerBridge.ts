@@ -394,15 +394,10 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();
 		if (!worker) return;
-		if (offscreenEnabled) {
-			worker.postMessage({
-				type: "begin-init-stream",
-				data: {
-					pageId,
-				},
-			});
-			return;
-		}
+		worker.postMessage({
+			type: "begin-init-stream",
+			data: { pageId },
+		});
 	};
 
 	const appendInitRenderChunk = (points: FlatPoint[]) => {
@@ -451,7 +446,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const finishInitRenderStream = () => {
-		if (!worker || !offscreenEnabled) return;
+		if (!worker) return;
 		worker.postMessage({ type: "finish-init-stream" });
 	};
 
