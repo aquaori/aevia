@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { page } from "vitest/browser";
 
 const WIDTH = 320;
 const HEIGHT = 240;
@@ -82,18 +83,22 @@ const waitForFrames = () =>
 	});
 
 const countPaintedPixels = async (canvas: HTMLCanvasElement) => {
-	const bitmap = await createImageBitmap(canvas);
+	// Some browsers cannot create an ImageBitmap from a transferred canvas.
+	// Read the visible canvas through the browser screenshot instead.
+	const screenshot = await page.screenshot({ element: canvas, save: false });
+	const image = new Image();
+	image.src = `data:image/png;base64,${screenshot}`;
+	await image.decode();
 	const probe = document.createElement("canvas");
 	probe.width = WIDTH;
 	probe.height = HEIGHT;
 	const context = probe.getContext("2d");
 	if (!context) throw new Error("Canvas2D is unavailable");
-	context.drawImage(bitmap, 0, 0);
-	bitmap.close();
+	context.drawImage(image, 0, 0, WIDTH, HEIGHT);
 	const pixels = context.getImageData(0, 0, WIDTH, HEIGHT).data;
 	let painted = 0;
-	for (let index = 3; index < pixels.length; index += 4) {
-		if (pixels[index]! > 0) painted += 1;
+	for (let index = 0; index < pixels.length; index += 4) {
+		if (pixels[index]! < 245 || pixels[index + 1]! < 245 || pixels[index + 2]! < 245) painted += 1;
 	}
 	return painted;
 };
