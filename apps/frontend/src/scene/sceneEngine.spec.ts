@@ -86,6 +86,18 @@ describe("SceneEngine", () => {
 		expect(engine.getElementBounds("element-a")!.minX).toBeCloseTo(moved!.minX);
 	});
 
+	it("applies the latest history toggle even when operations arrive out of order", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(createOperation);
+		engine.applyOperation(transformOperation);
+		engine.applyOperation({ ...base("undo-create", 4), kind: "history.toggle", payload: { targetHistoryGroupId: "create", enabled: false } });
+		expect(engine.getStats().visibleAtoms).toBe(0);
+
+		engine.applyOperation({ ...base("redo-create", 8), kind: "history.toggle", payload: { targetHistoryGroupId: "create", enabled: true } });
+		engine.applyOperation({ ...base("older-undo-create", 6), kind: "history.toggle", payload: { targetHistoryGroupId: "create", enabled: false } });
+		expect(engine.getStats().visibleAtoms).toBeGreaterThan(0);
+	});
+
 	it("keeps point and glyph atoms interleaved by their own order keys", () => {
 		const engine = new SceneEngine();
 		const pathCreate: SceneOperationEnvelopeV2 = {
