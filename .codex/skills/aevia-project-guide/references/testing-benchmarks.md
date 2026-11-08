@@ -19,7 +19,8 @@ Root:
 - `apps/backend/internal/gateway/surface_catalog_test.go`: Go AST parity checks for backend surfaces and public 501 contracts for reserved V2 routes.
 - `tests/report/feature-obligations.spec.ts`: TypeScript AST parity checks for frontend routes/tools, validates evidence references, and verifies catalog shape.
 - `tests/browser-launch.ts`: selected Playwright browser and Chromium executable resolution.
-- `.github/workflows/ci.yml`: OS/browser correctness matrix; it does not run performance gates.
+- `.github/workflows/quick.yml`: push/PR commit and PR-title lint, changed-file ESLint/gofmt, and task-dependent quick checks.
+- `.github/workflows/ci.yml`: Linux/Chromium core on push/PR; OS/browser matrix is scheduled or manually dispatched. It does not run performance gates.
 - `tests/reports/`: generated report outputs.
 
 Frontend:
@@ -92,7 +93,9 @@ npm run test:report -- --manifest=<run-manifest.json>
 npm run test:perf
 ```
 
-`test:ci` owns one report directory, a source revision and dirty-file hash, an isolated database and service pair, exact expected artifacts, and a terminal result even after a failed step. It runs Go package inventory, Go tests with cross-package coverage, frontend/shared tests with coverage, browser component tests, and the existing correctness-full external suite. Coverage validation checks the complete discovered source/package inventory, not just a nonzero aggregate. Managed browser tests receive a per-run free API port. `test:quick` also runs the backend surface AST contract and records a run-scoped feature-catalog snapshot. `test:full` currently has the same scope as `test:ci`; mutation, fuzz, broader scenario coverage, failure injection, and repeated-run stability gates remain future work.
+`test:ci` owns one report directory, a source revision and dirty-file hash, an isolated database and service pair, exact expected artifacts, and a terminal result even after a failed step. It runs Go package inventory, Go tests with cross-package coverage, frontend/shared tests with coverage, browser component tests, and the CI-required correctness-full external cases. Coverage validation checks the complete discovered source/package inventory, not just a nonzero aggregate. Managed browser tests receive a per-run free API port. `test:quick` also runs the backend surface AST contract and records a run-scoped feature-catalog snapshot. `test:full` adds `go test -race ./...` and a 30-second bounded scene-validator fuzz smoke to `test:ci`; race needs a working host CGO toolchain. Those steps are configured, not automatically proven to pass: inspect the current run's manifest/report. Mutation, broader scenario coverage and repeated-run stability gates remain future work.
+
+For pre-commit checks, follow `.codex/AGENTS.md` as well as this reference. `test:ci` does not substitute for the separate changed-file ESLint/gofmt step in `quick.yml`; `scripts/ci-changed.mjs` compares commits, not uncommitted edits. If a Go test reads a shared fixture outside the Go module, use `go test -count=1` for the affected package after changing that fixture so stale cached results cannot conceal a mismatch. On hosted failure, inspect the failing run's complete `backend/go-tests.jsonl` and report, not only the last console lines; expected error logs may belong to passing fault-injection tests.
 
 Current coverage output is measurement, not a percentage threshold gate. The managed frontend/shared report is bound to an explicit executable-source inventory, and Go coverage must match the exact package inventory from the same run. The requested 99% per-module targets are not achieved. The earlier 50.7% Go figure used a different aggregation scope from the managed `-coverpkg=./...` profile; do not compare those values as a trend until the metric definitions are aligned.
 
@@ -135,24 +138,9 @@ Run direct runner commands from `apps/frontend`, because `config.ts` builds path
 
 ## Benchmark Database Hygiene
 
-Every performance case seeds its history through the protocol driver, so the
-backend database grows with each run: a full matrix at `--scales=...,100000`
-adds millions of points. Past roughly 200 MB the backend starts returning
-`HTTP 500` on `create-room` and `ETIMEDOUT`, which surfaces as unrelated-looking
-case failures.
+Performance runs can seed millions of points. Use a dedicated throwaway database and reset it between comparable runs; never remove the user's development database. Managed boundary steps use isolated services and reset their own database. The standalone external `runner.ts` does not reset its backend database.
 
-Reset the database before each measured run, and point the backend at a
-throwaway file rather than the dev one:
-
-```powershell
-$env:DB_PATH = "<repo>\data\whiteboard-bench.sqlite"
-Remove-Item "<repo>\data\whiteboard-bench.sqlite*" -Force
-```
-
-`npm run benchmark:go` does this automatically (and `-- --clean` reclaims the
-space without running a benchmark). The standalone `runner.ts` does not, so a
-before/after comparison must reset between the two sides or the second run is
-measured against a slower backend.
+The root command is `npm run benchmark:backend`, backed by `scripts/benchmark-backend.mjs`; its default removes the benchmark database and SQLite sidecars before starting, `-- --keep-db` retains them, and `-- --clean` only removes them. The removal target is computed under `<repo>/data` using the basename of `GO_BENCH_DB_PATH`, `GO_BACKEND_DB_PATH`, or `DB_PATH`; the launched backend uses the configured path. Inspect both resolved paths before running and use a dedicated basename, because an existing file under `<repo>/data` may be removed. Do not assume `--clean` is read-only.
 
 ## Baseline Comparability
 
@@ -160,10 +148,9 @@ measured against a slower backend.
 recording the exact command, matrix setting, run/warmup counts and scales it was
 produced with. Absolute timings depend on host, browser build and viewport, so
 only compare a run against a baseline produced the same way on the same machine.
-Re-baseline with `benchmark:external:set-baseline`, then regenerate budgets with
-`node scripts/regen-budgets.mjs`.
+Baseline changes and `node scripts/regen-budgets.mjs` need an independently justified and authorized reason; never use them to make a failing run pass.
 
-Current provenance: re-baselined on 2026-10-31 from run `928f2f5b` (one of three
+Historical provenance: re-baselined on 2026-10-31 from run `928f2f5b` (one of three
 successful nightly runs at `982f752` on the Windows dev host; it was the candidate
 closest to the cross-run median), with budgets regenerated at 100% headroom. On a
 noisy host the baseline comparison stays advisory: a fresh validation matrix run
@@ -182,6 +169,7 @@ Lab profiles always write a v2 run manifest, fail-closed evidence, and a lab rep
 | `single` | `npm run test:single -- --only=file:<path>` / `--since=<git-ref>` | 单点：只跑刚改动的测试目标，不写基线/历史/latest | off |
 | `smoke` | `npm run test:smoke` | catalog-check + 四个 vitest project + correctness-smoke external | off |
 | `ci` | `npm run test:ci` | 与旧 CI 证据链一致（build/vet/go test/coverage/browser/correctness-full）+ 采集门禁 | `--perf=request` 可选，只产 `perf-request.json` |
+| `full` | `npm run test:full` | ci 核心 + Go race + 30 秒 scene-validator fuzz；以当次报告为准 | off |
 | `nightly` | `npm run test:nightly` | ci 全量 + 性能（standard/resilience 各一轮 + boundary 三个 case 各自独立重置库并重启服务）+ race/fuzz + 模块债务清单 | on |
 
 Nightly probes `go test -race` once while building the plan: hosts without a usable CGO toolchain omit that step with a
@@ -296,7 +284,7 @@ pipeline view served from the runner process itself.
 
 ## Verification
 
-For benchmark harness script changes, use the smallest direct run that exercises the changed path. If local frontend/backend are not running, start them carefully and remember backend dev resets the DB.
+For benchmark harness script changes, use the smallest direct run that exercises the changed path. If local frontend/backend are not running, start them carefully with an isolated database; normal `dev:backend` uses its configured database and does not itself reset it.
 
 For report aggregation changes:
 

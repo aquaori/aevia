@@ -68,13 +68,11 @@ Replay emits `delta-replay-meta`, then the original event envelopes, then
 `delta-replay-complete`. The client treats `delta-replay-meta` as its
 connection-established signal, so any new resume path must keep sending it.
 
-Join distinguishes current, contiguous retained delta, and snapshot recovery against the authoritative room sequence. Stream enqueue failure aborts the connection independently of the outbound queue; never send a success terminal after a failed frame. Duplicate immutable writes are acknowledged only when the trusted user and operation match and the original durable sequence is available.
+Join distinguishes current, contiguous retained delta, and snapshot recovery against the authoritative room sequence. `handleJoin` enqueues the resume stream while the actor owns room ordering. Stream enqueue failure aborts the connection independently of the outbound queue; never send a success terminal after a failed frame. Duplicate immutable writes are acknowledged only when the trusted user and operation match and the original durable sequence is available.
 
 ## Limits and Trust
 
-- Payload limits are enforced on **both** transports: `validateIncoming` for JSON
-  and `validateIncomingBinary` for decoded binary frames. Binary carries most
-  `cmd-update` traffic, so a limit applied only to JSON is not applied at all.
+- Payload limits apply to JSON and binary inputs. Legacy realtime frames use `validateIncomingBinary`; negotiated V2 append frames are decoded by `internal/protocol/scene_append.go` and enter the normal JSON validation, rate-limit and actor path. Legacy `cmd-update` remains a rejected V1 write, not the V2 drawing path.
 - `clientIPResolver` ignores `X-Forwarded-For` unless `TRUST_PROXY_HEADERS=1`, and
   honours `TRUSTED_PROXIES` as the trust boundary. Per-IP limits are meaningless
   without this.
@@ -89,7 +87,7 @@ Join distinguishes current, contiguous retained delta, and snapshot recovery aga
 
 `internal/gateway/scene_validation.go` is the V2 write boundary. It validates the root schema, trusted identity, envelope equality, operation kind, recipe, matrix, box, points, erasure intervals, text patches, and clear order key before the room actor persists anything. Unsupported versions return `UPGRADE_REQUIRED`; unsupported recipes return `UNSUPPORTED_RECIPE`. Keep geometry, text layout, hit testing, and clipping out of Go—the backend only validates, sequences, persists, and broadcasts explicit operation results.
 
-`PagePointIndex` intentionally indexes only legacy path points for initialization compatibility. V2 scene operations are delivered through command chunks and compiled client-side; do not add a backend region-render API or duplicate client spatial indexing here.
+`PagePointIndex` indexes legacy paths and V2 path create/append samples via `domain.ScenePathFragmentFromCommand`. During startup it first collects create metadata, then indexes fragments; this is a render-stream projection, not the authoritative scene fold. V2 command chunks remain necessary for transforms, erasures, history and other semantics. Do not duplicate client scene geometry or spatial indexing in Go.
 
 `State.ClearBefore` is the effective per-page clear watermark. Both materialized snapshots and `SendLiveInitStream`'s direct index stream must apply it to render points and command chunks: keep the effective `page.clear` marker and operations after it, but never return commands or points before it. The live path must filter while iterating the index so the client can still paint chunks progressively without buffering the complete scene. When `history.toggle` disables that clear group, the watermark disappears and a forced current-page reload may return the restored history again. Filtering only render points is insufficient because a client could otherwise replay pre-clear V2 commands during init or resync.
 
@@ -98,8 +96,9 @@ Join distinguishes current, contiguous retained delta, and snapshot recovery aga
 `protocol.EncodeRenderChunk` returns an error instead of silently narrowing the
 per-chunk command index into its `uint16` field. `config.MaxRenderChunkPoints`
 keeps `INIT_FLAT_POINT_CHUNK_SIZE` inside the indexable range, since a chunk can
-never hold more distinct commands than points. Callers in `stream_send.go` send
-`resync.required` on encode failure rather than shipping mis-attributed points.
+never hold more distinct commands than points. Callers in `stream_send.go` attempt
+`resync.required` and abort the stream on encode failure rather than shipping
+mis-attributed points; the abort must work even if the outbound queue is full.
 
 ## Session Epoch
 

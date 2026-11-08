@@ -11,8 +11,8 @@ Use this skill when running or changing Aevia tests, E2E suites, coverage, repor
 
 - `npm run test:doctor`: verify Node, Git, Go, dependencies, and the selected Playwright browser.
 - `npm run test:quick`: run the backend HTTP/WS/scene surface inventory contract, explicit V2 rejection checks, shared/frontend unit and module suites, and report-contract tests. The backend catalog is not a complete product-feature inventory; this is not full regression evidence.
-- `npm run test:ci`: run build, Go vet/tests/coverage, frontend/shared coverage tests, browser component tests, and the existing full correctness E2E suite in managed isolation.
-- `npm run test:full`: currently uses the same profile as `test:ci`; it is not yet a broader fuzz, mutation, or device matrix.
+- `npm run test:ci`: run build, Go vet/tests/coverage, frontend/shared coverage tests, browser component tests, and the CI-required subset of correctness-full E2E cases in managed isolation.
+- `npm run test:full`: the `test:ci` plan plus `go test -race ./...` and a 30-second bounded scene-validator fuzz smoke. Race requires a working host CGO toolchain; inspect the current run manifest/report before claiming either step passed. It is not a mutation or device matrix.
 - `npm run test:replay -- --run-id=<uuid>`: rerun a managed profile only when the current source revision and dirty-file fingerprint exactly match the recorded run. This reruns the profile; it does not replay a captured random seed or an individual operation sequence.
 - `npm run test:report -- --manifest=<path>`: aggregate only the explicitly named run manifest. In PowerShell, use `npm.cmd run test:report -- --manifest=<path>` so the npm shim forwards the option. Never use `latest` or a historical report as evidence for another run.
 - `npm run test:perf`: run the existing local external benchmark harness. Its collection and thresholds are not yet calibrated to the new evidence contract; do not use it as a CI gate or claim a verified performance regression from it.
