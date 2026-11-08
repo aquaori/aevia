@@ -6,6 +6,24 @@ import { captureLabSnapshot, installLabRuntime, trackLabPage } from "./lab/insta
 
 const pageSockets = new WeakMap<Page, Set<PlaywrightWebSocket>>();
 
+export const observeUndoDispatch = (page: Page) => {
+	const sockets = pageSockets.get(page);
+	let sent = false;
+	const onFrame = ({ payload }: { payload: string | Buffer }) => {
+		if (typeof payload !== "string") return;
+		try {
+			const message = JSON.parse(payload) as { type?: string; data?: { cmd?: { sceneOperation?: { kind?: string; payload?: { enabled?: boolean } } } } };
+			const operation = message.data?.cmd?.sceneOperation;
+			if (message.type === "push-cmd" && operation?.kind === "history.toggle" && operation.payload?.enabled === false) sent = true;
+		} catch { /* Ignore frames that are not JSON commands. */ }
+	};
+	for (const socket of sockets ?? []) socket.on("framesent", onFrame);
+	return () => {
+		for (const socket of sockets ?? []) socket.off("framesent", onFrame);
+		return sockets?.size ? sent : null;
+	};
+};
+
 export const waitForPageChangeComplete = (page: Page, timeoutMs = 10000): Promise<void> => {
 	const sockets = pageSockets.get(page);
 	if (!sockets?.size) return Promise.reject(new Error("page-change observer has no WebSocket"));
