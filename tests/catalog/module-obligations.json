@@ -386,7 +386,8 @@
       "id": "frontend:apps/frontend/src/service/whiteboardSession.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/whiteboardSession.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/tests/browser/worker-init-stream.browser.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/states/roomEditorState.ts",
@@ -450,7 +451,8 @@
       "id": "frontend:apps/frontend/src/utils/editorTypes.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/utils/editorTypes.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/tests/browser/worker-init-stream.browser.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/utils/geometry.ts",

@@ -28,6 +28,7 @@ Frontend:
 - `apps/frontend/tests/bench/dirty-replay.bench.ts`: 10k/100k fixed-region, long-stroke, and dense-hotspot SceneEngine queries.
 - `apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts`: real Canvas byte comparison between dirty and full replay.
 - `apps/frontend/tests/browser/room-pagination.browser.spec.ts`: pagination browser spec.
+- `apps/frontend/tests/browser/worker-init-stream.browser.spec.ts`: tests worker initialization when canvas transfer is available; otherwise it tests the mounted main-thread 2D fallback. The worker path is not covered on browsers without canvas transfer.
 - `apps/frontend/tests/e2e/README.md`: notes that the E2E files are AI-generated and test-only.
 - `apps/frontend/tests/e2e/external/`: current external E2E and benchmark harness.
 

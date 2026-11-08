@@ -699,7 +699,7 @@ self.onmessage = (event: MessageEvent) => {
 		// have already provided first paint. This does not gate progressive display.
 		const paintedRefs = renderFullScene();
 		applyPendingInitSceneOperations();
-		markWorkerRenderComplete(paintedRefs, "init-stream-final");
+		if (mainCtx) markWorkerRenderComplete(paintedRefs, "init-stream-final");
 		return;
 	}
 
