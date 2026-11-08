@@ -25,13 +25,14 @@ $topics = @{
     backend = @{
         references = @("references/backend.md", "references/protocol.md")
         files = @(
-
-
+            "apps/backend/internal/room/actor.go",
             "apps/backend/internal/room/events.go",
-            "apps/backend/internal/gateway/scene_validation.go"
+            "apps/backend/internal/room/stream_send.go",
+            "apps/backend/internal/gateway/scene_validation.go",
+            "apps/backend/internal/gateway/ws_messages.go"
         )
         searches = @("rg `"cmd-|init-|page-change|join-room`" apps/backend/internal")
-        verify = @("cmd /c npm run test:integration")
+        verify = @("cmd /c npm run test:go", "cmd /c npm run test:go:vet")
     }
     protocol = @{
         references = @("references/protocol.md")
@@ -41,7 +42,9 @@ $topics = @{
             "packages/shared/src/types/scene.ts",
             "packages/shared/src/protocol/sceneProtocol.ts",
             "apps/frontend/src/service/realtimeBinary.ts",
-            "apps/backend/internal/protocol/realtime.go"
+            "apps/backend/internal/protocol/realtime.go",
+            "apps/backend/internal/protocol/scene_append.go",
+            "apps/backend/internal/gateway/ws_messages.go"
         )
         searches = @("rg `"Command|FlatPoint|cmd-update|mouseMove`" apps packages")
         verify = @("cmd /c npm run test:unit", "cmd /c npm run test:integration")
@@ -60,7 +63,7 @@ $topics = @{
             "tests/run-system.ts"
         )
         searches = @("rg `"performance-external|correctness-smoke|baseline|report-dir`" apps/frontend/tests/e2e/external tests/report")
-        verify = @("npm run test:perf", "npm run test:quick")
+        verify = @("npm run test:quick")
     }
     tests = @{
         references = @("references/testing-benchmarks.md")
@@ -88,6 +91,10 @@ $topics = @{
         files = @(
             "apps/frontend/src/service/roomCollabTransport.ts",
             "apps/frontend/src/service/collabMessageDispatcher.ts",
+            "apps/backend/internal/gateway/ws_messages.go",
+            "apps/backend/internal/protocol/scene_append.go",
+            "apps/backend/internal/room/actor.go",
+            "apps/backend/internal/room/stream_send.go",
             "apps/backend/internal/room/events.go"
         )
         searches = @("rg `"WebSocket|Sec-WebSocket-Protocol|cmd-update|mouseMove`" apps")
@@ -106,8 +113,6 @@ $topics = @{
     auth = @{
         references = @("references/backend.md", "references/frontend.md")
         files = @(
-
-
             "apps/frontend/src/service/sessionApi.ts",
             "apps/frontend/src/store/userStore.ts"
         )

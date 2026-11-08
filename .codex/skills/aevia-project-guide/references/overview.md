@@ -46,6 +46,9 @@ npm run test:bench      Vitest micro bench project
 npm run test:e2e:smoke  frontend external correctness-smoke suite
 npm run test:benchmark  frontend external performance-external suite
 npm run test:report     aggregate reports
+npm run test:quick      managed fast catalog and deterministic frontend/shared checks
+npm run test:ci         managed correctness and coverage evidence
+npm run test:full       CI profile plus Go race and bounded fuzz smoke
 npm run test:smoke      managed smoke profile: catalog + vitest projects + correctness-smoke external
 npm run test:single     managed single-point run (--only=<selector> / --since=<git-ref>)
 npm run test:nightly    managed nightly profile: correctness + 4-environment performance matrix
@@ -53,7 +56,7 @@ npm run lab:inventory   regenerate tests/catalog/module-obligations.json (add --
 npm run lab:serve       local lab report server with one-click rerun
 ```
 
-Use the smallest relevant command. Do not assume `npm run test` is cheap; it chains build, Vitest, E2E smoke, benchmark, and report aggregation.
+Use focused checks during development and follow `.codex/AGENTS.md` for the pre-commit workflow. `npm run test` starts the interactive runner, which can select expensive build, E2E and benchmark profiles; do not assume it is cheap.
 
 ## Environment Defaults
 

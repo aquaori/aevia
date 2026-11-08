@@ -14,7 +14,7 @@ Use this skill as the narrow entry point for project knowledge. Do not load ever
 3. Use `scripts/context.ps1` when you want a concise topic-to-files map without loading a reference.
 4. Inspect only the files named by the reference or script first.
 5. Run the task-shaped verification command from the reference.
-6. If you learn durable project knowledge, update the matching reference and `references/index.md`.
+6. After each completed request, check whether the work changed or revealed stale durable project knowledge. Update the smallest matching reference when needed; update `references/index.md` when reference topics or paths change. If nothing durable changed, no documentation edit is needed.
 
 ## Topic Map
 

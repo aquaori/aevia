@@ -43,6 +43,8 @@ comparison inline:
 Never use `localeCompare` or `toLocaleLowerCase` here — both are locale-sensitive
 and would let two clients order the same pair differently.
 
+ASCII IDs use a fast string comparison; `compareCommandIds` compares legacy non-ASCII IDs by UTF-8 bytes to match Go. The shared `__fixtures__/order-vectors.json` is read by both Go and TypeScript tests; fixture changes can be masked by Go's test cache, so use `go test -count=1 ./internal/domain` from `apps/backend`.
+
 Scene atoms use `(lamport, opId byte order, sourceIndex, subIndex)`. Use `compareRenderOrder`/`sceneOperationOrderKey`; do not derive a tool-specific z-index. Points, glyphs, shapes, and plugin recipes share this order.
 
 ## V2 Mutation Rules
@@ -51,7 +53,7 @@ Scene atoms use `(lamport, opId byte order, sourceIndex, subIndex)`. Use `compar
 - Transform, erase, delete, clear, undo, and redo append operations; they never replace stored commands or points.
 - The Go gateway requires matching command/operation IDs, identity, room/page, Lamport value, recipe capability, numeric ranges, and `schemaVersion: 2`.
 - V1 path commands remain readable through the SceneEngine adapter. V1 mutation messages are rejected with `UPGRADE_REQUIRED`.
-- New scene identifiers use ASCII letters, digits, `_`, `-`, or `:`. A negotiated `scene-append-v2-binary` client-to-server frame carries append point fields as float64; decoded operations use the normal JSON validation and persistence path, and outgoing broadcasts remain JSON. `VITE_SCENE_APPEND_BINARY=0` disables its client use.
+- New operation/history IDs, created element IDs and inserted character IDs use ASCII letters, digits, `_`, `-`, or `:`; references to legacy non-ASCII IDs remain accepted. A negotiated `scene-append-v2-binary` client-to-server frame carries append point fields as float64; decoded operations use the normal JSON validation and persistence path, and outgoing broadcasts remain JSON. `VITE_SCENE_APPEND_BINARY=0` disables its client use.
 - A protocol-only client must take its trusted `userId` from WebSocket `init-meta`; `/join-room` does not expose the token's user ID.
 
 ## Coupling Rules
@@ -66,11 +68,14 @@ Binary real-time transport:
 
 - `apps/frontend/src/service/realtimeBinary.ts`
 - `apps/backend/internal/protocol/realtime.go`
+- `apps/backend/internal/protocol/scene_append.go` and `apps/backend/internal/gateway/ws_messages.go`: V2 append decode and normal validation dispatch.
 
 Binary init/page-change render chunks:
 
 - `apps/backend/internal/protocol/render_chunk.go`
 - `apps/frontend/src/workers/canvasWorker.ts`
+
+These render chunks encode x/y/pressure as float32 and Lamport as float64; V2 append writes use float64 for all four fields. Preserve that distinction when comparing authoritative points with hydrated preview geometry.
 
 Page-change streaming:
 
