@@ -91,11 +91,6 @@ func TestOrderVectorsFixtureShape(t *testing.T) {
 			if item.ID == "" {
 				t.Fatalf("command vector item is missing an id: %+v", vector)
 			}
-			for i := 0; i < len(item.ID); i++ {
-				if item.ID[i] > 0x7f {
-					t.Fatalf("fixture ids must stay ASCII so JS code-unit order matches Go byte order: %q", item.ID)
-				}
-			}
 		}
 	}
 	for _, vector := range fixture.RenderKeys {

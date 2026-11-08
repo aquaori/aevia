@@ -60,7 +60,7 @@ export const commandToProtocol = <T extends Partial<Command>>(command: T): T => 
  */
 export const compareCommandIds = (leftId: string, rightId: string): number => {
 	if (leftId === rightId) return 0;
-	if (/[^\x00-\x7f]/.test(leftId) || /[^\x00-\x7f]/.test(rightId)) {
+	if (/\P{ASCII}/u.test(leftId) || /\P{ASCII}/u.test(rightId)) {
 		const encoder = new TextEncoder();
 		const left = encoder.encode(leftId);
 		const right = encoder.encode(rightId);
