@@ -4,7 +4,7 @@ import { toast } from "vue-sonner";
 import type { Command, EditorTool, FlatPoint, Point, RemoteCursor } from "@collaborative-whiteboard/shared";
 import { createCollabMessageDispatcher } from "./collabMessageDispatcher";
 import { useRoomSessionEmitHook } from "./roomSessionContext";
-import { commandToProtocol, statePageToProtocol } from "@collaborative-whiteboard/shared";
+import { commandToProtocol, normalizeCommandFromProtocol, statePageToProtocol } from "@collaborative-whiteboard/shared";
 import type {
 	InitRenderChunkMetaPayload,
 	PageChangeRenderChunkMetaPayload,
@@ -12,6 +12,7 @@ import type {
 import {
 	decodeRealtimeBinaryMessage,
 	encodeCmdUpdateBinary,
+	encodeSceneAppendBinary,
 	encodeMouseMoveBinary,
 	hasRealtimeBinaryMagic,
 } from "./realtimeBinary";
@@ -146,6 +147,18 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	// that ignores lastRoomSeq).
 	const enableDeltaReplay = import.meta.env.VITE_ENABLE_DELTA_REPLAY !== "0";
 	let lastRoomSeq = 0;
+	let snapshotPending = false;
+	let sceneAppendBinary = false;
+	const appliedSequences = new Set<number>();
+	const pendingSceneOperations = new Map<string, unknown>();
+	let initLocalCommands: Command[] = [];
+	const retryPendingSceneOperations = () => {
+		if (socket.value?.readyState !== WebSocket.OPEN) return;
+		for (const data of pendingSceneOperations.values()) socket.value.send(JSON.stringify({ type: "push-cmd", data }));
+	};
+	const advanceRoomSeq = () => {
+		while (appliedSequences.delete(lastRoomSeq + 1)) lastRoomSeq += 1;
+	};
 	let pendingRenderBinaryChunk:
 		| {
 				kind: "init";
@@ -483,12 +496,29 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			}
 			scheduleSessionRenewal();
 		},
+		onInitSnapshotCommitted: (snapshotVersion) => {
+			lastRoomSeq = snapshotVersion;
+			snapshotPending = false;
+			for (const seq of appliedSequences) if (seq <= lastRoomSeq) appliedSequences.delete(seq);
+			advanceRoomSeq();
+			if (appliedSequences.size > 0) socket.value?.close();
+			retryPendingSceneOperations();
+			initLocalCommands = [];
+		},
+		getInitLocalCommands: () => initLocalCommands,
+		onInitStreamInvalid: () => {
+			lastRoomSeq = 0;
+			appliedSequences.clear();
+			socket.value?.close();
+		},
 	});
 
 	const updateLastRoomSeq = (payload: unknown) => {
 		const roomSeq = Number((payload as { roomSeq?: unknown } | undefined)?.roomSeq ?? NaN);
-		if (Number.isFinite(roomSeq) && roomSeq > lastRoomSeq) {
-			lastRoomSeq = roomSeq;
+		if (Number.isSafeInteger(roomSeq) && roomSeq > lastRoomSeq) {
+			appliedSequences.add(roomSeq);
+			if (!snapshotPending) advanceRoomSeq();
+			if (appliedSequences.size > 4096 || (!snapshotPending && appliedSequences.size > 0)) socket.value?.close();
 		}
 	};
 
@@ -594,7 +624,16 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			return true;
 		}
 
-		socket.value.send(JSON.stringify({ type, data: outgoing }));
+		if (type === "push-cmd" && sceneAppendBinary && outgoing?.cmd?.sceneOperation?.kind === "element.append") {
+			socket.value.send(encodeSceneAppendBinary(outgoing));
+		} else {
+			socket.value.send(JSON.stringify({ type, data: outgoing }));
+		}
+		if (type === "push-cmd" && outgoing?.cmd?.type === "scene-op" && outgoing.cmd.id) {
+			pendingSceneOperations.set(outgoing.cmd.id, JSON.parse(JSON.stringify(outgoing)));
+			const localCmd = (data as OutgoingPayload)?.cmd;
+			if (snapshotPending && localCmd) initLocalCommands.push(localCmd);
+		}
 		return true;
 	};
 
@@ -650,6 +689,9 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				try {
 					if (typeof event.data === "string") {
 						const msg = JSON.parse(event.data);
+                        if (msg.type === "init-meta" || msg.type === "delta-replay-meta") {
+                            sceneAppendBinary = import.meta.env.VITE_SCENE_APPEND_BINARY !== "0" && Array.isArray(msg.data?.capabilities) && msg.data.capabilities.includes("scene-append-v2-binary");
+                        }
 
 						if (labEnabled()) {
 							labMark(LAB_MARK_WS_MESSAGE, {
@@ -658,6 +700,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 						}
 
 						if (msg.type === "init-meta" && typeof window !== "undefined") {
+							snapshotPending = true;
+							initLocalCommands = Array.from(pendingSceneOperations.values(), (data) => (data as OutgoingPayload).cmd).filter((cmd): cmd is Command => Boolean(cmd)).map(normalizeCommandFromProtocol);
+							lastRoomSeq = 0;
+							appliedSequences.clear();
 							(window as Window & { __aeviaInitStreamStartedAt?: number }).__aeviaInitStreamStartedAt =
 								performance.now();
 						}
@@ -687,8 +733,14 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							handleResyncRequired(msg.data);
 							return;
 						}
-						if (enableDeltaReplay) updateLastRoomSeq(msg.data);
 						dispatcher.handleMessage(msg);
+						if (msg.type === "ack.accepted" || msg.type === "op-rejected") {
+							const id = msg.data?.opId ?? msg.data?.cmdId;
+							if (typeof id === "string") pendingSceneOperations.delete(id);
+							if (msg.type === "op-rejected" && typeof id === "string") initLocalCommands = initLocalCommands.filter((command) => command.id !== id);
+						}
+						if (msg.type === "delta-replay-complete") retryPendingSceneOperations();
+						if (enableDeltaReplay && (msg.type === "push-cmd" || msg.type === "ack.accepted" || msg.type === "ack.committed" || msg.type === "cmd-page-add" || msg.type === "delete-cmd" || msg.type === "undo-cmd" || msg.type === "redo-cmd")) updateLastRoomSeq(msg.data);
 						return;
 					}
 
@@ -699,8 +751,8 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 								labMark(LAB_MARK_WS_MESSAGE, { type: msg.type });
 							}
 							emitHook("collab:message", { type: msg.type, payload: msg.data });
-							if (enableDeltaReplay) updateLastRoomSeq(msg.data);
 							dispatcher.handleMessage(msg);
+							if (enableDeltaReplay) updateLastRoomSeq(msg.data);
 							return;
 						}
 
@@ -734,6 +786,9 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 						event.data
 					);
 				} catch (error) {
+					lastRoomSeq = 0;
+					appliedSequences.clear();
+					socket.value?.close();
 					console.error(
 						"[WebSocket Message Error]: Failed to parse or process message.",
 						error,
@@ -744,6 +799,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 			socket.value.onclose = () => {
 				pendingRenderBinaryChunk = null;
+                sceneAppendBinary = false;
 				resetCollabPressurePolicy();
 				clearSessionRenewTimer();
 				socket.value = null;

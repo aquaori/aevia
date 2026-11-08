@@ -1,7 +1,15 @@
 {
 	"schemaVersion": 1,
-	"description": "Cross-runtime ordering golden vectors. ASCII ids only: non-ASCII ids are excluded because the Go backend compares UTF-8 bytes while the frontend compares UTF-16 code units, and those orders are not guaranteed to agree. commands exercises compareCommandOrder (== domain.CompareFlatPoint with PointIndex 0); renderKeys exercises compareRenderOrder.",
+	"description": "Cross-runtime UTF-8 byte ordering golden vectors for command and render keys, including legacy non-ASCII ids.",
 	"commands": [
+		{
+			"labels": ["\ud800\udc00", "\ue000"],
+			"expectedOrder": ["\ue000", "\ud800\udc00"],
+			"items": [
+				{"id": "\ud800\udc00", "lamport": 1},
+				{"id": "\ue000", "lamport": 1}
+			]
+		},
 		{
 			"labels": ["c3", "a1", "b2"],
 			"expectedOrder": ["a1", "b2", "c3"],

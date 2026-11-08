@@ -11,6 +11,7 @@ type ClientInfo struct {
 	PageID   int
 	Epoch    uint64
 	Send     chan Outbound
+	Abort    func()
 }
 
 type Outbound struct {

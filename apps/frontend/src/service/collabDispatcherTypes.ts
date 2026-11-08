@@ -110,6 +110,9 @@ export interface CollabMessageDispatcherOptions {
 	cancelRejectedOperation?: () => void;
 	notifyRemoteTextPatch?: (elementId: string) => void;
 	onInitConnectionState: () => void;
+	onInitSnapshotCommitted?: (snapshotVersion: number) => void;
+	getInitLocalCommands?: () => Command[];
+	onInitStreamInvalid?: () => void;
 	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;
 }
 

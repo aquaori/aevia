@@ -9,18 +9,24 @@ import (
 	"collaborative-whiteboard/apps/backend/internal/protocol"
 )
 
-func SendInitStream(ch chan Outbound, roomName string, client ClientInfo, result JoinResult) {
-	if len(result.Deltas) > 0 {
-		sendDeltaReplay(ch, result)
+func SendInitStream(out chan Outbound, roomName string, client ClientInfo, result JoinResult) {
+	ch := &streamSender{out: out, abort: client.Abort}
+	if result.InitStreamed {
 		return
 	}
-	if result.InitStreamed {
+	if result.Resume == "current" {
+		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-meta", Data: map[string]any{"capabilities": []string{"scene-append-v2-binary"}, "roomId": result.Room.RoomID, "userId": client.UserID, "userName": client.UserName, "onlineCount": result.Online, "memberList": result.Members, "fromRoomSeq": result.ResumeSeq, "toRoomSeq": result.ResumeSeq, "totalEvents": 0}}})
+		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-complete", Data: map[string]any{"roomSeq": result.ResumeSeq}}})
+		return
+	}
+	if result.Resume == "delta" || len(result.Deltas) > 0 && result.Resume == "" {
+		sendDeltaReplay(ch, result)
 		return
 	}
 	profile := os.Getenv("INIT_PROFILE") == "1"
 	startedAt := time.Now()
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "init-meta", Data: map[string]any{
-		"status": "connected", "userId": client.UserID, "userName": client.UserName,
+		"capabilities": []string{"scene-append-v2-binary"}, "status": "connected", "userId": client.UserID, "userName": client.UserName,
 		"roomId": result.Room.RoomID, "roomName": roomName, "onlineCount": result.Online,
 		"memberList": result.Members, "snapshotVersion": result.Init.SnapshotVersion,
 		"totalPage": result.Init.Meta["totalPage"], "pageId": result.Init.Meta["pageId"],
@@ -29,9 +35,15 @@ func SendInitStream(ch chan Outbound, roomName string, client ClientInfo, result
 	}}})
 	renderStartedAt := time.Now()
 	sendRenderStream(ch, "init", 0, result.Init)
+	if ch.failed {
+		return
+	}
 	renderDuration := time.Since(renderStartedAt)
 	commandsStartedAt := time.Now()
 	sendCommandStream(ch, "init", 0, result.Init)
+	if ch.failed {
+		return
+	}
 	commandsDuration := time.Since(commandsStartedAt)
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "init-complete", Data: map[string]any{"snapshotVersion": result.Init.SnapshotVersion}}})
 	if profile {
@@ -46,7 +58,8 @@ func SendInitStream(ch chan Outbound, roomName string, client ClientInfo, result
 	}
 }
 
-func (b SnapshotBuilder) SendLiveInitStream(ch chan Outbound, state State, client ClientInfo, online int, members [][2]string) {
+func (b SnapshotBuilder) SendLiveInitStream(out chan Outbound, state State, client ClientInfo, online int, members [][2]string) {
+	ch := &streamSender{out: out, abort: client.Abort}
 	profile := os.Getenv("INIT_PROFILE") == "1"
 	startedAt := time.Now()
 	current := normalizePageID(client.PageID, state.Room.TotalPage)
@@ -72,7 +85,7 @@ func (b SnapshotBuilder) SendLiveInitStream(ch chan Outbound, state State, clien
 		},
 	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "init-meta", Data: map[string]any{
-		"status": "connected", "userId": client.UserID, "userName": client.UserName,
+		"capabilities": []string{"scene-append-v2-binary"}, "status": "connected", "userId": client.UserID, "userName": client.UserName,
 		"roomId": state.Room.RoomID, "roomName": state.Room.Name, "onlineCount": online,
 		"memberList": members, "snapshotVersion": snapshotVersion,
 		"totalPage": state.Room.TotalPage, "pageId": current,
@@ -80,9 +93,15 @@ func (b SnapshotBuilder) SendLiveInitStream(ch chan Outbound, state State, clien
 	}}})
 	renderStartedAt := time.Now()
 	sendRenderStreamFromIndex(ch, "init", 0, snapshotVersion, meta, state.Index, renderPageIDs, state.ClearBefore, renderPointCount, renderChunkCount, b.cfg.InitFlatPointChunkSize)
+	if ch.failed {
+		return
+	}
 	renderDuration := time.Since(renderStartedAt)
 	commandsStartedAt := time.Now()
 	sendCommandStreamFromState(ch, "init", 0, snapshotVersion, meta, state.Commands, loaded, state.ClearBefore, commandChunkCount, b.cfg.InitCommandChunkSize)
+	if ch.failed {
+		return
+	}
 	commandsDuration := time.Since(commandsStartedAt)
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "init-complete", Data: map[string]any{"snapshotVersion": snapshotVersion}}})
 	if profile {
@@ -97,34 +116,45 @@ func (b SnapshotBuilder) SendLiveInitStream(ch chan Outbound, state State, clien
 	}
 }
 
-func sendDeltaReplay(ch chan Outbound, result JoinResult) {
-	sendOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-meta", Data: map[string]any{
-		"roomId":      result.Room.RoomID,
-		"fromRoomSeq": result.Deltas[0].RoomSeq,
-		"toRoomSeq":   result.Deltas[len(result.Deltas)-1].RoomSeq,
-		"totalEvents": len(result.Deltas),
+func sendDeltaReplay(ch *streamSender, result JoinResult) {
+	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-meta", Data: map[string]any{
+		"capabilities": []string{"scene-append-v2-binary"},
+		"roomId":       result.Room.RoomID,
+		"fromRoomSeq":  result.Deltas[0].RoomSeq,
+		"toRoomSeq":    result.Deltas[len(result.Deltas)-1].RoomSeq,
+		"totalEvents":  len(result.Deltas),
 	}}})
 	for _, delta := range result.Deltas {
+		if ch.failed {
+			return
+		}
 		if delta.Binary != nil {
-			sendOutbound(ch, Outbound{Binary: delta.Binary})
+			sendStreamOutbound(ch, Outbound{Binary: delta.Binary})
 			continue
 		}
-		sendOutbound(ch, Outbound{JSON: Envelope{Type: delta.Type, Data: delta.Data}})
+		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: delta.Type, Data: delta.Data}})
 	}
-	sendOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-complete", Data: map[string]any{
+	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-complete", Data: map[string]any{
 		"roomSeq": result.Deltas[len(result.Deltas)-1].RoomSeq,
 	}}})
 }
 
-func sendPageChangeStream(ch chan Outbound, stream InitStream) {
+func sendPageChangeStream(out chan Outbound, abort func(), stream InitStream) {
+	ch := &streamSender{out: out, abort: abort}
 	requestID, _ := stream.Meta["requestId"].(int)
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "page-change-meta", Data: withStreamMeta(stream)}})
 	sendRenderStream(ch, "page-change", requestID, stream)
+	if ch.failed {
+		return
+	}
 	sendCommandStream(ch, "page-change", requestID, stream)
+	if ch.failed {
+		return
+	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "page-change-complete", Data: map[string]any{"requestId": requestID, "snapshotVersion": stream.SnapshotVersion, "mode": stream.Meta["mode"]}}})
 }
 
-func sendRenderStream(ch chan Outbound, prefix string, requestID int, stream InitStream) {
+func sendRenderStream(ch *streamSender, prefix string, requestID int, stream InitStream) {
 	metaType := prefix + "-render-meta"
 	doneType := prefix + "-render-done"
 	chunkType := prefix + "-render-chunk-meta"
@@ -134,6 +164,9 @@ func sendRenderStream(ch chan Outbound, prefix string, requestID int, stream Ini
 	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: metaType, Data: data}})
 	for _, chunk := range stream.RenderChunks {
+		if ch.failed {
+			return
+		}
 		commandMap, commands := protocol.BuildRenderDictionary(chunk.Points)
 		frame, err := protocol.EncodeRenderChunk(chunk.Points, commandMap, stream.SnapshotVersion, chunk.ChunkIndex)
 		if err != nil {
@@ -143,6 +176,7 @@ func sendRenderStream(ch chan Outbound, prefix string, requestID int, stream Ini
 			sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "resync.required", Data: map[string]any{
 				"reason": "render-chunk-encode-failed",
 			}}})
+			ch.fail()
 			return
 		}
 		chunkData := map[string]any{
@@ -163,7 +197,7 @@ func sendRenderStream(ch chan Outbound, prefix string, requestID int, stream Ini
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: doneType, Data: done}})
 }
 
-func sendCommandStream(ch chan Outbound, prefix string, requestID int, stream InitStream) {
+func sendCommandStream(ch *streamSender, prefix string, requestID int, stream InitStream) {
 	metaType := prefix + "-commands-meta"
 	doneType := prefix + "-commands-done"
 	chunkType := prefix + "-commands-chunk"
@@ -175,6 +209,9 @@ func sendCommandStream(ch chan Outbound, prefix string, requestID int, stream In
 	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: metaType, Data: data}})
 	for _, chunk := range stream.CommandChunks {
+		if ch.failed {
+			return
+		}
 		chunkData := map[string]any{"snapshotVersion": stream.SnapshotVersion, "chunkIndex": chunk.ChunkIndex, "isLastChunk": chunk.IsLast, "commands": chunk.Commands}
 		if requestID > 0 {
 			chunkData["requestId"] = requestID
@@ -188,7 +225,7 @@ func sendCommandStream(ch chan Outbound, prefix string, requestID int, stream In
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: doneType, Data: done}})
 }
 
-func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snapshotVersion int, meta map[string]any, index *PagePointIndex, pageIDs []int, clearBefore map[int]sceneOrderKey, totalPoints, totalChunks, chunkSize int) {
+func sendRenderStreamFromIndex(ch *streamSender, prefix string, requestID, snapshotVersion int, meta map[string]any, index *PagePointIndex, pageIDs []int, clearBefore map[int]sceneOrderKey, totalPoints, totalChunks, chunkSize int) {
 	metaType := prefix + "-render-meta"
 	doneType := prefix + "-render-done"
 	chunkType := prefix + "-render-chunk-meta"
@@ -199,7 +236,7 @@ func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snaps
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: metaType, Data: data}})
 	encodeFailed := false
 	index.ForEachVisiblePagePointChunk(pageIDs, clearBefore, totalPoints, chunkSize, func(chunk RenderChunk) {
-		if encodeFailed {
+		if encodeFailed || ch.failed {
 			return
 		}
 		commandMap, commands := protocol.BuildRenderDictionary(chunk.Points)
@@ -209,6 +246,7 @@ func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snaps
 			sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "resync.required", Data: map[string]any{
 				"reason": "render-chunk-encode-failed",
 			}}})
+			ch.fail()
 			encodeFailed = true
 			return
 		}
@@ -233,7 +271,7 @@ func sendRenderStreamFromIndex(ch chan Outbound, prefix string, requestID, snaps
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: doneType, Data: done}})
 }
 
-func sendCommandStreamFromState(ch chan Outbound, prefix string, requestID, snapshotVersion int, meta map[string]any, commands map[string]domain.Command, pageIDs []int, clearBefore map[int]sceneOrderKey, totalChunks, chunkSize int) {
+func sendCommandStreamFromState(ch *streamSender, prefix string, requestID, snapshotVersion int, meta map[string]any, commands map[string]domain.Command, pageIDs []int, clearBefore map[int]sceneOrderKey, totalChunks, chunkSize int) {
 	metaType := prefix + "-commands-meta"
 	doneType := prefix + "-commands-done"
 	chunkType := prefix + "-commands-chunk"
@@ -269,6 +307,9 @@ func sendCommandStreamFromState(ch chan Outbound, prefix string, requestID, snap
 	}
 	domain.SortCommands(ordered)
 	for _, cmd := range ordered {
+		if ch.failed {
+			return
+		}
 		chunk = append(chunk, cmd.Snapshot())
 		if len(chunk) >= chunkSize {
 			emit(chunkIndex == totalChunks-1)
@@ -314,9 +355,32 @@ func chunkCount(items, chunkSize int) int {
 	return (items + chunkSize - 1) / chunkSize
 }
 
-func sendStreamOutbound(ch chan Outbound, msg Outbound) bool {
+type streamSender struct {
+	out    chan Outbound
+	abort  func()
+	failed bool
+}
+
+func (ch *streamSender) fail() {
+	if ch.failed {
+		return
+	}
+	ch.failed = true
+	if ch.abort != nil {
+		ch.abort()
+	}
+}
+
+func sendStreamOutbound(ch *streamSender, msg Outbound) bool {
+	if ch.failed {
+		return false
+	}
 	msg.Frozen = true
-	return sendOutbound(ch, msg)
+	if sendOutbound(ch.out, msg) {
+		return true
+	}
+	ch.fail()
+	return false
 }
 
 func withStreamMeta(stream InitStream) map[string]any {

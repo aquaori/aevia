@@ -17,11 +17,13 @@ func (a *Actor) recordAndBroadcast(exclude ClientID, typ string, data map[string
 }
 
 func (a *Actor) ack(client ClientInfo, status string, data map[string]any) {
-	sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "ack." + status, Data: map[string]any{
+	if !sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "ack." + status, Data: map[string]any{
 		"roomSeq": data["roomSeq"],
 		"cmdId":   data["cmdId"],
 		"opId":    data["opId"],
-	}}})
+	}}}) && client.Abort != nil {
+		client.Abort()
+	}
 }
 
 func (a *Actor) validateAppend(client ClientInfo, opType, cmdID string, cmd domain.Command, points []domain.Point, data map[string]any) bool {

@@ -51,6 +51,8 @@ type JoinResult struct {
 	Init         InitStream
 	InitStreamed bool
 	Deltas       []DeltaEvent
+	Resume       string
+	ResumeSeq    uint64
 	Online       int
 	Members      [][2]string
 }

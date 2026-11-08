@@ -47,6 +47,7 @@ export interface SceneOperationValidationResult {
 const isFiniteInteger = (value: unknown) => Number.isInteger(value) && Number.isFinite(value);
 const isFiniteNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value);
 const isNonEmptyString = (value: unknown) => typeof value === "string" && value.length > 0;
+const isSceneId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_:-]{1,256}$/.test(value);
 
 export const validateSceneOperation = (value: unknown): SceneOperationValidationResult => {
 	if (!value || typeof value !== "object") {
@@ -57,11 +58,11 @@ export const validateSceneOperation = (value: unknown): SceneOperationValidation
 		return { ok: false, code: "UPGRADE_REQUIRED", reason: "Scene schema version 2 is required." };
 	}
 	if (
-		!isNonEmptyString(operation.opId) ||
-		!isNonEmptyString(operation.elementId) ||
+		!isSceneId(operation.opId) ||
+		!(operation.kind === "element.create" ? isSceneId(operation.elementId) : isNonEmptyString(operation.elementId)) ||
 		!isNonEmptyString(operation.actorId) ||
 		!isNonEmptyString(operation.roomId) ||
-		!isNonEmptyString(operation.historyGroupId) ||
+		!isSceneId(operation.historyGroupId) ||
 		!isFiniteInteger(operation.pageId) ||
 		(operation.pageId ?? -1) < 0 ||
 		!isFiniteNumber(operation.lamport) ||

@@ -52,14 +52,23 @@ export const commandToProtocol = <T extends Partial<Command>>(command: T): T => 
  *   allocates a string per comparison, which is measurable inside a sort.
  *
  * The Go backend orders flat points with a plain byte comparison of the command
- * id (`domain.CompareFlatPoint`). Comparing raw UTF-16 code units here matches
- * that for the ASCII ids the system generates, and never varies by environment.
+ * id (`domain.CompareFlatPoint`). ASCII ids use the fast string comparison;
+ * older non-ASCII ids are compared by UTF-8 bytes for compatibility.
  *
  * Returns a negative number when `leftId` sorts first, positive when `rightId`
  * sorts first, and 0 only when the ids are identical.
  */
 export const compareCommandIds = (leftId: string, rightId: string): number => {
 	if (leftId === rightId) return 0;
+	if (/[^\x00-\x7f]/.test(leftId) || /[^\x00-\x7f]/.test(rightId)) {
+		const encoder = new TextEncoder();
+		const left = encoder.encode(leftId);
+		const right = encoder.encode(rightId);
+		for (let i = 0; i < Math.min(left.length, right.length); i++) {
+			if (left[i] !== right[i]) return left[i]! - right[i]!;
+		}
+		return left.length - right.length;
+	}
 	return leftId < rightId ? -1 : 1;
 };
 

@@ -94,6 +94,7 @@ const createFixture = () => {
 		cancelRejectedOperation: vi.fn(),
 		notifyRemoteTextPatch: vi.fn(),
 		onInitConnectionState: vi.fn(),
+		onInitStreamInvalid: vi.fn(),
 		emitHook: vi.fn(),
 	};
 
@@ -111,7 +112,7 @@ const createFixture = () => {
 	};
 };
 
-const startInitStream = (fixture: ReturnType<typeof createFixture>) => {
+const startInitStream = (fixture: ReturnType<typeof createFixture>, renderChunks = 1) => {
 	fixture.handlers.handleInitMeta(
 		message("init-meta", {
 			pageId: 0,
@@ -119,7 +120,7 @@ const startInitStream = (fixture: ReturnType<typeof createFixture>) => {
 			totalPage: 1,
 			maxLamport: 5,
 			snapshotVersion: 1,
-			chunkSummary: { totalRenderChunks: 1, totalCommandChunks: 1 },
+			chunkSummary: { totalRenderChunks: renderChunks, totalCommandChunks: 1 },
 		})
 	);
 };
@@ -184,14 +185,14 @@ describe("collab command handlers", () => {
 		expect(useLamportStore().lamport).toBe(6);
 
 		finishInitCommandsStream(fixture);
+		expect(fixture.options.renderCanvas).not.toHaveBeenCalled();
+		fixture.handlers.handleInitComplete(message("init-complete", { snapshotVersion: 1 }));
 		expect(fixture.options.replaceLoadedPageWindow).toHaveBeenCalledWith(
 			[0],
 			expect.arrayContaining([expect.objectContaining({ id: "cmd-1" })])
 		);
 		expect(fixture.options.setInitSceneOperations).toHaveBeenCalled();
 		expect(fixture.options.renderCanvas).toHaveBeenCalledOnce();
-
-		fixture.handlers.handleInitComplete(message("init-complete", { snapshotVersion: 1 }));
 
 		fixture.handlers.handlePushCommand(
 			message("push-cmd", { cmd: createIncomingCommand({ id: "cmd-after-init" }), lamport: 7 }, "normal")
@@ -233,7 +234,7 @@ describe("collab command handlers", () => {
 
 	it("does not finalize the render stream until the first chunk index arrives", () => {
 		const fixture = createFixture();
-		startInitStream(fixture);
+		startInitStream(fixture, 2);
 
 		fixture.handlers.handleInitRenderChunkBinary({
 			snapshotVersion: 1,
@@ -274,6 +275,14 @@ describe("collab command handlers", () => {
 			message("init-render-done", { snapshotVersion: 1, totalChunks: 1 })
 		);
 
+		expect(fixture.options.finishInitRenderStream).not.toHaveBeenCalled();
+	});
+
+	it("rejects a stream whose completion count differs from its snapshot metadata", () => {
+		const fixture = createFixture();
+		startInitStream(fixture);
+		fixture.handlers.handleInitRenderDone(message("init-render-done", { snapshotVersion: 1, totalChunks: 0 }));
+		expect(fixture.options.onInitStreamInvalid).toHaveBeenCalledOnce();
 		expect(fixture.options.finishInitRenderStream).not.toHaveBeenCalled();
 	});
 

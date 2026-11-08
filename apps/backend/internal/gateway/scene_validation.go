@@ -72,7 +72,7 @@ func validateSceneCommand(c *wsClient, typ string, data map[string]any) (string,
 	if !sameNonEmptyString(op["actorId"], c.claims.UserID) || !sameNonEmptyString(op["roomId"], c.claims.RoomID) {
 		return "INVALID_SCENE_OPERATION", "Scene operation identity does not match the room session.", false
 	}
-	if !validID(op["opId"]) || !validID(op["elementId"]) || !validID(op["historyGroupId"]) {
+	if !validID(op["opId"]) || !validReferenceID(op["elementId"]) || !validID(op["historyGroupId"]) || (stringValue(op["kind"]) == "element.create" && !validID(op["elementId"])) {
 		return "INVALID_SCENE_OPERATION", "Scene operation identifiers are missing or invalid.", false
 	}
 	pageID, pageOK := finiteNumber(op["pageId"])
@@ -149,7 +149,7 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 		}
 		for _, raw := range targets {
 			target, ok := raw.(map[string]any)
-			if !ok || !validID(target["elementId"]) || !validMatrix(target["deltaMatrix"]) {
+			if !ok || !validReferenceID(target["elementId"]) || !validMatrix(target["deltaMatrix"]) {
 				return "INVALID_SCENE_OPERATION", "Transform target or matrix is invalid.", false
 			}
 		}
@@ -167,8 +167,8 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 			target, ok := raw.(map[string]any)
 			whole, _ := target["eraseWhole"].(bool)
 			intervals := anySlice(target["intervals"])
-			if !ok || !validID(target["elementId"]) || !validEraseIntervals(target["intervals"]) ||
-				(!whole && (!validID(target["atomId"]) || len(intervals) == 0)) {
+			if !ok || !validReferenceID(target["elementId"]) || !validEraseIntervals(target["intervals"]) ||
+				(!whole && (!validReferenceID(target["atomId"]) || len(intervals) == 0)) {
 				return "INVALID_SCENE_OPERATION", "Erase target intervals are invalid.", false
 			}
 		}
@@ -178,7 +178,7 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 			return "INVALID_SCENE_OPERATION", "Delete targets are empty.", false
 		}
 		for _, id := range ids {
-			if !validID(id) {
+			if !validReferenceID(id) {
 				return "INVALID_SCENE_OPERATION", "Delete target id is invalid.", false
 			}
 		}
@@ -189,13 +189,16 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 		}
 		for _, raw := range patches {
 			patch, ok := raw.(map[string]any)
-			if !ok || !validID(patch["charId"]) {
+			if !ok || !validReferenceID(patch["charId"]) {
 				return "INVALID_SCENE_OPERATION", "Text patch is invalid.", false
 			}
 			switch stringValue(patch["type"]) {
 			case "insert":
+				if !validID(patch["charId"]) {
+					return "INVALID_SCENE_OPERATION", "Text character identifier is invalid.", false
+				}
 				grapheme := stringValue(patch["grapheme"])
-				if grapheme == "" || len(grapheme) > 128 || (patch["afterId"] != nil && !validID(patch["afterId"])) {
+				if grapheme == "" || len(grapheme) > 128 || (patch["afterId"] != nil && !validReferenceID(patch["afterId"])) {
 					return "INVALID_SCENE_OPERATION", "Text insert patch is invalid.", false
 				}
 			case "delete":
@@ -204,7 +207,7 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 			}
 		}
 	case "history.toggle":
-		if !validID(payload["targetHistoryGroupId"]) {
+		if !validReferenceID(payload["targetHistoryGroupId"]) {
 			return "INVALID_SCENE_OPERATION", "History group id is invalid.", false
 		}
 		if _, ok := payload["enabled"].(bool); !ok {
@@ -338,7 +341,7 @@ func validBox(value any) bool {
 
 func validOrderKey(value any) bool {
 	key, ok := value.(map[string]any)
-	if !ok || !validID(key["opId"]) {
+	if !ok || !validReferenceID(key["opId"]) {
 		return false
 	}
 	lamport, lamportOK := finiteNumber(key["lamport"])
@@ -398,6 +401,19 @@ func validPoints(value any) bool {
 }
 
 func validID(value any) bool {
+	text := stringValue(value)
+	if len(text) == 0 || len(text) > 256 {
+		return false
+	}
+	for _, ch := range text {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' || ch == ':') {
+			return false
+		}
+	}
+	return true
+}
+
+func validReferenceID(value any) bool {
 	text := stringValue(value)
 	return len(text) > 0 && len(text) <= 256
 }

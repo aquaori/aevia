@@ -167,7 +167,16 @@ export class SceneEngine {
 	private readonly atoms: RenderAtom[] = [];
 	private readonly elements = new Map<string, SceneElementState>();
 	private readonly compilerStates = new Map<string, StrokeCompilerState>();
+	private readonly pendingAppends = new Map<string, Array<Extract<SceneOperationEnvelopeV2, { kind: "element.append" }>>>();
+	private readonly pendingTextDeletes = new Map<string, Set<string>>();
+	private readonly pendingTextOperations = new Map<string, Array<Extract<SceneOperationEnvelopeV2, { kind: "text.patch" }>>>();
+	needsResync = false;
+
+	hasPendingDependencies() {
+		return this.pendingAppends.size > 0 || this.pendingTextOperations.size > 0;
+	}
 	private readonly legacyElementIds = new Set<string>();
+	private readonly hydratedThrough = new Map<string, number>();
 	private readonly legacyDeleted = new Map<string, boolean>();
 	private readonly operations: SceneOperationEnvelopeV2[] = [];
 	private readonly operationIds = new Set<string>();
@@ -189,7 +198,12 @@ export class SceneEngine {
 		this.atoms.length = 0;
 		this.elements.clear();
 		this.compilerStates.clear();
+		this.pendingAppends.clear();
+		this.pendingTextDeletes.clear();
+		this.pendingTextOperations.clear();
+		this.needsResync = false;
 		this.legacyElementIds.clear();
+		this.hydratedThrough.clear();
 		this.legacyDeleted.clear();
 		this.operations.length = 0;
 		this.operationIds.clear();
@@ -791,6 +805,10 @@ export class SceneEngine {
 
 	private rebuildElements(elementIds: ReadonlySet<string>) {
 		for (const elementId of elementIds) {
+			this.pendingAppends.delete(elementId);
+			this.pendingTextDeletes.delete(elementId);
+			this.pendingTextOperations.delete(elementId);
+			this.hydratedThrough.delete(elementId);
 			const previous = this.elements.get(elementId);
 			if (previous && this.isElementBaseVisible(previous)) this.visibleAtomCount -= previous.atomRefs.length;
 			if (previous && this.legacyElementIds.has(elementId)) {
@@ -821,9 +839,7 @@ export class SceneEngine {
 			case "element.append": {
 				if (operation.elementId !== elementId) break;
 				const element = this.elements.get(elementId);
-				if (!element) break;
 				this.appendOperationPoints(element, operation);
-				if (operation.payload.isComplete) this.finishElement(elementId);
 				break;
 			}
 			case "element.transform": {
@@ -864,9 +880,7 @@ export class SceneEngine {
 				break;
 			case "element.append": {
 				const element = this.elements.get(operation.elementId);
-				if (!element) break;
 				this.appendOperationPoints(element, operation);
-				if (operation.payload.isComplete) this.finishElement(operation.elementId);
 				break;
 			}
 			case "element.transform":
@@ -907,6 +921,7 @@ export class SceneEngine {
 			this.legacyElementIds.has(elementId)
 		) {
 			this.legacyElementIds.delete(elementId);
+			this.hydratedThrough.set(elementId, hydrated.points.length);
 			this.legacyDeleted.delete(elementId);
 			hydrated.pageId = pageId;
 			hydrated.descriptor = payload.descriptor;
@@ -926,6 +941,7 @@ export class SceneEngine {
 		if (payload.descriptor.elementKind === "path") {
 			payload.points?.forEach((point, sourceIndex) => this.appendPoint(element, point, sourceIndex, { ...order, lamport: point.lamport, sourceIndex }));
 			if (payload.isComplete) this.finishElement(elementId);
+			this.drainPendingAppends(element);
 			return;
 		}
 		if (payload.descriptor.elementKind === "shape") {
@@ -942,13 +958,31 @@ export class SceneEngine {
 				element.characters.set(charId, { charId, afterId: sourceIndex === 0 ? null : `${elementId}:initial:${sourceIndex - 1}`, grapheme, deleted: false, order: { ...order, sourceIndex } });
 			});
 			this.rebuildTextAtoms(element);
+			const pending = this.pendingTextOperations.get(elementId) ?? [];
+			this.pendingTextOperations.delete(elementId);
+			for (const operation of pending) this.applyTextPatches(operation);
 		}
 	}
 
 	private appendOperationPoints(
-		element: SceneElementState,
+		element: SceneElementState | undefined,
 		operation: Extract<SceneOperationEnvelopeV2, { kind: "element.append" }>
 	) {
+		if (!element || operation.payload.sourceStart > element.points.length) {
+			const pending = this.pendingAppends.get(operation.elementId) ?? [];
+			if (pending.length >= 1024) { this.needsResync = true; return; }
+			pending.push(operation);
+			this.pendingAppends.set(operation.elementId, pending);
+			return;
+		}
+		for (let index = 0; index < operation.payload.points.length; index++) {
+			const sourceIndex = operation.payload.sourceStart + index;
+			const existing = element.points[sourceIndex];
+			const point = operation.payload.points[index]!;
+			const hydrated = sourceIndex < (this.hydratedThrough.get(element.id) ?? 0);
+			const equal = (left: number, right: number) => left === right || (hydrated && left === Math.fround(right));
+			if (existing && (!equal(existing.x, point.x) || !equal(existing.y, point.y) || !equal(existing.p, point.p) || existing.lamport !== point.lamport)) { this.needsResync = true; return; }
+		}
 		operation.payload.points.forEach((point, index) => {
 			const sourceIndex = operation.payload.sourceStart + index;
 			if (sourceIndex < element.points.length) return;
@@ -957,6 +991,18 @@ export class SceneEngine {
 				lamport: point.lamport,
 			});
 		});
+		if (operation.payload.isComplete) this.finishElement(element.id);
+		this.drainPendingAppends(element);
+	}
+
+	private drainPendingAppends(element: SceneElementState) {
+		const pending = this.pendingAppends.get(element.id);
+		if (!pending) return;
+		const index = pending.findIndex((op) => op.payload.sourceStart <= element.points.length);
+		if (index < 0) return;
+		const [operation] = pending.splice(index, 1);
+		if (pending.length === 0) this.pendingAppends.delete(element.id);
+		this.appendOperationPoints(element, operation!);
 	}
 
 	private storeShapeAtom(element: SceneElementState, order: RenderOrderKey) {
@@ -983,15 +1029,31 @@ export class SceneEngine {
 
 	private applyTextPatches(operation: Extract<SceneOperationEnvelopeV2, { kind: "text.patch" }>) {
 		const element = this.elements.get(operation.elementId);
-		if (!element) return;
+		if (!element) {
+			const pending = this.pendingTextOperations.get(operation.elementId) ?? [];
+			if (pending.length >= 1024) this.needsResync = true;
+			else { pending.push(operation); this.pendingTextOperations.set(operation.elementId, pending); }
+			return;
+		}
 		operation.payload.patches.forEach((patch, index) => {
 			if (patch.type === "insert") {
-				element.characters.set(patch.charId, { charId: patch.charId, afterId: patch.afterId, grapheme: patch.grapheme, deleted: false, order: sceneOperationOrderKey(operation, index) });
+				const deleted = this.pendingTextDeletes.get(element.id)?.delete(patch.charId) ?? false;
+				element.characters.set(patch.charId, { charId: patch.charId, afterId: patch.afterId, grapheme: patch.grapheme, deleted, order: sceneOperationOrderKey(operation, index) });
 			} else {
 				const character = element.characters.get(patch.charId);
 				if (character) character.deleted = true;
+				else {
+					const pending = this.pendingTextDeletes.get(element.id) ?? new Set<string>();
+					if (pending.size >= 1024) this.needsResync = true;
+					else { pending.add(patch.charId); this.pendingTextDeletes.set(element.id, pending); }
+				}
 			}
 		});
+		let missingParents = 0;
+		for (const character of element.characters.values()) {
+			if (character.afterId !== null && !element.characters.has(character.afterId)) missingParents += 1;
+		}
+		if (missingParents > 1024) this.needsResync = true;
 		this.rebuildTextAtoms(element);
 	}
 
@@ -1127,6 +1189,10 @@ export class SceneEngine {
 	}
 
 	private rebuildV2Elements() {
+		this.pendingAppends.clear();
+		this.pendingTextDeletes.clear();
+		this.pendingTextOperations.clear();
+		this.hydratedThrough.clear();
 		for (const [elementId] of this.elements) {
 			if (!this.legacyElementIds.has(elementId)) {
 				this.elements.delete(elementId);

@@ -19,6 +19,7 @@ const uiCtx = ref<CanvasRenderingContext2D | null>(null);
 const incrementalStrokeStates = new Map<string, StrokeState>();
 const activeStrokeIds = new Set<string>();
 const fallbackSceneEngine = new SceneEngine();
+const hasPendingSceneDependencies = () => fallbackSceneEngine.hasPendingDependencies();
 
 interface DirtyRect {
 	minX: number;
@@ -203,7 +204,7 @@ const renderWithPoints = (sortedPoints: FlatPoint[]) => {
 };
 
 const renderSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: Set<string> = new Set()) => {
-	if (!canvasRef.value || !ctx.value) return;
+	if (!canvasRef.value || !ctx.value) return false;
 	const dpr = window.devicePixelRatio || 1;
 	fallbackSceneEngine.rebuildFromCommands(commands, pageId);
 	fallbackSceneEngine.renderFull(
@@ -212,6 +213,7 @@ const renderSceneCommands = (commands: Command[], pageId: number, transformingCm
 		canvasRef.value.height / dpr,
 		transformingCmdIds
 	);
+	return fallbackSceneEngine.needsResync;
 };
 
 const hitTestScene = (x: number, y: number) => {
@@ -261,6 +263,7 @@ export {
 	renderPointSequence,
 	renderWithPoints,
 	renderSceneCommands,
+	hasPendingSceneDependencies,
 	hitTestScene,
 	querySceneElements,
 	renderIncrementPoint,

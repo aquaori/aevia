@@ -75,6 +75,14 @@ let currentTransformingIds = new Set<string>();
 const activeStrokeIds = new Set<string>();
 const sceneCommands = new Map<string, Command>();
 const sceneEngine = new SceneEngine();
+let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
+const checkSceneDependencies = () => {
+	if (!sceneEngine.hasPendingDependencies() || dependencyTimer) return;
+	dependencyTimer = setTimeout(() => {
+		dependencyTimer = undefined;
+		if (sceneEngine.hasPendingDependencies()) self.postMessage({ type: "scene-resync-required" });
+	}, 5000);
+};
 let initRenderFinished = false;
 let initCanvasStarted = false;
 let pendingInitSceneCommands: Command[] = [];
@@ -494,6 +502,8 @@ const applyPendingInitSceneOperations = () => {
 		sceneCommands.set(command.id, cloneCommandMetadata(command));
 		sceneEngine.applyOperation(operation);
 	}
+	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
+	checkSceneDependencies();
 	if (needsFullRender) renderFullScene();
 };
 
@@ -533,6 +543,8 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 	const oldBounds = elementBounds(ids);
 	const firstNewRef = sceneEngine.atomCount;
 	sceneEngine.applyOperation(operation);
+	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
+	checkSceneDependencies();
 	if (!mainCtx || operation.pageId !== currentPageId) return;
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
 		renderFullScene();
