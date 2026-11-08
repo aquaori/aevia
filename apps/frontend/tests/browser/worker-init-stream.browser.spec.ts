@@ -178,6 +178,15 @@ describe("canvas worker init render stream", () => {
 				);
 				bridge.finishInitRenderStream();
 				expect((await decoded)[0]?.pageId).toBe(1);
+
+				worker = new Worker(new URL("../../src/workers/canvasWorker.ts", import.meta.url), { type: "module" });
+				const workerError = new Promise<never>((_, reject) => {
+					worker!.addEventListener("error", (event) => reject(new Error(event.message)), { once: true });
+				});
+				worker.postMessage({ type: "lab-configure", data: { enabled: true } });
+				worker.postMessage({ type: "begin-init-stream", data: { pageId: 1 } });
+				worker.postMessage({ type: "finish-init-stream" });
+				await Promise.race([flatPointsFromScene(worker), workerError]);
 			} finally {
 				bridge.dispose();
 				session.unmount();
