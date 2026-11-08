@@ -213,12 +213,13 @@ const waitForVisibleScreenshotRegion = async (
 	let consecutiveMatches = 0;
 	let sample = await captureVisibleScreenshotSample(page, options.roi);
 	const threshold = options.threshold ?? (visible ? 0.002 : 0.001);
-	while (performance.now() - startedAt < options.timeoutMs) {
+	while (true) {
 		const matches = visible ? sample.nonBlankRatio >= threshold : sample.nonBlankRatio <= threshold;
 		consecutiveMatches = matches ? consecutiveMatches + 1 : 0;
 		if (consecutiveMatches >= 2) {
 			return { elapsedMs: performance.now() - startedAt, frames, sample };
 		}
+		if (performance.now() - startedAt >= options.timeoutMs) break;
 		await page.waitForTimeout(50);
 		frames += 1;
 		sample = await captureVisibleScreenshotSample(page, options.roi);
