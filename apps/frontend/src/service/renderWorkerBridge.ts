@@ -547,6 +547,10 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const syncCommandState = (cmd: Command) => {
 		if (!worker || !offscreenEnabled) return;
+		if (cmd.sceneOperation?.kind === "history.toggle" && pendingIncrements.size > 0) {
+			if (pendingIncrementFlushRafId !== null) cancelAnimationFrame(pendingIncrementFlushRafId);
+			flushIncrementalCommands();
+		}
 		worker.postMessage({
 			type: "update-command-state",
 			data: {
