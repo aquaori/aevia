@@ -61,6 +61,36 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("flushes queued stroke pixels before sending an undo operation", () => {
+		const messages: string[] = [];
+		vi.stubGlobal("requestAnimationFrame", () => 1);
+		vi.stubGlobal("cancelAnimationFrame", () => {});
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			postMessage(message: { type: string }) { messages.push(message.type); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const point = { x: 0.1, y: 0.2, p: 0.5, lamport: 1 };
+			bridge.renderIncrementalCommand(command([point]), [point], 0);
+			bridge.syncCommandState({
+				...command([]), type: "scene-op", schemaVersion: 2,
+				sceneOperation: {
+					schemaVersion: 2, opId: "undo-1", elementId: "cmd-1", actorId: "user-1",
+					roomId: "room-1", pageId: 0, lamport: 2, historyGroupId: "undo-1",
+					kind: "history.toggle", payload: { targetHistoryGroupId: "cmd-1", enabled: false },
+				},
+			});
+			expect(messages.slice(-2)).toEqual(["render-increment-batch", "update-command-state"]);
+		} finally {
+			bridge.dispose();
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it("keeps lab acknowledgements out of business render completion state", async () => {
 		vi.useFakeTimers();
 		let worker: { onmessage?: (event: { data: unknown }) => void };
