@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { page } from "vitest/browser";
+import { computed, ref } from "vue";
+import type { EditorTool } from "@collaborative-whiteboard/shared";
+import type { SelectionState } from "../../src/utils/editorTypes";
+import type { RemoteCursor } from "../../src/utils/type";
+import { ctx } from "../../src/service/canvas";
+import { createWhiteboardSession } from "../../src/service/whiteboardSession";
 
 const WIDTH = 320;
 const HEIGHT = 240;
@@ -139,6 +145,33 @@ describe("canvas worker init render stream", () => {
 		worker?.terminate();
 		worker = null;
 	});
+
+	if (typeof HTMLCanvasElement.prototype.transferControlToOffscreen !== "function") {
+		it("uses the mounted 2D canvas when worker canvas transfer is unavailable", () => {
+			const canvas = document.createElement("canvas");
+			const uiCanvas = document.createElement("canvas");
+			const session = createWhiteboardSession({
+				state: {
+					currentTool: ref<EditorTool>("pen"), currentColor: ref("#000000"), currentPageId: ref(0),
+					totalPages: ref(1), onlineCount: ref(1), isReconnecting: ref(false),
+					remoteCursors: ref<Map<string, RemoteCursor>>(new Map()), selection: ref<SelectionState | null>(null),
+				},
+				canUndo: computed(() => false), canRedo: computed(() => false),
+				connect: () => {}, disconnect: () => {}, setTool: () => {}, undo: () => {}, redo: () => {},
+				goToPage: () => {}, requestRender: () => {}, requestOverlayRender: () => {},
+			});
+			try {
+				session.mountCanvas({ canvas, uiCanvas });
+				expect(ctx.value).not.toBeNull();
+				ctx.value!.fillStyle = "#000000";
+				ctx.value!.fillRect(0, 0, 1, 1);
+				expect(ctx.value!.getImageData(0, 0, 1, 1).data[3]).toBe(255);
+			} finally {
+				session.unmount();
+			}
+		});
+		return;
+	}
 
 	it("only starts painting after the first valid init render chunk and settles init", async () => {
 		const canvas = document.createElement("canvas");
