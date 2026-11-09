@@ -160,6 +160,12 @@ const startManagedService = (
 	if (serviceLog) mkdirSync(path.dirname(serviceLog), { recursive: true });
 	const collect = (chunk: Buffer, source: "stdout" | "stderr") => {
 		if (serviceLog) appendFileSync(serviceLog, `[${source}] ${chunk.toString()}`, "utf8");
+		if (source === "stderr" && process.env.AEVIA_LAB_STREAM_LOGS === "1") process.stderr.write(`[service:${name}] ${chunk.toString()}`);
+		if (source === "stdout" && process.env.AEVIA_LAB_STREAM_LOGS === "1") {
+			for (const line of chunk.toString().split(/\r?\n/)) {
+				if (/\b(?:WARN|ERROR|FATAL)\b|fatal error:/i.test(line)) process.stderr.write(`[service:${name}] ${line}\n`);
+			}
+		}
 		for (const line of chunk.toString().split(/\r?\n/)) {
 			if (!line.trim()) continue;
 			service.tail.push(`${source}: ${line}`);
@@ -1129,6 +1135,7 @@ const runEvidenceStep = async (
 				const text = chunk.toString();
 				stdout += text;
 				appendFileSync(logPath, text, "utf8");
+				if (process.env.AEVIA_LAB_STREAM_LOGS === "1" && step.id.startsWith("external-performance-boundary-")) process.stdout.write(text);
 				activeLiveConsole?.log(step.id, text, "stdout");
 			});
 			child.stderr?.on("data", (chunk) => {
@@ -1222,9 +1229,9 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 		perfRequest: argValue("perf") === "request",
 	};
 	const lane = argValue("lane") || "all";
-	if (lane !== "all" && lane !== "quality" && lane !== "performance") throw new Error("--lane must be all|quality|performance");
+	if (lane !== "all" && lane !== "quality" && lane !== "performance" && lane !== "performance-standard" && lane !== "performance-boundary") throw new Error("--lane must be all|quality|performance|performance-standard|performance-boundary");
 	planContext.lane = lane;
-	const raceCapability = profile === "nightly" && lane !== "performance" ? probeGoRaceDetector(backendDir) : undefined;
+	const raceCapability = profile === "nightly" && !lane.startsWith("performance") ? probeGoRaceDetector(backendDir) : undefined;
 	planContext.goRaceSupported = raceCapability?.supported ?? false;
 	planContext.goRaceRequired = process.env.CI === "true" && process.platform === "linux";
 	const basePlan = isCoreProfile(profile)
@@ -1235,7 +1242,7 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 		steps.splice(steps.length - 1, 0, { id: "perf-request", title: "Performance gate request", description: "Recording an optional performance request.", command: `node scripts/write-perf-request.mjs ${shellQuote(path.join(runDir, "perf-request.json"))}`, cwd: canonicalRootDir });
 		artifacts.push({ id: "perf-request", stepId: "perf-request", kind: "perf-request", path: "perf-request.json" });
 	}
-	if (profile === "nightly" && lane !== "performance" && !steps.some((step) => step.id === "go-race")) {
+	if (profile === "nightly" && !lane.startsWith("performance") && !steps.some((step) => step.id === "go-race")) {
 		print(`[lab] go-race unavailable: ${raceCapability?.detail.trim()}`);
 	}
 	const mode = managedModeOf(profile);
@@ -1338,7 +1345,7 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 			persistManifest(manifestPath, manifest);
 			report = buildAggregate(manifest, runDir);
 		}
-		if (profile === "nightly" && lane !== "quality" && report.status === "passed" && manifest.recorded && manifest.validity.status === "valid") {
+		if (profile === "nightly" && (lane === "all" || lane === "performance") && report.status === "passed" && manifest.recorded && manifest.validity.status === "valid") {
 			const { importHistoryFromReport } = await import("../apps/frontend/tests/e2e/external/learning");
 			const reportPath = path.join(runDir, "external", "performance-external-standard-external-results.json");
 			const payload = JSON.parse(readFileSync(reportPath, "utf8"));
