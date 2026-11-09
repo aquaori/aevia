@@ -1345,7 +1345,7 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 			persistManifest(manifestPath, manifest);
 			report = buildAggregate(manifest, runDir);
 		}
-		if (profile === "nightly" && lane !== "quality" && report.status === "passed" && manifest.recorded && manifest.validity.status === "valid") {
+		if (profile === "nightly" && (lane === "all" || lane === "performance") && report.status === "passed" && manifest.recorded && manifest.validity.status === "valid") {
 			const { importHistoryFromReport } = await import("../apps/frontend/tests/e2e/external/learning");
 			const reportPath = path.join(runDir, "external", "performance-external-standard-external-results.json");
 			const payload = JSON.parse(readFileSync(reportPath, "utf8"));
