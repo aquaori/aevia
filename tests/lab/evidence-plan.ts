@@ -254,12 +254,12 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			: []),
 		{
 			id: "go-fuzz",
-			title: "Scene payload fuzz smoke",
-			description: "Fuzzing the public scene payload validator for 30 seconds with a bounded worker count.",
-			command: "go test ./internal/gateway -run=^$ -fuzz=FuzzValidateScenePayloadNeverPanics -fuzztime=30s -parallel=2",
+			title: "Scene payload fuzz",
+			description: "Fuzzing the public scene payload validator for five minutes with a bounded worker count.",
+			command: "go test ./internal/gateway -run=^$ -fuzz=FuzzValidateScenePayloadNeverPanics -fuzztime=5m -parallel=2",
 			cwd: ctx.backendDir,
 			env: { GOCACHE: path.join(ctx.rootDir, "tests", ".tmp", "go-fuzz-cache") },
-			timeoutMs: 300000,
+			timeoutMs: 600000,
 		},
 		{
 			id: "lab-inventory",
@@ -341,7 +341,11 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 		},
 		{ id: "lab-inventory", stepId: "lab-inventory", kind: "lab-inventory", path: "catalog/lab-inventory.json" },
 	];
-	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz") : steps;
+	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz") : [
+		...steps.filter(step => !step.id.startsWith("external-performance") && step.id !== "source-check"),
+		...steps.filter(step => step.id.startsWith("external-performance")),
+		...steps.filter(step => step.id === "source-check"),
+	];
 	const selectedIds = new Set(selectedSteps.map(step => step.id));
 	return { steps: selectedSteps, artifacts: artifacts.filter(artifact => selectedIds.has(artifact.stepId)) };
 };
