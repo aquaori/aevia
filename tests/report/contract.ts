@@ -184,7 +184,7 @@ export type RunManifest = {
 	rerun?: RunRerun;
 	measurement?: RunMeasurement;
 	selection?: import("../lab/resolve-only").LabResolveResult;
-	lane?: "all" | "quality" | "performance";
+	lane?: "all" | "quality" | "performance" | "performance-standard" | "performance-boundary";
 	capabilities?: { goRace?: { supported: boolean; exitCode: number | null; detail: string } };
 };
 

@@ -162,5 +162,13 @@ it("partitions Windows performance and Linux quality without dropping required e
 	expect(stepIds(performance)).toContain("external-performance-standard");
 	expect(stepIds(performance)).not.toContain("go-race");
 	expect(stepIds(performance)).not.toContain("go-fuzz");
+	const standard = buildNightlyPlan(context({ lane: "performance-standard" }));
+	const boundary = buildNightlyPlan(context({ lane: "performance-boundary" }));
+	expect(stepIds(standard)).toContain("external-performance-standard");
+	expect(stepIds(standard)).toContain("external-performance-resilience");
+	expect(stepIds(standard).some(id => id.startsWith("external-performance-boundary-"))).toBe(false);
+	expect(stepIds(boundary).filter(id => id.startsWith("external-performance-boundary-"))).toHaveLength(3);
+	expect(stepIds(boundary)).not.toContain("external-performance-standard");
+	for (const plan of [standard, boundary]) expect(plan.artifacts.every(item => stepIds(plan).includes(item.stepId))).toBe(true);
 	for (const plan of [quality, performance]) expect(plan.artifacts.every(item => stepIds(plan).includes(item.stepId))).toBe(true);
 });
