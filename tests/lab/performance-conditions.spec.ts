@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { applyPerformanceRegressions } from "../../apps/frontend/tests/e2e/external/baseline";
 import { sameConditions, qualifyPerformanceResults } from "../../apps/frontend/tests/e2e/external/conditions";
 import { buildLearningArtifacts } from "../../apps/frontend/tests/e2e/external/learning";
@@ -12,6 +12,14 @@ const result = (): CaseResult => ({ id: "full-render-10000", environment: "gpu_c
 const baseline = (): BaselineFile => ({ version: 1, createdAt: "2026-11-05", cases: { "gpu_cpuHigh::full-render-10000": { id: "full-render-10000", conditions, metrics: { firstNonBlankMsMedian: 10, visuallyStableMsMedian: 12 } } } });
 const budgets = (reference: BaselineFile) => ({ version: 1 as const, sourceBaselineSha256: createHash("sha256").update(JSON.stringify(reference.cases)).digest("hex"), cases: { "gpu_cpuHigh::full-render-10000": { metrics: { firstNonBlankMsMedian: { max: 20 }, visuallyStableMsMedian: { max: 24 } } } } });
 describe("performance comparability and hard budgets", () => {
+	it("forces hosted diagnostic runs to remain non-qualifying", () => {
+		vi.stubEnv("AEVIA_LAB_DIAGNOSTIC", "1");
+		try {
+			expect(parseConfig(["--suite=performance-external", "--fail-on-performance=all"]).failOnPerformance).toBe("none");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
 	it("uses validated instrumented values for baselines and keeps the independent witness", () => {
 		const current = { ...result(), lab: { status: "valid" }, instrumented: { firstNonBlankMs: 80, visuallyStableMs: 90 } } as CaseResult;
 		promoteInstrumentedMetrics(current);

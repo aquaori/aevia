@@ -46,7 +46,7 @@ const vitestRun = (ctx: LabPlanContext, args: string) =>
 	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} ${args}`;
 
 const externalRun = (ctx: LabPlanContext, suite: string, extra = "", reportSubdir = "") =>
-	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=json --report-dir=${q(ctx, path.join(ctx.runDir, "external", reportSubdir))} --lab=on${extra}`;
+	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=${suite === "performance-external" ? "both" : "json"} --report-dir=${q(ctx, path.join(ctx.runDir, "external", reportSubdir))} --lab=on${extra}`;
 
 /**
  * Boundary cases seed millions of points each; two of them in one database already pushes
@@ -254,12 +254,12 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			: []),
 		{
 			id: "go-fuzz",
-			title: "Scene payload fuzz smoke",
-			description: "Fuzzing the public scene payload validator for 30 seconds with a bounded worker count.",
-			command: "go test ./internal/gateway -run=^$ -fuzz=FuzzValidateScenePayloadNeverPanics -fuzztime=30s -parallel=2",
+			title: "Scene payload fuzz",
+			description: "Fuzzing the public scene payload validator for five minutes with a bounded worker count.",
+			command: "go test ./internal/gateway -run=^$ -fuzz=FuzzValidateScenePayloadNeverPanics -fuzztime=5m -parallel=2",
 			cwd: ctx.backendDir,
 			env: { GOCACHE: path.join(ctx.rootDir, "tests", ".tmp", "go-fuzz-cache") },
-			timeoutMs: 300000,
+			timeoutMs: 600000,
 		},
 		{
 			id: "lab-inventory",
@@ -341,7 +341,11 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 		},
 		{ id: "lab-inventory", stepId: "lab-inventory", kind: "lab-inventory", path: "catalog/lab-inventory.json" },
 	];
-	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz") : steps;
+	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz") : [
+		...steps.filter(step => !step.id.startsWith("external-performance") && step.id !== "source-check"),
+		...steps.filter(step => step.id.startsWith("external-performance")),
+		...steps.filter(step => step.id === "source-check"),
+	];
 	const selectedIds = new Set(selectedSteps.map(step => step.id));
 	return { steps: selectedSteps, artifacts: artifacts.filter(artifact => selectedIds.has(artifact.stepId)) };
 };

@@ -71,17 +71,71 @@ jobs:
         run: npm run test:nightly -- --lane=performance
         env:
           AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+          AEVIA_EXTERNAL_GITHUB_SUMMARY: "off"
       - name: Publish performance qualification
         id: qualification
         if: always()
         run: node scripts/ci-performance-verdict.mjs
       - uses: actions/upload-artifact@v4
+        id: report_artifact
         if: always()
         with:
           name: aevia-nightly-evidence-${{ matrix.browser }}
           path: tests/reports/summary/runs/
           if-no-files-found: warn
           retention-days: 30
+      - name: Summarize detailed performance report
+        if: always()
+        run: node scripts/ci-nightly-summary.mjs
+        env:
+          AEVIA_CI_ARTIFACT_URL: ${{ steps.report_artifact.outputs.artifact-url }}
+
+  hosted_performance:
+    if: vars.AEVIA_PERF_RUNNER_READY != 'true'
+    name: nightly / Linux performance observation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      AEVIA_LAB_DIAGNOSTIC: "1"
+      AEVIA_TEST_BROWSER: chromium
+      AEVIA_EXTERNAL_GITHUB_SUMMARY: "off"
+    steps:
+      - name: Check CI hub commit
+        if: github.event_name == 'workflow_dispatch' && inputs.ci_hub_request_id != ''
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ci_hub_expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Select current report pointer
+        run: echo "AEVIA_CI_RUN_ID_FILE=$RUNNER_TEMP/aevia-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.id" >> "$GITHUB_ENV"
+      - name: Run full performance observation
+        run: npm run test:nightly -- --lane=performance --live=off
+      - uses: actions/upload-artifact@v4
+        id: report_artifact
+        if: always()
+        with:
+          name: aevia-nightly-performance-observation
+          path: tests/reports/summary/runs/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Summarize detailed performance report
+        if: always()
+        run: node scripts/ci-nightly-summary.mjs
+        env:
+          AEVIA_CI_ARTIFACT_URL: ${{ steps.report_artifact.outputs.artifact-url }}
 
   performance_qualification:
     if: always() && github.ref == 'refs/heads/main'
