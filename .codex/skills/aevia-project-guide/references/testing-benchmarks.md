@@ -176,6 +176,8 @@ Nightly probes `go test -race` once while building the plan: hosts without a usa
 printed note instead of failing the run (the failure is an environment problem, not a product regression).
 `AEVIA_NIGHTLY_BOUNDARY_SCALES=100000,250000` shortens the boundary ladder for a local smoke of the nightly shape.
 
+GitHub nightly uses the fixed Windows performance runner when configured. Otherwise it runs the full performance lane on a hosted Linux runner with `AEVIA_LAB_DIAGNOSTIC=1`: the samples and detailed HTML are retained, but the run is not recorded to history and cannot establish a performance qualification across changing hosts. The matrix correctness job publishes one combined index linking to the nine run-scoped reports.
+
 `single` selectors: `case:<external-case-id>[,<id>]`、`file:<path>`、`test:<substring>`、`go:<pkg>[#TestName]`；
 `--since=<ref>` 会用 `git diff --name-only <ref>...HEAD` 加未跟踪文件，经 `tests/lab/resolve-only.ts` 映射到 owner test。
 重跑入口：`--rerun-of=<runId> --scope=run|scenario|case --ids=<csv>`，由 `scripts/lab-serve.mjs` 调用。

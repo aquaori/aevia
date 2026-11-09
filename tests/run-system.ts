@@ -1239,7 +1239,7 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 		print(`[lab] go-race unavailable: ${raceCapability?.detail.trim()}`);
 	}
 	const mode = managedModeOf(profile);
-	const recorded = profile !== "single" && options.rerunOf === undefined && cleanTree;
+	const recorded = profile !== "single" && options.rerunOf === undefined && cleanTree && process.env.AEVIA_LAB_DIAGNOSTIC !== "1";
 	const manifest: RunManifest = {
 		schemaVersion: 2,
 		runId,

@@ -115,6 +115,7 @@ jobs:
         run: npm run test:ci
         env:
           AEVIA_TEST_BROWSER: ${{ matrix.browser }}
+          AEVIA_EXTERNAL_GITHUB_SUMMARY: "off"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -122,3 +123,30 @@ jobs:
           path: tests/reports/summary/runs/
           if-no-files-found: warn
           retention-days: 14
+
+  matrix_report:
+    if: always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.test_package == 'matrix'))
+    needs: correctness
+    name: 兼容性汇总报告
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: aevia-test-evidence-*
+          path: tests/.tmp/ci-matrix
+      - name: Build combined report
+        run: node scripts/ci-matrix-report.mjs tests/.tmp/ci-matrix
+      - uses: actions/upload-artifact@v4
+        id: report
+        if: always()
+        with:
+          name: aevia-correctness-combined-report
+          path: tests/.tmp/ci-matrix/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Link combined report
+        if: always() && steps.report.outputs.artifact-url != ''
+        env:
+          REPORT_URL: ${{ steps.report.outputs.artifact-url }}
+        run: echo "[下载完整报告，解压后打开 index.html]($REPORT_URL)" >> "$GITHUB_STEP_SUMMARY"

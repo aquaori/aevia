@@ -46,7 +46,7 @@ const vitestRun = (ctx: LabPlanContext, args: string) =>
 	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "vitest", "vitest.mjs"))} ${args}`;
 
 const externalRun = (ctx: LabPlanContext, suite: string, extra = "", reportSubdir = "") =>
-	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=json --report-dir=${q(ctx, path.join(ctx.runDir, "external", reportSubdir))} --lab=on${extra}`;
+	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=${suite === "performance-external" ? "both" : "json"} --report-dir=${q(ctx, path.join(ctx.runDir, "external", reportSubdir))} --lab=on${extra}`;
 
 /**
  * Boundary cases seed millions of points each; two of them in one database already pushes

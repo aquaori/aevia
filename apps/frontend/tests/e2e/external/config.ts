@@ -59,7 +59,7 @@ export const parseConfig = (argv: string[]): ExternalConfig => {
 		args.get("baseline-source") ||
 		args.get("source") ||
 		envValue("npm_config_baseline_source", "npm_config_source", "BASELINE_SOURCE");
-	const failOnPerformance = (args.get("fail-on-performance") || "confirmed") as FailOnPerformance;
+	const failOnPerformance = (process.env.AEVIA_LAB_DIAGNOSTIC === "1" ? "none" : args.get("fail-on-performance") || "confirmed") as FailOnPerformance;
 	const labFlag = (args.get("lab") ?? envValue("AEVIA_LAB") ?? "on").trim().toLowerCase();
 	const labEnabled = labFlag !== "off" && labFlag !== "false" && labFlag !== "0";
 

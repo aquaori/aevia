@@ -1285,7 +1285,7 @@ export const writeReports = (reportRoot: string, report: ExternalReport, runTag 
 	writeJson(jsonPath, report);
 	const markdownSummary = createMarkdownSummary(report);
 	writeText(path.join(reportRoot, `${runTag}-external-summary.md`), markdownSummary);
-	if (process.env.GITHUB_STEP_SUMMARY) {
+	if (process.env.GITHUB_STEP_SUMMARY && process.env.AEVIA_EXTERNAL_GITHUB_SUMMARY !== "off") {
 		fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdownSummary}\n`, "utf-8");
 	}
 	if (report.config.reportFormat === "json") {
