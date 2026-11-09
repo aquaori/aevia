@@ -1,5 +1,5 @@
 // File role: deterministic checks for the lab evidence plans behind smoke/nightly/single modes.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildLabEvidencePlan,
 	buildNightlyPlan,
@@ -26,6 +26,12 @@ const context = (overrides: Partial<LabPlanContext> = {}): LabPlanContext => ({
 const stepIds = (plan: { steps: { id: string }[] }) => plan.steps.map((step) => step.id);
 const artifactIds = (plan: { artifacts: { id: string }[] }) => plan.artifacts.map((artifact) => artifact.id);
 const DEFAULT_FULL_RENDER_SCALES = [100000, 250000, 500000, 1000000, 2000000, 5000000];
+
+beforeEach(() => {
+	// The hosted nightly job exports a shortened ladder; default-plan assertions
+	// must not depend on the shell that happens to run the unit suite.
+	vi.stubEnv("AEVIA_NIGHTLY_BOUNDARY_SCALES", "");
+});
 
 afterEach(() => {
 	vi.unstubAllEnvs();
