@@ -32,7 +32,7 @@ export type LabPlanContext = {
 	perfRequest: boolean;
 	goRaceSupported?: boolean;
 	goRaceRequired?: boolean;
-	lane?: "all" | "quality" | "performance";
+	lane?: "all" | "quality" | "performance" | "performance-standard" | "performance-boundary";
 };
 
 export type LabEvidencePlan = {
@@ -341,7 +341,8 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 		},
 		{ id: "lab-inventory", stepId: "lab-inventory", kind: "lab-inventory", path: "catalog/lab-inventory.json" },
 	];
-	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz") : [
+	const performanceSteps = steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz");
+	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? performanceSteps : ctx.lane === "performance-standard" ? performanceSteps.filter(step => !step.id.startsWith("external-performance-boundary-")) : ctx.lane === "performance-boundary" ? performanceSteps.filter(step => !["external-performance-standard", "external-performance-resilience", "external-e2e"].includes(step.id)) : [
 		...steps.filter(step => !step.id.startsWith("external-performance") && step.id !== "source-check"),
 		...steps.filter(step => step.id.startsWith("external-performance")),
 		...steps.filter(step => step.id === "source-check"),

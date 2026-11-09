@@ -92,13 +92,22 @@ jobs:
 
   hosted_performance:
     if: vars.AEVIA_PERF_RUNNER_READY != 'true'
-    name: nightly / Linux performance observation
+    name: nightly / Linux performance observation / ${{ matrix.part }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: standard
+            lane: performance-standard
+          - part: boundary
+            lane: performance-boundary
     env:
       AEVIA_LAB_DIAGNOSTIC: "1"
       AEVIA_TEST_BROWSER: chromium
       AEVIA_EXTERNAL_GITHUB_SUMMARY: "off"
+      AEVIA_LAB_STREAM_LOGS: "1"
     steps:
       - name: Check CI hub commit
         if: github.event_name == 'workflow_dispatch' && inputs.ci_hub_request_id != ''
@@ -121,13 +130,28 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Select current report pointer
         run: echo "AEVIA_CI_RUN_ID_FILE=$RUNNER_TEMP/aevia-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.id" >> "$GITHUB_ENV"
-      - name: Run full performance observation
-        run: npm run test:nightly -- --lane=performance --live=off
+      - name: Run performance observation with resource diagnostics
+        env:
+          AEVIA_PERFORMANCE_LANE: ${{ matrix.lane }}
+        run: |
+          (
+            while true; do
+              echo "::group::Resource diagnostics $(date -u +%FT%TZ)"
+              free -m
+              ps -eo pid,ppid,pgid,rss,comm --sort=-rss | head -n 16 || true
+              if [ -r /sys/fs/cgroup/memory.events ]; then cat /sys/fs/cgroup/memory.events; fi
+              echo "::endgroup::"
+              sleep 20
+            done
+          ) &
+          monitor=$!
+          trap 'kill "$monitor" 2>/dev/null || true' EXIT
+          npm run test:nightly -- --lane="$AEVIA_PERFORMANCE_LANE" --live=off
       - uses: actions/upload-artifact@v4
         id: report_artifact
         if: always()
         with:
-          name: aevia-nightly-performance-observation
+          name: aevia-nightly-performance-observation-${{ matrix.part }}
           path: tests/reports/summary/runs/
           if-no-files-found: warn
           retention-days: 30
