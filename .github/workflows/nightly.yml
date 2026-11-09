@@ -99,6 +99,9 @@ jobs:
       AEVIA_LAB_DIAGNOSTIC: "1"
       AEVIA_TEST_BROWSER: chromium
       AEVIA_EXTERNAL_GITHUB_SUMMARY: "off"
+      # 2M/5M scales need a dedicated large runner; the hosted 16 GiB runner was
+      # OOM-killed while retaining every scale's history in one backend process.
+      AEVIA_NIGHTLY_BOUNDARY_SCALES: "100000,250000,500000,1000000"
     steps:
       - name: Check CI hub commit
         if: github.event_name == 'workflow_dispatch' && inputs.ci_hub_request_id != ''

@@ -48,21 +48,45 @@ const vitestRun = (ctx: LabPlanContext, args: string) =>
 const externalRun = (ctx: LabPlanContext, suite: string, extra = "", reportSubdir = "") =>
 	`${q(ctx, process.execPath)} ${q(ctx, path.join(ctx.canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=${suite} --mode=headless --reporter=${suite === "performance-external" ? "both" : "json"} --report-dir=${q(ctx, path.join(ctx.runDir, "external", reportSubdir))} --lab=on${extra}`;
 
+const FULL_RENDER_BOUNDARY = {
+	suffix: "full-render",
+	id: EXTERNAL_CASES.fullRenderBoundary.id,
+} as const;
+
 /**
  * Boundary cases seed millions of points each; two of them in one database already pushes
  * create-room into HTTP 500. Each case therefore runs as its own step on a freshly reset store.
  */
 const BOUNDARY_CASES = [
-	{ suffix: "full-render", id: EXTERNAL_CASES.fullRenderBoundary.id },
 	{ suffix: "heap-growth", id: EXTERNAL_CASES.heapGrowthBoundary.id },
 	{ suffix: "redraw-freeze", id: EXTERNAL_CASES.redrawFreezeBoundary.id },
 ] as const;
 
-/** Optional local/nightly-run shortcut; production nightly keeps the full default ladder. */
-const boundaryScalesOverride = () => {
-	const scales = (process.env.AEVIA_NIGHTLY_BOUNDARY_SCALES || "").trim();
-	return scales ? ` --boundary-scales=${scales}` : "";
+/** Default ladder must match apps/frontend/tests/e2e/external/config.ts. */
+const DEFAULT_BOUNDARY_SCALES = [100000, 250000, 500000, 1000000, 2000000, 5000000] as const;
+
+/**
+ * `full-render` is the only boundary case that walks the scale ladder. Running every scale in
+ * one backend process retains all prior rooms' command history and page index, so the last
+ * scale measures the runner's accumulated RSS instead of that scale's initialization cost.
+ * One step per scale restarts the backend and resets SQLite between measurements.
+ * `AEVIA_NIGHTLY_BOUNDARY_SCALES` trims the ladder for hosted runners and local smokes.
+ */
+const boundaryScaleList = (): number[] => {
+	const raw = (process.env.AEVIA_NIGHTLY_BOUNDARY_SCALES || "").trim();
+	if (!raw) return [...DEFAULT_BOUNDARY_SCALES];
+	const parsed = [
+		...new Set(
+			raw
+				.split(",")
+				.map((value) => Number(value.trim()))
+				.filter((value) => Number.isSafeInteger(value) && value > 0)
+		),
+	];
+	return parsed.length > 0 ? parsed : [...DEFAULT_BOUNDARY_SCALES];
 };
+
+const boundaryScalesFlag = (scales: number[]) => ` --boundary-scales=${scales.join(",")}`;
 
 /**
  * `go test -race` needs a working CGO toolchain. Some Windows hosts ship a MinGW gcc that
@@ -149,6 +173,7 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 	const goTests = path.join(ctx.runDir, "backend", "go-tests.jsonl");
 	const goCoverage = path.join(ctx.runDir, "backend", "coverage.out");
 	const historyFlag = ""; // The parent publishes only after the entire run passes source-check.
+	const boundaryScales = boundaryScaleList();
 	const steps: LabEvidenceStep[] = [
 		{ id: "build", title: "Production build", description: "Building the backend and typechecking/building the frontend.", command: "npm --silent run build", timeoutMs: 300000 },
 		{ id: "go-vet", title: "Go static analysis", description: "Running go vet across all backend packages.", command: "go vet ./...", cwd: ctx.backendDir, timeoutMs: 180000 },
@@ -213,16 +238,15 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			timeoutMs: 1200000,
 			env: ctx.externalEnv,
 		},
-		...BOUNDARY_CASES.map((boundaryCase) => ({
-			id: `external-performance-boundary-${boundaryCase.suffix}`,
-			title: `Boundary stress E2E: ${boundaryCase.suffix} (fresh database)`,
-			description:
-				"Running one multi-million-point boundary case on a freshly reset SQLite store so accumulated rows cannot turn create-room into HTTP 500.",
+		...boundaryScales.map((scale) => ({
+			id: `external-performance-boundary-full-render-${scale}`,
+			title: `Boundary stress E2E: full-render ${scale} points (fresh database)`,
+			description: `Running the full-render boundary at ${scale} points on a freshly reset SQLite store so earlier scales cannot consume this runner's memory.`,
 			command: externalRun(
 				ctx,
 				"performance-external",
-				` --case-set=boundary --case-ids=${boundaryCase.id} --matrix=false --runs=1 --warmup=0${boundaryScalesOverride()}`,
-				`boundary-${boundaryCase.suffix}`
+				` --case-set=boundary --case-ids=${FULL_RENDER_BOUNDARY.id} --matrix=false --runs=1 --warmup=0${boundaryScalesFlag([scale])}`,
+				`boundary-full-render-${scale}`
 			),
 			cwd: ctx.frontendDir,
 			requiresServices: true,
@@ -230,6 +254,28 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			timeoutMs: 2400000,
 			env: ctx.externalEnv,
 		})),
+		...BOUNDARY_CASES.map((boundaryCase) => {
+			// The heap-growth case samples the ladder's first scale; redraw-freeze is driven by
+			// concurrency levels and does not read the scale list.
+			const extra = boundaryCase.suffix === "heap-growth" ? boundaryScalesFlag([boundaryScales[0]!]) : "";
+			return {
+				id: `external-performance-boundary-${boundaryCase.suffix}`,
+				title: `Boundary stress E2E: ${boundaryCase.suffix} (fresh database)`,
+				description:
+					"Running one multi-million-point boundary case on a freshly reset SQLite store so accumulated rows cannot turn create-room into HTTP 500.",
+				command: externalRun(
+					ctx,
+					"performance-external",
+					` --case-set=boundary --case-ids=${boundaryCase.id} --matrix=false --runs=1 --warmup=0${extra}`,
+					`boundary-${boundaryCase.suffix}`
+				),
+				cwd: ctx.frontendDir,
+				requiresServices: true,
+				freshServices: true,
+				timeoutMs: 2400000,
+				env: ctx.externalEnv,
+			};
+		}),
 		{
 			id: "external-e2e",
 			title: "External correctness E2E",
@@ -301,6 +347,13 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			kind: "external",
 			path: "external/performance-external-resilience-external-results.json",
 		},
+		...boundaryScales.map((scale) => ({
+			id: `performance-external-boundary-full-render-${scale}`,
+			stepId: `external-performance-boundary-full-render-${scale}`,
+			kind: "external" as const,
+			path: `external/boundary-full-render-${scale}/performance-external-boundary-external-results.json`,
+			expectedCases: [FULL_RENDER_BOUNDARY.id],
+		})),
 		...BOUNDARY_CASES.map((boundaryCase) => ({
 			id: `performance-external-boundary-${boundaryCase.suffix}`,
 			stepId: `external-performance-boundary-${boundaryCase.suffix}`,
@@ -327,6 +380,12 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			kind: "lab-gate",
 			path: "external/performance-external-resilience-lab-gate.json",
 		},
+		...boundaryScales.map((scale) => ({
+			id: `performance-external-boundary-full-render-${scale}-gate`,
+			stepId: `external-performance-boundary-full-render-${scale}`,
+			kind: "lab-gate" as const,
+			path: `external/boundary-full-render-${scale}/performance-external-boundary-lab-gate.json`,
+		})),
 		...BOUNDARY_CASES.map((boundaryCase) => ({
 			id: `performance-external-boundary-${boundaryCase.suffix}-gate`,
 			stepId: `external-performance-boundary-${boundaryCase.suffix}`,
@@ -410,7 +469,7 @@ export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResul
 			const selectionFlags = `${keys.length ? ` --case-keys=${q(ctx, keys.join(","))}` : ""}${scales.length ? ` --scales=${scales.join(",")}` : ""}`;
 			steps.push({
 				id: stepId, title: `Focused external case (${ids.length})`, description: "Running selected cases in their owning suite.",
-				command: externalRun(ctx, suite, ` --case-ids=${ids.join(",")}${selectionFlags}${correctness ? "" : ` --case-set=${caseSet} --matrix=${caseSet === "standard"}${caseSet === "boundary" ? boundaryScalesOverride() : ""}`}`, reportDir),
+				command: externalRun(ctx, suite, ` --case-ids=${ids.join(",")}${selectionFlags}${correctness ? "" : ` --case-set=${caseSet} --matrix=${caseSet === "standard"}${caseSet === "boundary" ? boundaryScalesFlag(boundaryScaleList()) : ""}`}`, reportDir),
 				cwd: ctx.frontendDir, requiresServices: true, freshServices: caseSet === "boundary", timeoutMs: 900000, env: ctx.externalEnv
 			});
 			const prefix = `external/${reportDir ? reportDir + "/" : ""}${tag}`;

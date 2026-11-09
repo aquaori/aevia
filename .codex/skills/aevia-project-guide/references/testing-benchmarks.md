@@ -170,11 +170,11 @@ Lab profiles always write a v2 run manifest, fail-closed evidence, and a lab rep
 | `smoke` | `npm run test:smoke` | catalog-check + 四个 vitest project + correctness-smoke external | off |
 | `ci` | `npm run test:ci` | 与旧 CI 证据链一致（build/vet/go test/coverage/browser/correctness-full）+ 采集门禁 | `--perf=request` 可选，只产 `perf-request.json` |
 | `full` | `npm run test:full` | ci 核心 + Go race + 30 秒 scene-validator fuzz；以当次报告为准 | off |
-| `nightly` | `npm run test:nightly` | ci 全量 + 性能（standard/resilience 各一轮 + boundary 三个 case 各自独立重置库并重启服务）+ race/fuzz + 模块债务清单 | on |
+| `nightly` | `npm run test:nightly` | ci 全量 + 性能（standard/resilience 各一轮 + boundary full-render 每个 scale 各自独立重置库并重启后端，heap-growth/redraw-freeze 各一轮）+ race/fuzz + 模块债务清单 | on |
 
 Nightly probes `go test -race` once while building the plan: hosts without a usable CGO toolchain omit that step with a
 printed note instead of failing the run (the failure is an environment problem, not a product regression).
-`AEVIA_NIGHTLY_BOUNDARY_SCALES=100000,250000` shortens the boundary ladder for a local smoke of the nightly shape.
+`AEVIA_NIGHTLY_BOUNDARY_SCALES=100000,250000` shortens the boundary ladder for a local smoke of the nightly shape. The hosted Linux job caps it at `100000,250000,500000,1000000` because 2M/5M scales need the dedicated large runner.
 
 GitHub nightly uses the fixed Windows performance runner when configured. Otherwise it runs the full performance lane on a hosted Linux runner with `AEVIA_LAB_DIAGNOSTIC=1`: the samples and detailed HTML are retained, but the run is not recorded to history and cannot establish a performance qualification across changing hosts. The matrix correctness job publishes one combined index linking to the nine run-scoped reports.
 

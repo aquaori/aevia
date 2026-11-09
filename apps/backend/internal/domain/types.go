@@ -124,6 +124,19 @@ func snapshotValue(value any) any {
 	}
 }
 
+// RangeFields visits the command's non-point fields. Callers use it to measure or
+// serialise a command without exposing the private field map.
+func (c *CommandData) RangeFields(fn func(key string, value any) bool) {
+	if c == nil {
+		return
+	}
+	for key, value := range c.fields {
+		if !fn(key, value) {
+			return
+		}
+	}
+}
+
 func (c *CommandData) Get(key string) any {
 	if c == nil {
 		return nil

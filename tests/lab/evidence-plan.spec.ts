@@ -1,5 +1,5 @@
 // File role: deterministic checks for the lab evidence plans behind smoke/nightly/single modes.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildLabEvidencePlan,
 	buildNightlyPlan,
@@ -25,6 +25,11 @@ const context = (overrides: Partial<LabPlanContext> = {}): LabPlanContext => ({
 
 const stepIds = (plan: { steps: { id: string }[] }) => plan.steps.map((step) => step.id);
 const artifactIds = (plan: { artifacts: { id: string }[] }) => plan.artifacts.map((artifact) => artifact.id);
+const DEFAULT_FULL_RENDER_SCALES = [100000, 250000, 500000, 1000000, 2000000, 5000000];
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 describe("lab evidence plans", () => {
 	it("builds a smoke plan with gate evidence and isolated services", () => {
@@ -58,7 +63,7 @@ describe("lab evidence plans", () => {
 			"lab-inventory",
 			"external-performance-standard",
 			"external-performance-resilience",
-			"external-performance-boundary-full-render",
+			...DEFAULT_FULL_RENDER_SCALES.map(scale => `external-performance-boundary-full-render-${scale}`),
 			"external-performance-boundary-heap-growth",
 			"external-performance-boundary-redraw-freeze",
 			"source-check",
@@ -67,7 +72,7 @@ describe("lab evidence plans", () => {
 			expect.arrayContaining([
 				"performance-external-standard-gate",
 				"performance-external-resilience-gate",
-				"performance-external-boundary-full-render-gate",
+				...DEFAULT_FULL_RENDER_SCALES.map(scale => `performance-external-boundary-full-render-${scale}-gate`),
 				"performance-external-boundary-heap-growth-gate",
 				"performance-external-boundary-redraw-freeze-gate",
 				"external-correctness-gate",
@@ -80,16 +85,41 @@ describe("lab evidence plans", () => {
 		expect(standard?.command).toContain("--matrix=true");
 		expect(standard?.command).not.toContain("--import-current-to-history=true");
 		const boundarySteps = plan.steps.filter((step) => step.id.startsWith("external-performance-boundary-"));
-		expect(boundarySteps).toHaveLength(3);
+		expect(boundarySteps).toHaveLength(DEFAULT_FULL_RENDER_SCALES.length + 2);
 		for (const boundary of boundarySteps) {
 			expect(boundary.freshServices).toBe(true);
 			expect(boundary.command).toContain("--case-set=boundary");
 			expect(boundary.command).toContain("--case-ids=boundary-");
 		}
-		const boundaryReportDirs = boundarySteps.map((step) => step.command.match(/--report-dir=.*?boundary-[a-z-]+/)?.[0] ?? "");
-		expect(new Set(boundaryReportDirs).size).toBe(3);
+		for (const scale of DEFAULT_FULL_RENDER_SCALES) {
+			const step = plan.steps.find((candidate) => candidate.id === `external-performance-boundary-full-render-${scale}`);
+			expect(step?.command).toContain(`--boundary-scales=${scale}`);
+			expect(step?.command).toMatch(new RegExp(`--report-dir=.*boundary-full-render-${scale}"`));
+		}
+		const heapGrowth = plan.steps.find((step) => step.id === "external-performance-boundary-heap-growth");
+		expect(heapGrowth?.command).toContain(`--boundary-scales=${DEFAULT_FULL_RENDER_SCALES[0]}`);
+		const redrawFreeze = plan.steps.find((step) => step.id === "external-performance-boundary-redraw-freeze");
+		expect(redrawFreeze?.command).not.toContain("--boundary-scales=");
+		const boundaryReportDirs = boundarySteps.map(
+			(step) => step.command.match(/--report-dir=.*?boundary-[a-z0-9-]+/)?.[0] ?? ""
+		);
+		expect(new Set(boundaryReportDirs).size).toBe(boundarySteps.length);
 		const correctness = plan.artifacts.find((artifact) => artifact.id === "external-correctness");
 		expect(correctness?.expectedCases).toEqual(CORRECTNESS_FULL_EXTERNAL_CASE_IDS);
+	});
+
+	it("splits full-render boundary only for the scales requested by env", () => {
+		vi.stubEnv("AEVIA_NIGHTLY_BOUNDARY_SCALES", "100000, 250000,100000,oops,0,-5,1.5");
+		const plan = buildNightlyPlan(context());
+		const fullRenderIds = stepIds(plan).filter((id) => id.startsWith("external-performance-boundary-full-render-"));
+		expect(fullRenderIds).toEqual([
+			"external-performance-boundary-full-render-100000",
+			"external-performance-boundary-full-render-250000",
+		]);
+		expect(plan.steps.filter((step) => step.id.startsWith("external-performance-boundary-"))).toHaveLength(4);
+		expect(plan.steps.find((step) => step.id.endsWith("full-render-250000"))?.command).toContain(
+			"--boundary-scales=250000"
+		);
 	});
 
 	it("skips history import on a dirty nightly tree and can request a perf gate", () => {

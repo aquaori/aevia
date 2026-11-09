@@ -296,7 +296,7 @@ const runCase = async (
 		if (labOn) {
 			const snapshots = await collectLabSnapshots();
 			const evidence = deriveCaseEvidence(id, snapshots, finalResult.metrics);
-			finalResult = applyLabEvidence(context, id, finalResult, evidence, 1, 1);
+			finalResult = applyLabEvidence(context, id, finalResult, evidence, 1, 1, finalResult.scale);
 		}
 		logCaseEnd(finalResult);
 		return finalResult;
@@ -743,6 +743,9 @@ const runBoundaryFullRender = async (context: SuiteContext) =>
 		}
 
 		return {
+			// A single configured scale identifies this step's case key, so split boundary
+			// steps can be merged by scenario without colliding as duplicate gate cases.
+			...(context.config.boundaryScales.length === 1 ? { scale: context.config.boundaryScales[0] } : {}),
 			status: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "failed" : "passed",
 			failureType: crashType === "harness-or-cdp-error" || crashType === "cdp-error" ? "harness" : "none",
 			metrics: {

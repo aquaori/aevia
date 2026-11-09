@@ -130,8 +130,31 @@ func estimateValueSize(value any) int {
 	case []domain.FlatPoint:
 		return len(v) * flatPointByteEstimate
 	case domain.Command:
-		return len(v.Points())*pointByteEstimate + commandOverheadEstimate
+		// V2 scene-op commands carry their points under
+		// `sceneOperation.payload.points`, not in the top-level `points` field.
+		// Counting only v.Points() under-estimates those commands by the whole
+		// rendered geometry and lets the 64 MiB delta budget overflow.
+		size := len(v.Points())*pointByteEstimate + commandOverheadEstimate
+		v.RangeFields(func(key string, value any) bool {
+			size += len(key) + estimateValueSize(value)
+			return true
+		})
+		return size
 	case []any:
+		size := 0
+		for _, item := range v {
+			size += estimateValueSize(item)
+		}
+		return size
+	case []map[string]any:
+		size := 0
+		for _, item := range v {
+			for key, value := range item {
+				size += len(key) + estimateValueSize(value)
+			}
+		}
+		return size
+	case []domain.Command:
 		size := 0
 		for _, item := range v {
 			size += estimateValueSize(item)

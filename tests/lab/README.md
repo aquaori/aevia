@@ -52,7 +52,7 @@ Full default boundary scales, actual CI-host race execution, host-specific perfo
 
 Default full-render boundary run `24787c84-fb33-49fb-9324-3264f04aba8e` reaches 250k, then fails collection at 500k. Its `BoundaryObserver500000-failed-load/lab-snapshot.json` records a responsive page, no page errors, 366 retained marks, zero dropped instrumentation marks, 176 render metadata messages and 167 render binary messages, followed by init-complete without final render completion. This is incomplete product streaming, not proof of a renderer capacity limit. `room/actor.go:sendOutbound` can drop a message when its bounded queue is full; `room/stream_send.go` ignores the returned failure while continuing the stream. The configured connection queue has 256 messages. The backend repair is deferred rather than masking this outcome with a larger collection tolerance.
 
-Boundary setup now runs one scale at a time; timeouts without an observed product crash are inconclusive collection failures. Failures retain raw page diagnostics and per-service logs. Known harness failures use COLLECTION_FAILED and cannot be certified as valid measurement collection.
+Boundary full-render now runs one scale per nightly step with a freshly restarted backend and SQLite store; heap-growth and redraw-freeze keep one isolated step each. Timeouts without an observed product crash are inconclusive collection failures. Failures retain raw page diagnostics and per-service logs. Known harness failures use COLLECTION_FAILED and cannot be certified as valid measurement collection.
 
 ## Host decision (2026-11-05)
 

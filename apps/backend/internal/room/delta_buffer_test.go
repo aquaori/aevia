@@ -130,6 +130,22 @@ func TestDeltaBufferSnapshotsMutablePayloads(t *testing.T) {
 	}
 }
 
+func v2SceneCommand(pointCount int) domain.Command {
+	points := make([]any, pointCount)
+	for index := range points {
+		points[index] = map[string]any{
+			"x": float64(index), "y": 1.0, "p": 0.5, "lamport": float64(index),
+		}
+	}
+	return domain.NewCommand(map[string]any{
+		"id": "scene-op-1", "type": "scene-op", "pageId": 0,
+		"sceneOperation": map[string]any{
+			"kind":    "element.append",
+			"payload": map[string]any{"points": points},
+		},
+	})
+}
+
 func TestEstimateValueSizeTracksStructure(t *testing.T) {
 	command := domain.NewCommand(map[string]any{
 		"id": "cmd-1", "pageId": 0,
@@ -146,7 +162,8 @@ func TestEstimateValueSizeTracksStructure(t *testing.T) {
 		{"int", 42, 8},
 		{"point slice", []domain.Point{{}, {}}, 2 * pointByteEstimate},
 		{"flat point slice", []domain.FlatPoint{{}, {}, {}}, 3 * flatPointByteEstimate},
-		{"command", command, pointByteEstimate + commandOverheadEstimate},
+		// points moved out of the field map; "id" (2+5) and "pageId" (6+8) still count.
+		{"command", command, pointByteEstimate + commandOverheadEstimate + 21},
 		{"slice", []any{"ab", true}, 3},
 		{"map", map[string]any{"key": "value"}, 8},
 		{"unknown", struct{}{}, 16},
@@ -165,5 +182,33 @@ func TestEstimateValueSizeTracksStructure(t *testing.T) {
 	}
 	if got := estimateDeltaSize(DeltaEvent{Type: "x", Binary: []byte{1, 2, 3}}); got != 1+3+64 {
 		t.Fatalf("unexpected binary-event estimate: %d", got)
+	}
+}
+
+func TestEstimateValueSizeCountsV2ScenePayloadPoints(t *testing.T) {
+	command := v2SceneCommand(32)
+	topLevelOnly := len(command.Points())*pointByteEstimate + commandOverheadEstimate
+	got := estimateValueSize(command)
+	if got <= topLevelOnly {
+		t.Fatalf("V2 scene payload points are not counted: estimate=%d top-level-only=%d", got, topLevelOnly)
+	}
+	if extra := got - topLevelOnly; extra < 32*pointByteEstimate {
+		t.Fatalf("nested V2 points under-counted: extra=%d want at least %d", extra, 32*pointByteEstimate)
+	}
+}
+
+func TestDeltaBufferTrimsV2CommandsByFullPayloadSize(t *testing.T) {
+	buffer := NewDeltaBuffer(time.Minute, 6000)
+	for sequence := uint64(1); sequence <= 4; sequence++ {
+		buffer.Add(deltaTestEvent(sequence, map[string]any{"cmd": v2SceneCommand(40)}))
+	}
+	if buffer.bytes > buffer.maxBytes {
+		t.Fatalf("expected the byte budget to be enforced, got %d > %d", buffer.bytes, buffer.maxBytes)
+	}
+	if len(buffer.events) >= 4 {
+		t.Fatalf("expected V2 payload bytes to trim old commands, retained %d", len(buffer.events))
+	}
+	if len(buffer.events) == 0 {
+		t.Fatal("expected the newest V2 command to remain retained")
 	}
 }
