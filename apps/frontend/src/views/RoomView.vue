@@ -416,6 +416,7 @@
 		currentPageId,
 		username,
 		currentTool,
+		isHistoryReady: () => loadedPageIds.value.includes(currentPageId.value),
 		insertCommand,
 		renderCanvas,
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
@@ -561,7 +562,10 @@
 		querySceneElements: (rect) => workerBridge.isOffscreenEnabled()
 			? workerBridge.requestSceneQuery(rect)
 			: Promise.resolve(querySceneElements(rect)),
-		requestTextInput: (input) => textEditorRef.value?.open(input) ?? Promise.resolve(null),
+		requestTextInput: (input) => textEditorRef.value?.open({
+			...input,
+			getCanvasRect: () => canvasRef.value?.getBoundingClientRect() ?? { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight },
+		}) ?? Promise.resolve(null),
 		send: roomCollabTransport.send,
 		pushCommand: roomCommandController.pushCommand,
 		renderCanvas,
@@ -783,6 +787,7 @@
 			<!-- Main Drawing Canvas (Bottom Layer) -->
 			<canvas
 				ref="canvasRef"
+				@dblclick="roomPointerControllerRef?.editSelectedText($event)"
 				@pointerdown="startDrawing"
 				@pointermove="draw"
 				@pointerup="stopDrawing"

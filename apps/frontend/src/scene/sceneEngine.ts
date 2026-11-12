@@ -500,7 +500,14 @@ export class SceneEngine {
 	): DirtyRenderMetrics {
 		if (dirtyRects.length === 0) return { mode: "dirty", gridCells: 0, candidateChunks: 0, candidateAtoms: 0, renderedAtoms: 0 };
 		this.dirtyRegions.clear();
-		for (const dirtyRect of dirtyRects) this.dirtyRegions.add(dirtyRect);
+		for (const dirtyRect of dirtyRects) {
+			const padding = this.maxStrokeWidth * 2;
+			this.dirtyRegions.add({
+				minX: dirtyRect.minX - padding, minY: dirtyRect.minY - padding,
+				maxX: dirtyRect.maxX + padding, maxY: dirtyRect.maxY + padding,
+				width: dirtyRect.width + padding * 2, height: dirtyRect.height + padding * 2,
+			});
+		}
 		const regions = this.dirtyRegions.toArray().map((dirtyRect) => {
 			return { dirtyRect, ...this.queryDirtyCandidates(dirtyRect, logicalWidth, logicalHeight, excludedElementIds) };
 		});
@@ -641,10 +648,22 @@ export class SceneEngine {
 		return Array.from(targets.values()).sort((left, right) => left.elementId < right.elementId ? -1 : left.elementId > right.elementId ? 1 : (left.atomId ?? "") < (right.atomId ?? "") ? -1 : 1);
 	}
 
+	getTextEditorState(elementId: string) {
+		const element = this.elements.get(elementId);
+		if (!element || !this.isElementBaseVisible(element) || !element.descriptor.box || (element.descriptor.elementKind !== "text" && element.descriptor.elementKind !== "sticky")) return null;
+		return {
+			descriptor: { ...element.descriptor, style: { ...element.descriptor.style }, box: { ...element.descriptor.box } },
+			matrix: [...element.matrix] as AffineMatrix,
+			characters: this.orderedCharacters(element.characters).filter((character) => !character.deleted).map(({ charId, grapheme }) => ({ charId, grapheme })),
+		};
+	}
+
 	getElementBounds(elementId: string) {
 		const element = this.elements.get(elementId);
 		if (!element) return null;
-		let bounds: AabbBox | null = null;
+		let bounds: AabbBox | null = (element.descriptor.elementKind === "text" || element.descriptor.elementKind === "sticky") && element.descriptor.box
+			? transformBounds(element.matrix, element.descriptor.box)
+			: null;
 		for (const ref of element.atomRefs) {
 			const atom = this.atoms[ref];
 			if (atom?.elementRevision === element.revision) bounds = unionBounds(bounds, transformBounds(element.matrix, atom.bounds));
@@ -848,7 +867,7 @@ export class SceneEngine {
 				break;
 			}
 			case "element.style":
-				if (operation.elementId === elementId) this.applyElementStyle(elementId, operation.payload.style);
+				if (operation.elementId === elementId) this.applyElementStyle(elementId, operation.payload.style, operation.payload.textBox);
 				break;
 			case "element.erase": {
 				for (const target of operation.payload.targets) if (target.elementId === elementId) this.applyEraseTarget(target);
@@ -887,7 +906,7 @@ export class SceneEngine {
 				for (const target of operation.payload.targets) this.applyElementMatrix(target.elementId, target.deltaMatrix);
 				break;
 			case "element.style":
-				this.applyElementStyle(operation.elementId, operation.payload.style);
+				this.applyElementStyle(operation.elementId, operation.payload.style, operation.payload.textBox);
 				break;
 			case "element.erase":
 				for (const target of operation.payload.targets) this.applyEraseTarget(target);
@@ -1074,38 +1093,52 @@ export class SceneEngine {
 		}
 		const characters = this.orderedCharacters(element.characters).filter((character) => !character.deleted);
 		const fontSize = element.descriptor.style.fontSize ?? DEFAULT_FONT_SIZE;
+		const layout = element.descriptor.textLayout;
+		let measure: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null = null;
+		if (layout?.version === 1) {
+			if (typeof OffscreenCanvas !== "undefined") measure = new OffscreenCanvas(1, 1).getContext("2d");
+			else if (typeof document !== "undefined") measure = document.createElement("canvas").getContext("2d");
+			if (measure) measure.font = `${element.descriptor.style.fontWeight ?? 400} ${fontSize}px ${element.descriptor.style.fontFamily ?? "Aevia Sans, Inter, sans-serif"}`;
+		}
 		const advance = Math.max(0.008, fontSize / 1200);
-		const lineHeight = advance * 1.5;
-		const padding = advance * (element.descriptor.elementKind === "sticky" ? 0.85 : 0.4);
-		const maxPerLine = Math.max(1, Math.floor((box.width - padding * 2) / advance));
+		const lineHeight = layout ? fontSize * 1.5 / layout.referenceWidth * layout.aspectRatio : advance * 1.5;
+		const paddingX = layout ? fontSize * (element.descriptor.elementKind === "sticky" ? 0.85 : 0.4) / layout.referenceWidth : advance * (element.descriptor.elementKind === "sticky" ? 0.85 : 0.4);
+		const paddingY = layout ? paddingX * layout.aspectRatio : paddingX;
+		const widthOf = (character: TextCharacterState) => layout ? (measure?.measureText(character.grapheme).width ?? fontSize) / layout.referenceWidth : advance;
 		const lines: TextCharacterState[][] = [[]];
+		let currentWidth = 0;
 		for (const character of characters) {
 			if (character.grapheme === "\n") {
 				lines.push([]);
+				currentWidth = 0;
 				continue;
 			}
 			let line = lines[lines.length - 1]!;
-			if (line.length >= maxPerLine) {
+			const width = widthOf(character);
+			if (line.length && currentWidth + width > Math.max(0, box.width - paddingX * 2)) {
 				line = [];
 				lines.push(line);
+				currentWidth = 0;
 			}
 			line.push(character);
+			currentWidth += width;
 		}
 		lines.forEach((line, lineIndex) => {
-			const lineWidth = line.length * advance;
-			let x = box.minX + padding;
+			const lineWidth = line.reduce((width, character) => width + widthOf(character), 0);
+			let x = box.minX + paddingX;
 			if (element.descriptor.style.textAlign === "center") x = box.minX + (box.width - lineWidth) / 2;
-			if (element.descriptor.style.textAlign === "right") x = box.maxX - padding - lineWidth;
-			const y = box.minY + padding + lineIndex * lineHeight;
+			if (element.descriptor.style.textAlign === "right") x = box.maxX - paddingX - lineWidth;
+			const y = box.minY + paddingY + lineIndex * lineHeight + (layout ? lineHeight / 6 : 0);
 			for (const character of line) {
-				const bounds = { minX: x, minY: y, maxX: x + advance, maxY: y + lineHeight, width: advance, height: lineHeight };
+				const width = widthOf(character);
+				const bounds = { minX: x, minY: y, maxX: x + width, maxY: y + lineHeight, width, height: lineHeight };
 				const atom: Omit<GlyphAtom, "ref"> = {
 					atomId: `${element.id}:glyph:${character.charId}`, elementId: element.id, elementRevision: element.revision, pageId: element.pageId,
 					order: character.order, recipeId: "glyph", primitive: "glyph", toolId: element.descriptor.toolId, style: element.descriptor.style,
-					bounds, grapheme: character.grapheme, x, y, maxWidth: advance * 1.5,
+					bounds, grapheme: character.grapheme, x, y, maxWidth: width * 1.5, referenceWidth: layout?.referenceWidth,
 				};
 				this.storeAtom(element, atom);
-				x += advance;
+				x += width;
 			}
 		});
 		this.maybeCompactIndexes();
@@ -1141,16 +1174,19 @@ export class SceneEngine {
 		const element = this.elements.get(elementId);
 		if (!element || delta.some((value) => !Number.isFinite(value))) return;
 		element.matrix = multiplyMatrices(delta, element.matrix);
+		this.maxStrokeWidth = Math.max(this.maxStrokeWidth, element.descriptor.style.size * matrixScale(element.matrix));
 		this.spatial.reindexElement(elementId, (ref) => transformBounds(element.matrix, this.atoms[ref]!.bounds));
 	}
 
-	private applyElementStyle(elementId: string, style: Partial<SceneElementStyle>) {
+	private applyElementStyle(elementId: string, style: Partial<SceneElementStyle>, textBox?: AabbBox) {
 		const element = this.elements.get(elementId);
 		if (!element) return;
 		element.descriptor = {
 			...element.descriptor,
+			box: textBox && (element.descriptor.elementKind === "text" || element.descriptor.elementKind === "sticky") ? { ...textBox } : element.descriptor.box,
 			style: { ...element.descriptor.style, ...style },
 		};
+		this.maxStrokeWidth = Math.max(this.maxStrokeWidth, element.descriptor.style.size * matrixScale(element.matrix));
 		if (element.descriptor.elementKind === "text" || element.descriptor.elementKind === "sticky") {
 			this.rebuildTextAtoms(element);
 			return;

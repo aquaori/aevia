@@ -144,6 +144,26 @@ func TestValidateSceneCommandAcceptsTextStylePatch(t *testing.T) {
 	}
 }
 
+func TestValidateSceneCommandTextBoxPatch(t *testing.T) {
+	data := validScenePush()
+	op := data["cmd"].(map[string]any)["sceneOperation"].(map[string]any)
+	op["kind"] = "element.style"
+	box := map[string]any{"minX": 0.1, "minY": 0.1, "maxX": 0.5, "maxY": 0.5, "width": 0.4, "height": 0.4}
+	op["payload"] = map[string]any{"style": map[string]any{}, "textBox": box, "textBoxVersion": float64(1)}
+	if code, reason, ok := validateSceneCommand(sceneTestClient(), "push-cmd", data); !ok {
+		t.Fatalf("expected valid text bounds, code=%s reason=%s", code, reason)
+	}
+	box["maxX"] = 2.0
+	if code, _, ok := validateSceneCommand(sceneTestClient(), "push-cmd", data); ok || code != "INVALID_SCENE_OPERATION" {
+		t.Fatalf("expected invalid text bounds, code=%s ok=%v", code, ok)
+	}
+	box["maxX"] = 0.5
+	op["payload"].(map[string]any)["textBoxVersion"] = float64(2)
+	if code, _, ok := validateSceneCommand(sceneTestClient(), "push-cmd", data); ok || code != "INVALID_SCENE_OPERATION" {
+		t.Fatalf("expected unsupported text box version to fail, code=%s ok=%v", code, ok)
+	}
+}
+
 func TestValidateSceneCommandAcceptsAllRegisteredOperationKinds(t *testing.T) {
 	cases := []struct {
 		kind    string

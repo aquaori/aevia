@@ -19,6 +19,7 @@ interface LocalCommandServiceOptions {
 	currentPageId: Ref<number>;
 	username: Ref<string>;
 	currentTool: Ref<EditorTool>;
+	isHistoryReady?: () => boolean;
 	insertCommand: (cmd: Command) => void;
 	renderCanvas: () => void;
 	requestDirtyRender?: (rect: {
@@ -88,6 +89,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 	};
 
 	const undo = (): CommandActionResult => {
+		if (options.isHistoryReady && !options.isHistoryReady()) return { ok: false, error: "页面历史仍在加载，请稍后再撤回。" };
 		const sceneResult = toggleSceneHistory(false);
 		if (sceneResult) return sceneResult;
 		for (let index = options.commands.value.length - 1; index >= 0; index -= 1) {
@@ -97,7 +99,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				command.userId === options.userId.value &&
 				command.pageId === options.currentPageId.value &&
 				!command.isDeleted &&
-				command.type !== "clear"
+				command.type === "path"
 			) {
 				const opId = uuidv4();
 				const lamport = useLamportStore().getNextLamport();
@@ -133,6 +135,7 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 	};
 
 	const redo = (): CommandActionResult => {
+		if (options.isHistoryReady && !options.isHistoryReady()) return { ok: false, error: "页面历史仍在加载，请稍后再重做。" };
 		const historyState = new Map<string, boolean>();
 		for (const command of options.commands.value) {
 			const operation = command.sceneOperation;
@@ -198,26 +201,28 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 
 	const toggleSceneHistory = (enabled: boolean): CommandActionResult | null => {
 		const historyState = new Map<string, boolean>();
+		const groups = new Map<string, Command>();
+		const redoGroups: string[] = [];
 		for (const command of options.commands.value) {
 			const operation = command.sceneOperation;
-			if (!operation) continue;
+			if (!operation || operation.pageId !== options.currentPageId.value) continue;
 			if (operation.kind === "history.toggle") {
 				historyState.set(operation.payload.targetHistoryGroupId, operation.payload.enabled);
-			} else if (!historyState.has(operation.historyGroupId)) {
+				if (operation.actorId !== options.userId.value) continue;
+				const target = operation.payload.targetHistoryGroupId;
+				const index = redoGroups.indexOf(target);
+				if (index !== -1) redoGroups.splice(index, 1);
+				if (!operation.payload.enabled && groups.has(target)) redoGroups.push(target);
+			} else if (operation.actorId === options.userId.value && !groups.has(operation.historyGroupId)) {
+				groups.set(operation.historyGroupId, command);
 				historyState.set(operation.historyGroupId, true);
+				redoGroups.length = 0;
 			}
 		}
-		const candidates = options.commands.value.filter((command) => {
-			const operation = command.sceneOperation;
-			return Boolean(
-				operation &&
-				operation.kind !== "history.toggle" &&
-				operation.actorId === options.userId.value &&
-				operation.pageId === options.currentPageId.value &&
-				(historyState.get(operation.historyGroupId) ?? true) !== enabled
-			);
-		});
-		const target = enabled ? candidates[0] : candidates[candidates.length - 1];
+		const eligibleRedo = redoGroups.filter((group) => historyState.get(group) === false);
+		const target = enabled
+			? groups.get(eligibleRedo[eligibleRedo.length - 1] ?? "")
+			: [...groups.entries()].reverse().find(([group]) => historyState.get(group) !== false)?.[1];
 		const targetOperation = target?.sceneOperation;
 		if (!target || !targetOperation) return null;
 

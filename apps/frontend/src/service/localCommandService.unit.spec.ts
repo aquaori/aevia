@@ -21,12 +21,12 @@ const createCommand = (box: Command["box"]): Command => ({
 	box,
 });
 
-const createService = (command: Command) => {
+const createService = (command: Command | Command[]) => {
 	const requestDirtyRender = vi.fn();
 	const requestSceneRefresh = vi.fn();
 	const renderCanvas = vi.fn();
 	const syncCommandState = vi.fn();
-	const commands = ref([command]);
+	const commands = ref(Array.isArray(command) ? [...command] : [command]);
 	const currentCommandIndex = ref(0);
 	const send = vi.fn(() => true);
 
@@ -48,7 +48,7 @@ const createService = (command: Command) => {
 		send,
 	});
 
-	return { service, requestDirtyRender, requestSceneRefresh, renderCanvas, syncCommandState, send };
+	return { service, commands, requestDirtyRender, requestSceneRefresh, renderCanvas, syncCommandState, send };
 };
 
 describe("local command history rendering", () => {
@@ -98,5 +98,26 @@ describe("local command history rendering", () => {
 
 		expect(state.service.pushCommand({ type: "path" }).ok).toBe(false);
 		expect(state.send).not.toHaveBeenCalled();
+	});
+
+	it("discards an abandoned redo branch after a new local edit", () => {
+		const state = createService(createCommand({ minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 }));
+		const add = (id: string) => state.service.pushCommand({
+			id, type: "scene-op", sceneOperation: {
+				schemaVersion: 2, opId: id, elementId: id, actorId: "user-1", roomId: "room-1", pageId: 0,
+				lamport: 1, historyGroupId: id, kind: "element.create",
+				payload: { descriptor: { elementKind: "path", toolId: "pen", recipeId: "stroke", style: { color: "#000", size: 3 } } },
+			},
+		});
+		add("a"); add("b"); add("c");
+		expect(state.service.undo().ok).toBe(true);
+		expect(state.service.undo().ok).toBe(true);
+		add("d"); add("e");
+		expect(state.service.undo().ok).toBe(true);
+		expect(state.service.undo().ok).toBe(true);
+		const reloaded = createService(state.commands.value);
+		expect(reloaded.service.redo().command?.id).toBe("d");
+		expect(reloaded.service.redo().command?.id).toBe("e");
+		expect(reloaded.service.redo().ok).toBe(false);
 	});
 });

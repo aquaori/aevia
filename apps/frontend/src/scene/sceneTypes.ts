@@ -62,6 +62,7 @@ export interface GlyphAtom extends RenderAtomBase {
 	x: number;
 	y: number;
 	maxWidth: number;
+	referenceWidth?: number;
 }
 
 export interface BitmapAtom extends RenderAtomBase {

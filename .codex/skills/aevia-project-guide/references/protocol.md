@@ -54,6 +54,7 @@ Scene atoms use `(lamport, opId byte order, sourceIndex, subIndex)`. Use `compar
 - The Go gateway requires matching command/operation IDs, identity, room/page, Lamport value, recipe capability, numeric ranges, and `schemaVersion: 2`.
 - V1 path commands remain readable through the SceneEngine adapter. V1 mutation messages are rejected with `UPGRADE_REQUIRED`.
 - New operation/history IDs, created element IDs and inserted character IDs use ASCII letters, digits, `_`, `-`, or `:`; references to legacy non-ASCII IDs remain accepted. A negotiated `scene-append-v2-binary` client-to-server frame carries append point fields as float64; decoded operations use the normal JSON validation and persistence path, and outgoing broadcasts remain JSON. `VITE_SCENE_APPEND_BINARY=0` disables its client use.
+- Text and sticky descriptors may carry `textLayout` version 1 with a reference width and aspect ratio. Resizing uses `element.style` with `textBoxVersion: 1` and `textBox`; the client checks the server's `scene-text-box-v1` capability before sending it. Keep gateway validation and shared types aligned. Old descriptors without these fields retain their legacy layout; older clients do not implement the new layout or resizing semantics.
 - A protocol-only client must take its trusted `userId` from WebSocket `init-meta`; `/join-room` does not expose the token's user ID.
 
 ## Coupling Rules

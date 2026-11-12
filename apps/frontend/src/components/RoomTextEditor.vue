@@ -1,7 +1,7 @@
 <script setup lang="ts">
 	import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 	import { AlignCenter, AlignLeft, AlignRight, Bold, Check, Minus, Plus, X } from "lucide-vue-next";
-	import type { SceneElementStyle, aabbBox } from "@collaborative-whiteboard/shared";
+	import type { AffineMatrix, SceneElementDescriptor, SceneElementStyle, aabbBox } from "@collaborative-whiteboard/shared";
 
 	type TextKind = "text" | "sticky";
 	type TextAlign = NonNullable<SceneElementStyle["textAlign"]>;
@@ -11,20 +11,102 @@
 	const kind = ref<TextKind>("text");
 	const editorStyle = ref<Record<string, string>>({});
 	const textarea = ref<HTMLTextAreaElement | null>(null);
-	const fontFamily = ref("Aevia Sans, Inter, sans-serif");
+	const fontFamily = ref("Arial, sans-serif");
 	const fontSize = ref(20);
 	const fontWeight = ref<400 | 700>(400);
 	const textAlign = ref<TextAlign>("left");
+	const textColor = ref("#172033");
+	const scale = ref(1);
+	const lineScale = ref(1);
+	let textLayout: SceneElementDescriptor["textLayout"];
+	let matrix: AffineMatrix = [1, 0, 0, 1, 0, 0];
 	let composing: boolean = false;
 	let resolveRequest: ((value: string | null) => void) | null = null;
 	let changeListener: ((value: string, reason: "input" | "ime") => void) | null = null;
 	let styleListener: ((style: Partial<SceneElementStyle>) => void) | null = null;
 	let activeElementId: string | null = null;
 	let groupBoundaryListener: (() => void) | null = null;
+	let activeBox: aabbBox | null = null;
+	let getCanvasRect: (() => { left: number; top: number; width: number; height: number }) | null = null;
+	let boxListener: ((box: aabbBox) => boolean | void) | null = null;
+	let resize: { pointerId: number; handle: number; x: number; y: number; box: aabbBox } | null = null;
+
+	const updateEditorPosition = () => {
+		if (!activeBox || !getCanvasRect) return;
+		const canvas = getCanvasRect();
+		if (textLayout) {
+			scale.value = canvas.width / textLayout.referenceWidth;
+			lineScale.value = textLayout.aspectRatio * canvas.height / canvas.width;
+		}
+		const [a, b, c, d, x, y] = matrix;
+		editorStyle.value = {
+			left: `${canvas.left + (a * activeBox.minX + c * activeBox.minY + x) * canvas.width}px`,
+			top: `${canvas.top + (b * activeBox.minX + d * activeBox.minY + y) * canvas.height}px`,
+			width: `${activeBox.width * canvas.width}px`,
+			height: `${activeBox.height * canvas.height}px`,
+			transformOrigin: "top left",
+			transform: `matrix(${a}, ${b * canvas.height / canvas.width}, ${c * canvas.width / canvas.height}, ${d}, 0, 0)`,
+		};
+	};
+
+	const moveResize = (event: PointerEvent) => {
+		if (!resize || event.pointerId !== resize.pointerId || !getCanvasRect) return;
+		const canvas = getCanvasRect();
+		const screenX = (event.clientX - resize.x) / Math.max(1, canvas.width);
+		const screenY = (event.clientY - resize.y) / Math.max(1, canvas.height);
+		const [a, b, c, d] = matrix;
+		const determinant = a * d - b * c;
+		if (!determinant) return;
+		const dx = (d * screenX - c * screenY) / determinant;
+		const dy = (a * screenY - b * screenX) / determinant;
+		const minimumWidth = 16 / Math.max(1, canvas.width);
+		const minimumHeight = 16 / Math.max(1, canvas.height);
+		let { minX, minY, maxX, maxY } = resize.box;
+		if ([1, 7, 8].includes(resize.handle)) minX = Math.max(0, Math.min(maxX - minimumWidth, minX + dx));
+		if ([3, 4, 5].includes(resize.handle)) maxX = Math.min(1, Math.max(minX + minimumWidth, maxX + dx));
+		if ([1, 2, 3].includes(resize.handle)) minY = Math.max(0, Math.min(maxY - minimumHeight, minY + dy));
+		if ([5, 6, 7].includes(resize.handle)) maxY = Math.min(1, Math.max(minY + minimumHeight, maxY + dy));
+		activeBox = { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+		updateEditorPosition();
+	};
+
+	const finishResize = (event: PointerEvent) => {
+		if (!resize || event.pointerId !== resize.pointerId) return;
+		const previous = resize.box;
+		resize = null;
+		window.removeEventListener("pointermove", moveResize);
+		window.removeEventListener("pointerup", finishResize);
+		window.removeEventListener("pointercancel", cancelResize);
+		if (activeBox && JSON.stringify(previous) !== JSON.stringify(activeBox) && boxListener?.({ ...activeBox }) === false) {
+			activeBox = previous;
+			updateEditorPosition();
+		}
+		focusEditor();
+	};
+
+	const cancelResize = (event: PointerEvent) => {
+		if (!resize || event.pointerId !== resize.pointerId) return;
+		activeBox = resize.box;
+		updateEditorPosition();
+		finishResize(event);
+	};
+
+	const beginResize = (event: PointerEvent, handle: number) => {
+		if (!activeBox || !getCanvasRect) return;
+		event.preventDefault();
+		event.stopPropagation();
+		resize = { pointerId: event.pointerId, handle, x: event.clientX, y: event.clientY, box: { ...activeBox } };
+		window.addEventListener("pointermove", moveResize);
+		window.addEventListener("pointerup", finishResize);
+		window.addEventListener("pointercancel", cancelResize);
+	};
 
 	const inputStyle = computed(() => ({
 		fontFamily: fontFamily.value,
-		fontSize: `${fontSize.value}px`,
+		fontSize: `${fontSize.value * scale.value}px`,
+		lineHeight: String(1.5 * lineScale.value),
+		padding: `${fontSize.value * scale.value * (kind.value === "sticky" ? 0.85 : 0.4)}px`,
+		color: textColor.value,
 		fontWeight: String(fontWeight.value),
 		textAlign: textAlign.value,
 	}));
@@ -65,6 +147,15 @@
 		styleListener = null;
 		activeElementId = null;
 		groupBoundaryListener = null;
+		boxListener = null;
+		resize = null;
+		window.removeEventListener("pointermove", moveResize);
+		window.removeEventListener("pointerup", finishResize);
+		window.removeEventListener("pointercancel", cancelResize);
+		activeBox = null;
+		getCanvasRect = null;
+		window.removeEventListener("resize", updateEditorPosition);
+		window.removeEventListener("scroll", updateEditorPosition, true);
 		resolve?.(value);
 	};
 
@@ -101,39 +192,39 @@
 		kind: TextKind;
 		elementId: string;
 		box: aabbBox;
+		getCanvasRect?: () => { left: number; top: number; width: number; height: number };
 		initialText?: string;
+		textLayout?: SceneElementDescriptor["textLayout"];
+		matrix?: AffineMatrix;
 		initialStyle?: Partial<SceneElementStyle>;
 		onChange?: (value: string, reason: "input" | "ime") => void;
 		onStyleChange?: (style: Partial<SceneElementStyle>) => void;
 		onGroupBoundary?: () => void;
+		onBoxChange?: (box: aabbBox) => boolean | void;
 	}) => {
 		if (resolveRequest) resolveRequest(null);
 		kind.value = input.kind;
+		textLayout = input.textLayout;
+		matrix = input.matrix ?? [1, 0, 0, 1, 0, 0];
+		scale.value = 1;
+		lineScale.value = 1;
+		textColor.value = input.initialStyle?.color ?? "#172033";
 		draft.value = input.initialText ?? "";
 		changeListener = input.onChange ?? null;
 		styleListener = input.onStyleChange ?? null;
 		activeElementId = input.elementId;
 		groupBoundaryListener = input.onGroupBoundary ?? null;
-		fontFamily.value = input.initialStyle?.fontFamily ?? "Aevia Sans, Inter, sans-serif";
+		boxListener = input.onBoxChange ?? null;
+		fontFamily.value = input.initialStyle?.fontFamily ?? "Arial, sans-serif";
 		fontSize.value = input.initialStyle?.fontSize ?? 20;
 		fontWeight.value = input.initialStyle?.fontWeight ?? 400;
 		textAlign.value = input.initialStyle?.textAlign ?? "left";
 
-		const viewportWidth = Math.max(1, window.innerWidth);
-		const viewportHeight = Math.max(1, window.innerHeight);
-		const minimumWidth = input.kind === "sticky" ? 260 : 180;
-		const minimumHeight = input.kind === "sticky" ? 190 : 80;
-		const width = Math.min(viewportWidth - 24, Math.max(minimumWidth, input.box.width * viewportWidth));
-		const height = Math.min(viewportHeight - 24, Math.max(minimumHeight, input.box.height * viewportHeight));
-		const left = Math.max(12, Math.min(input.box.minX * viewportWidth, viewportWidth - width - 12));
-		const toolbarSpace = input.kind === "text" ? 54 : 12;
-		const top = Math.max(toolbarSpace, Math.min(input.box.minY * viewportHeight, viewportHeight - height - 12));
-		editorStyle.value = {
-			left: `${left}px`,
-			top: `${top}px`,
-			width: `${width}px`,
-			height: `${height}px`,
-		};
+		activeBox = { ...input.box };
+		getCanvasRect = input.getCanvasRect ?? (() => ({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }));
+		updateEditorPosition();
+		window.addEventListener("resize", updateEditorPosition);
+		window.addEventListener("scroll", updateEditorPosition, true);
 		visible.value = true;
 		focusEditor();
 		return new Promise<string | null>((resolve) => {
@@ -163,7 +254,7 @@
 			>
 				<div v-if="kind === 'text'" class="room-text-toolbar" role="toolbar" aria-label="文字排版">
 					<select v-model="fontFamily" aria-label="字体" @change="emitStyle">
-						<option value="Aevia Sans, Inter, sans-serif">默认字体</option>
+						<option value="Arial, sans-serif">默认字体</option>
 						<option value="Microsoft YaHei UI, sans-serif">微软雅黑</option>
 						<option value="SimSun, serif">宋体</option>
 						<option value="JetBrains Mono, Consolas, monospace">等宽字体</option>
@@ -185,7 +276,9 @@
 				</div>
 
 				<div class="room-text-editor" :class="{ 'room-text-editor--sticky': kind === 'sticky' }">
-					<span v-if="kind === 'text'" v-for="handle in 8" :key="handle" class="selection-handle" :class="`handle-${handle}`" aria-hidden="true"></span>
+					<template v-if="kind === 'text'">
+						<span v-for="handle in 8" :key="handle" class="selection-handle" :class="`handle-${handle}`" aria-hidden="true" @pointerdown="beginResize($event, handle)"></span>
+					</template>
 					<textarea
 						ref="textarea"
 						v-model="draft"
@@ -272,7 +365,8 @@
 		display: flex;
 		width: 100%;
 		height: 100%;
-		border: 1.5px solid #4f7cff;
+		border: 0;
+		outline: 1.5px solid #4f7cff;
 		background: rgba(255, 255, 255, 0.94);
 		box-shadow: 0 0 0 1px rgba(79, 124, 255, 0.08);
 	}
@@ -294,14 +388,18 @@
 	.handle-6 { left: 50%; top: 100%; }
 	.handle-7 { left: 0; top: 100%; }
 	.handle-8 { left: 0; top: 50%; }
+	.handle-1, .handle-5 { cursor: nwse-resize; }
+	.handle-3, .handle-7 { cursor: nesw-resize; }
+	.handle-2, .handle-6 { cursor: ns-resize; }
+	.handle-4, .handle-8 { cursor: ew-resize; }
 
 	.room-text-editor--sticky {
-		overflow: hidden;
 		flex-direction: column;
-		border: 1px solid rgba(171, 145, 56, 0.26);
+		border: 0;
+		outline: 1px solid rgba(171, 145, 56, 0.26);
 		border-radius: 10px 10px 18px 10px;
-		background: linear-gradient(145deg, #fffbea 0%, #fff3ba 100%);
-		box-shadow: 0 18px 42px rgba(71, 59, 30, 0.18), 0 2px 8px rgba(71, 59, 30, 0.08);
+		background: linear-gradient(135deg, #fffbea 0%, #fff3ba 100%);
+		box-shadow: 0 7px 14px rgba(71, 59, 30, 0.18);
 	}
 
 	.room-text-editor--sticky::after {
@@ -327,13 +425,21 @@
 		padding: 10px 12px;
 		color: #172033;
 		line-height: 1.5;
-		letter-spacing: 0.01em;
+		letter-spacing: 0;
+		font-kerning: none;
+		font-variant-ligatures: none;
+		word-break: break-all;
+		overflow-wrap: anywhere;
 		caret-color: #4f46e5;
 	}
 	.room-text-editor__input::placeholder { color: rgba(71, 85, 105, 0.42); }
-	.room-text-editor--sticky .room-text-editor__input { padding: 18px 20px 12px; color: #3d3520; caret-color: #b7791f; }
+	.room-text-editor--sticky .room-text-editor__input { caret-color: #b7791f; }
 
 	.room-text-editor__footer {
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: -48px;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;

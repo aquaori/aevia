@@ -463,6 +463,30 @@ describe("SceneEngine", () => {
 		});
 		expect(engine.sceneHash()).toBe(originalHash);
 	});
+
+	it("reflows a text box when resized and restores it on undo", () => {
+		const engine = new SceneEngine();
+		const box = { minX: 0.1, minY: 0.1, maxX: 0.4, maxY: 0.4, width: 0.3, height: 0.3 };
+		const narrow = { minX: 0.1, minY: 0.1, maxX: 0.15, maxY: 0.4, width: 0.05, height: 0.3 };
+		engine.applyOperation({ ...base("text-box", 1), elementId: "text-box", kind: "element.create", payload: { descriptor: {
+			elementKind: "text", toolId: "text", recipeId: "glyph", style: { color: "#000", size: 2, fontSize: 20 }, box, text: "ABCDEFGH",
+		} } });
+		const original = engine.sceneHash();
+		const resize: SceneOperationEnvelopeV2 = { ...base("resize-text", 2), elementId: "text-box", kind: "element.style", payload: { style: {}, textBox: narrow, textBoxVersion: 1 } };
+		engine.applyOperation(resize);
+		expect(engine.sceneHash()).not.toBe(original);
+		expect(engine.getElementBounds("text-box")?.width).toBeCloseTo(narrow.width);
+		engine.applyOperation({ ...base("undo-resize", 3), kind: "history.toggle", payload: { targetHistoryGroupId: "resize-text", enabled: false } });
+		expect(engine.sceneHash()).toBe(original);
+		expect(engine.getElementBounds("text-box")?.width).toBeCloseTo(box.width);
+		engine.applyOperation({ ...base("redo-resize", 4), kind: "history.toggle", payload: { targetHistoryGroupId: "resize-text", enabled: true } });
+		const first = new SceneEngine();
+		first.applyOperation({ ...base("text-box", 1), elementId: "text-box", kind: "element.create", payload: { descriptor: {
+			elementKind: "text", toolId: "text", recipeId: "glyph", style: { color: "#000", size: 2, fontSize: 20 }, box, text: "ABCDEFGH",
+		} } });
+		first.applyOperation(resize);
+		expect(engine.sceneHash()).toBe(first.sceneHash());
+	});
 });
 
 describe("deterministic erasure", () => {

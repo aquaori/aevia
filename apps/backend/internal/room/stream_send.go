@@ -15,7 +15,7 @@ func SendInitStream(out chan Outbound, roomName string, client ClientInfo, resul
 		return
 	}
 	if result.Resume == "current" {
-		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-meta", Data: map[string]any{"capabilities": []string{"scene-append-v2-binary"}, "roomId": result.Room.RoomID, "userId": client.UserID, "userName": client.UserName, "onlineCount": result.Online, "memberList": result.Members, "fromRoomSeq": result.ResumeSeq, "toRoomSeq": result.ResumeSeq, "totalEvents": 0}}})
+		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-meta", Data: map[string]any{"capabilities": []string{"scene-append-v2-binary", "scene-text-box-v1"}, "roomId": result.Room.RoomID, "userId": client.UserID, "userName": client.UserName, "onlineCount": result.Online, "memberList": result.Members, "fromRoomSeq": result.ResumeSeq, "toRoomSeq": result.ResumeSeq, "totalEvents": 0}}})
 		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-complete", Data: map[string]any{"roomSeq": result.ResumeSeq}}})
 		return
 	}
@@ -26,7 +26,7 @@ func SendInitStream(out chan Outbound, roomName string, client ClientInfo, resul
 	profile := os.Getenv("INIT_PROFILE") == "1"
 	startedAt := time.Now()
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "init-meta", Data: map[string]any{
-		"capabilities": []string{"scene-append-v2-binary"}, "status": "connected", "userId": client.UserID, "userName": client.UserName,
+		"capabilities": []string{"scene-append-v2-binary", "scene-text-box-v1"}, "status": "connected", "userId": client.UserID, "userName": client.UserName,
 		"roomId": result.Room.RoomID, "roomName": roomName, "onlineCount": result.Online,
 		"memberList": result.Members, "snapshotVersion": result.Init.SnapshotVersion,
 		"totalPage": result.Init.Meta["totalPage"], "pageId": result.Init.Meta["pageId"],
@@ -85,7 +85,7 @@ func (b SnapshotBuilder) SendLiveInitStream(out chan Outbound, state State, clie
 		},
 	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "init-meta", Data: map[string]any{
-		"capabilities": []string{"scene-append-v2-binary"}, "status": "connected", "userId": client.UserID, "userName": client.UserName,
+		"capabilities": []string{"scene-append-v2-binary", "scene-text-box-v1"}, "status": "connected", "userId": client.UserID, "userName": client.UserName,
 		"roomId": state.Room.RoomID, "roomName": state.Room.Name, "onlineCount": online,
 		"memberList": members, "snapshotVersion": snapshotVersion,
 		"totalPage": state.Room.TotalPage, "pageId": current,
@@ -118,7 +118,7 @@ func (b SnapshotBuilder) SendLiveInitStream(out chan Outbound, state State, clie
 
 func sendDeltaReplay(ch *streamSender, result JoinResult) {
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-meta", Data: map[string]any{
-		"capabilities": []string{"scene-append-v2-binary"},
+		"capabilities": []string{"scene-append-v2-binary", "scene-text-box-v1"},
 		"roomId":       result.Room.RoomID,
 		"fromRoomSeq":  result.Deltas[0].RoomSeq,
 		"toRoomSeq":    result.Deltas[len(result.Deltas)-1].RoomSeq,
