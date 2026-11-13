@@ -1,0 +1,42 @@
+name: Aevia main verification
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  verify:
+    name: Main build and smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/backend/go.mod
+          cache-dependency-path: apps/backend/go.sum
+      - name: Verify merged pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          gh api "repos/$GH_REPO/commits/$COMMIT/pulls" --jq '.[] | select(.merged_at != null and .base.ref == "main") | .merge_commit_sha' | grep -Fx "$COMMIT"
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:single -- --only=case:harness-health --live=off
+        env:
+          AEVIA_TEST_BROWSER: chromium
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aevia-main-evidence
+          path: tests/reports/summary/runs/
+          if-no-files-found: warn
+          retention-days: 14

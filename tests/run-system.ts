@@ -40,12 +40,12 @@ type ExternalServices = {
 };
 
 type ExternalMode = "headless" | "headed";
-type ManagedProfile = "quick" | "ci" | "full" | "smoke" | "nightly" | "single";
+type ManagedProfile = "quick" | "ci" | "full" | "smoke" | "pr" | "nightly" | "single";
 type Profile = ManagedProfile | "standard" | "boundary-small" | "boundary-full" | "custom";
 
 type CoreProfile = "quick" | "ci" | "full";
 const CORE_PROFILES: readonly CoreProfile[] = ["quick", "ci", "full"];
-const MANAGED_PROFILES: readonly ManagedProfile[] = ["quick", "ci", "full", "smoke", "nightly", "single"];
+const MANAGED_PROFILES: readonly ManagedProfile[] = ["quick", "ci", "full", "smoke", "pr", "nightly", "single"];
 const isManagedProfile = (value: Profile): value is ManagedProfile =>
 	(MANAGED_PROFILES as readonly string[]).includes(value);
 const isCoreProfile = (value: ManagedProfile): value is CoreProfile =>
@@ -53,7 +53,7 @@ const isCoreProfile = (value: ManagedProfile): value is CoreProfile =>
 
 const managedModeOf = (profile: ManagedProfile): LabMode => {
 	if (profile === "single") return "single";
-	if (profile === "quick" || profile === "smoke") return "smoke";
+	if (profile === "quick" || profile === "smoke" || profile === "pr") return "smoke";
 	if (profile === "ci") return "ci";
 	return "nightly";
 };

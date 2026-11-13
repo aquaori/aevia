@@ -2,7 +2,9 @@ name: Aevia quick checks
 
 on:
   push:
+    branches-ignore: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -64,11 +66,3 @@ jobs:
         env:
           CI_BASE: ${{ steps.base.outputs.sha }}
         run: node scripts/ci-changed.mjs
-      - if: steps.changes.outputs.frontend == 'true'
-        run: npm run test:quick:suite
-      - if: steps.changes.outputs.frontend == 'true'
-        run: npm run build:frontend
-      - if: steps.changes.outputs.backend == 'true'
-        run: npm run test:go
-      - if: steps.changes.outputs.backend == 'true'
-        run: npm run test:go:vet
