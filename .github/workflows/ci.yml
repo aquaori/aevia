@@ -4,8 +4,6 @@ run-name: Aevia correctness / ${{ inputs.ci_hub_request_id || github.run_number 
 on:
   push:
     branches-ignore: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       test_package:
@@ -32,7 +30,7 @@ permissions:
 
 jobs:
   core:
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.test_package == 'core')
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.test_package == 'core')
     name: Linux / Chromium core
     runs-on: ubuntu-24.04
     timeout-minutes: 25
