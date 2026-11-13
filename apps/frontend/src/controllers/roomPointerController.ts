@@ -351,6 +351,8 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		scene.rebuildFromCommands(options.commands.value, options.currentPageId.value);
 		const state = scene.getTextEditorState(hit.elementId);
 		if (!state) return;
+		options.selectedCommandIds.value = new Set();
+		options.selectedSceneBounds.value = null;
 		await editText(hit.elementId, state.descriptor, state.characters, true, state.matrix);
 	};
 
