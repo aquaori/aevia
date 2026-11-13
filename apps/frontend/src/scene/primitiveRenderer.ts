@@ -257,28 +257,32 @@ export const drawPrimitive = (
 			}
 		} else if (atom.shapeKind === "rounded-rectangle") {
 			const radius = Math.min(box.width, box.height) * 0.12;
+			const radiusX = atom.toolId === "sticky" ? Math.min(box.width / 2, 10 / logicalWidth) : radius;
+			const radiusY = atom.toolId === "sticky" ? Math.min(box.height / 2, 10 / logicalHeight) : radius;
+			const bottomRightX = atom.toolId === "sticky" ? Math.min(box.width / 2, 18 / logicalWidth) : radius;
+			const bottomRightY = atom.toolId === "sticky" ? Math.min(box.height / 2, 18 / logicalHeight) : radius;
 			const pixel = (x: number, y: number) => {
 				const point = transformPoint(matrix, x, y);
 				return { x: point.x * logicalWidth, y: point.y * logicalHeight };
 			};
-			const start = pixel(box.minX + radius, box.minY);
+			const start = pixel(box.minX + radiusX, box.minY);
 			ctx.moveTo(start.x, start.y);
-			const topRightStart = pixel(box.maxX - radius, box.minY);
+			const topRightStart = pixel(box.maxX - radiusX, box.minY);
 			const topRightCorner = pixel(box.maxX, box.minY);
-			const topRightEnd = pixel(box.maxX, box.minY + radius);
+			const topRightEnd = pixel(box.maxX, box.minY + radiusY);
 			ctx.lineTo(topRightStart.x, topRightStart.y);
 			ctx.quadraticCurveTo(topRightCorner.x, topRightCorner.y, topRightEnd.x, topRightEnd.y);
-			const bottomRightStart = pixel(box.maxX, box.maxY - radius);
+			const bottomRightStart = pixel(box.maxX, box.maxY - bottomRightY);
 			const bottomRightCorner = pixel(box.maxX, box.maxY);
-			const bottomRightEnd = pixel(box.maxX - radius, box.maxY);
+			const bottomRightEnd = pixel(box.maxX - bottomRightX, box.maxY);
 			ctx.lineTo(bottomRightStart.x, bottomRightStart.y);
 			ctx.quadraticCurveTo(bottomRightCorner.x, bottomRightCorner.y, bottomRightEnd.x, bottomRightEnd.y);
-			const bottomLeftStart = pixel(box.minX + radius, box.maxY);
+			const bottomLeftStart = pixel(box.minX + radiusX, box.maxY);
 			const bottomLeftCorner = pixel(box.minX, box.maxY);
-			const bottomLeftEnd = pixel(box.minX, box.maxY - radius);
+			const bottomLeftEnd = pixel(box.minX, box.maxY - radiusY);
 			ctx.lineTo(bottomLeftStart.x, bottomLeftStart.y);
 			ctx.quadraticCurveTo(bottomLeftCorner.x, bottomLeftCorner.y, bottomLeftEnd.x, bottomLeftEnd.y);
-			const topLeftStart = pixel(box.minX, box.minY + radius);
+			const topLeftStart = pixel(box.minX, box.minY + radiusY);
 			const topLeftCorner = pixel(box.minX, box.minY);
 			ctx.lineTo(topLeftStart.x, topLeftStart.y);
 			ctx.quadraticCurveTo(topLeftCorner.x, topLeftCorner.y, start.x, start.y);
