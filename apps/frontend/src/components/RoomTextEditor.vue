@@ -203,6 +203,7 @@
 		onBoxChange?: (box: aabbBox) => boolean | void;
 	}) => {
 		if (resolveRequest) resolveRequest(null);
+		composing = false;
 		kind.value = input.kind;
 		textLayout = input.textLayout;
 		matrix = input.matrix ?? [1, 0, 0, 1, 0, 0];

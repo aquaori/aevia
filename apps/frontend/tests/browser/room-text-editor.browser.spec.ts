@@ -57,6 +57,24 @@ describe("RoomTextEditor canvas placement", () => {
 		wrapper.unmount();
 	});
 
+	it("accepts input after an interrupted IME composition and reopening", async () => {
+		const wrapper = mount(RoomTextEditor, { attachTo: document.body });
+		const box = { minX: 0.1, minY: 0.2, maxX: 0.3, maxY: 0.4, width: 0.2, height: 0.2 };
+		void wrapper.vm.open({ kind: "text", elementId: "first", box });
+		await nextTick();
+		document.querySelector("textarea")!.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+		document.querySelector<HTMLButtonElement>('[aria-label="取消"]')!.click();
+		await nextTick();
+		const onChange = vi.fn();
+		void wrapper.vm.open({ kind: "text", elementId: "second", box, onChange });
+		await nextTick();
+		const input = document.querySelector<HTMLTextAreaElement>("textarea")!;
+		input.value = "中文";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(onChange).toHaveBeenCalledWith("中文", "input");
+		wrapper.unmount();
+	});
+
 	it("restores bounds if the resize cannot be sent or the gesture is cancelled", async () => {
 		const wrapper = mount(RoomTextEditor, { attachTo: document.body });
 		const onBoxChange = vi.fn(() => false);
