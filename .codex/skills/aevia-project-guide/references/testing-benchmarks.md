@@ -20,8 +20,8 @@ Root:
 - `tests/report/feature-obligations.spec.ts`: TypeScript AST parity checks for frontend routes/tools, validates evidence references, and verifies catalog shape.
 - `tests/browser-launch.ts`: selected Playwright browser and Chromium executable resolution.
 - `.github/workflows/quick.yml`: push/PR commit and PR-title lint, changed-file ESLint/gofmt, and task-dependent quick checks.
-- `.github/workflows/ci.yml`: Linux/Chromium core on push/PR; OS/browser matrix is scheduled or manually dispatched. It does not run performance gates.
-- `.github/workflows/pr.yml`: validates the source push runs and runs the `pr` managed profile on the proposed merge; `.github/workflows/main.yml` builds and smoke-checks the merged main commit. During migration the old PR checks remain enabled until branch protection has switched; see `docs/git-event-ci.md`.
+- `.github/workflows/ci.yml`: Linux/Chromium core on development branch push; OS/browser matrix is scheduled or manually dispatched. It does not run performance gates.
+- `.github/workflows/pr.yml`: validates the source push runs and runs the `pr` managed profile on the proposed merge; `.github/workflows/main.yml` builds and smoke-checks the merged main commit. See `docs/git-event-ci.md`.
 - `tests/reports/`: generated report outputs.
 
 Frontend:

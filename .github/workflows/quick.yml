@@ -3,8 +3,6 @@ name: Aevia quick checks
 on:
   push:
     branches-ignore: [main]
-  pull_request:
-    branches: [main]
 
 permissions:
   contents: read

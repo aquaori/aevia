@@ -5,4 +5,4 @@
 - A push to `main` runs `main.yml`, verifies association with a merged PR, builds the resulting tree and runs the public WebSocket-to-canvas health case. A failure is post-merge evidence and must block any future deployment.
 - `nightly.yml` and the scheduled/manual compatibility matrix in `ci.yml` remain separate.
 
-During migration `quick.yml` and `ci.yml` also run for PRs so existing branch protection continues to work. Verify `PR merge checks` on a real PR, then require that check with the PR branch up to date with `main`; only after that remove the old PR triggers and required checks. The PR verifier waits up to 15 minutes for push runs and fails when the head has no successful push evidence. Same-repository branches are supported; fork PRs require a separate trust and evidence policy.
+Branch protection requires `PR merge checks` with the PR branch up to date with `main`. The PR verifier waits up to 15 minutes for push runs and fails when the head has no successful push evidence. Same-repository branches are supported; fork PRs require a separate trust and evidence policy.
