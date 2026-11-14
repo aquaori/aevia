@@ -167,6 +167,30 @@ func TestOwnerCanRemoveGuestSession(t *testing.T) {
 	}
 }
 
+func TestGuestViewerCannotWrite(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "readonlyowner", "password": "password123"}, "")
+	ownerToken := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777008", "roomName": "Room"}, ownerToken)
+	_, guest := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777008", "userName": "游客"}, "")
+	guestToken := guest.Data["sessionToken"].(string)
+	claims, err := auth.NewTokenService("test-secret").Verify(guestToken, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := dialGatewayWebsocket(t, server, guestToken)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	readGatewayWSType(t, conn, "init-complete")
+	if status, _ := do(t, server, "POST", "/v2/rooms/777008/guests/"+claims.UserID, map[string]any{"action": "viewer"}, ownerToken); status != 200 {
+		t.Fatalf("set viewer: %d", status)
+	}
+	readGatewayWSType(t, conn, "role.changed")
+	writeGatewayWSJSON(t, conn, testScenePush("viewer-stroke", claims.UserID, "777008"))
+	if message := readGatewayWSType(t, conn, "op-rejected"); message.Data["code"] != "FORBIDDEN" {
+		t.Fatalf("viewer write rejection: %+v", message.Data)
+	}
+}
+
 func TestAccountDeviceReplacement(t *testing.T) {
 	server := newTestServer(t)
 	_, account := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "multidevice", "password": "password123"}, "")
