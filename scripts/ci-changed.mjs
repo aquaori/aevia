@@ -13,6 +13,8 @@ function run(command, args) {
 }
 const js = files.filter((file) => existsSync(file) && /\.(js|cjs|mjs|ts|tsx|vue)$/.test(file));
 if (js.length) run(process.execPath, ["node_modules/eslint/bin/eslint.js", "--no-warn-ignored", ...js]);
+const workflows = files.filter((file) => existsSync(file) && /^\.github\/workflows\/[^/]+\.ya?ml$/.test(file));
+if (workflows.length) run("go", ["run", "github.com/rhysd/actionlint/cmd/actionlint@v1.7.7", ...workflows]);
 const go = files.filter((file) => existsSync(file) && file.endsWith(".go"));
 if (go.length) {
 	const result = spawnSync("gofmt", ["-l", ...go], { encoding: "utf8" });
