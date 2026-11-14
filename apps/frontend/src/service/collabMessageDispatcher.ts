@@ -165,6 +165,7 @@ export const createCollabMessageDispatcher = (options: CollabMessageDispatcherOp
 
 	return {
 		handleMessage,
+		clearInitCompletionTimer: commandHandlers.clearInitCompletionTimer,
 		recordPageChangeLocalCommand: commandHandlers.recordPageChangeLocalCommand,
 		handleInitRenderChunkBinary: (meta: InitRenderChunkMetaPayload) => {
 			commandHandlers.handleInitRenderChunkBinary(meta);

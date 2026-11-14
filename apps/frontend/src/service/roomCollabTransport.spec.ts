@@ -8,7 +8,7 @@ vi.mock("vue-sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: 
 vi.mock("./collabMessageDispatcher", () => ({
 	createCollabMessageDispatcher: (options: { onInitSnapshotCommitted: (version: number) => void }) => {
 		dispatcherState.onSnapshot = options.onInitSnapshotCommitted;
-		return { handleMessage: vi.fn(), recordPageChangeLocalCommand: vi.fn(), handleInitRenderChunkBinary: vi.fn(), handlePageChangeRenderChunkBinary: vi.fn() };
+		return { handleMessage: vi.fn(), clearInitCompletionTimer: vi.fn(), recordPageChangeLocalCommand: vi.fn(), handleInitRenderChunkBinary: vi.fn(), handlePageChangeRenderChunkBinary: vi.fn() };
 	},
 }));
 
