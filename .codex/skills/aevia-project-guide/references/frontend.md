@@ -13,6 +13,7 @@ Read this for Vue room behavior, canvas interaction, command state, rendering, p
 - `apps/frontend/src/store/userStore.ts`: persisted token/user identity in `sessionStorage`.
 - `apps/frontend/src/store/accountStore.ts`: persistent account session and profile in `localStorage`; this is separate from the current room session.
 - `apps/frontend/src/components/AccountPanel.vue`, `RoomSettings.vue`, `RoomInvites.vue`: account, member/room settings, and room invitation flows.
+- `apps/frontend/src/entry.css`, root `tokens.css` and `design.md`: the shared room-entry, invite, account and settings presentation; `HomeView.vue` renders separate guest and signed-in layouts. Room settings and account dialogs are also used from the whiteboard.
 - `apps/frontend/src/store/commandStore.ts`: page-bucketed commands, command map, pending updates, history pointer, loaded page window.
 - `apps/frontend/src/store/lamportStore.ts`: Lamport clock plus dirty-point collision/redraw support.
 - `apps/frontend/src/states/roomSessionState.ts`: token/session/reconnect flags.

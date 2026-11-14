@@ -1,5 +1,7 @@
 <script setup lang="ts">
-	import { ref } from "vue";
+	import { nextTick, ref, watch } from "vue";
+	import { X, UserRound, ChevronDown } from "lucide-vue-next";
+	import "../entry.css";
 	import { toast } from "vue-sonner";
 	import { useAccountStore } from "../store/accountStore";
 	import axios from "axios";
@@ -13,6 +15,9 @@
 	const password = ref("");
 	const nickname = ref("");
 	const busy = ref(false);
+	const dialogRef = ref<HTMLElement | null>(null);
+	const triggerRef = ref<HTMLButtonElement | null>(null);
+	watch(open, async (value) => { await nextTick(); if (value) dialogRef.value?.focus(); else triggerRef.value?.focus(); });
 
 	async function submit() {
 		busy.value = true;
@@ -38,31 +43,10 @@
 </script>
 
 <template>
-	<div class="absolute right-5 z-20" :class="props.inRoom ? 'bottom-5' : 'top-5'">
-		<button class="rounded-full bg-white/80 px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm ring-1 ring-slate-200 hover:text-indigo-600" @click="nickname = account.account?.nickname || ''; open = true">
-			{{ account.account?.nickname || "登录 / 注册" }}
-		</button>
-	</div>
-	<div v-if="open" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4" @click.self="open = false">
-		<section class="w-full max-w-sm rounded-3xl border border-white bg-white/95 p-7 shadow-2xl backdrop-blur-xl" aria-label="账号">
-			<div class="mb-5 flex items-center justify-between">
-				<h2 class="text-xl font-bold text-slate-800">{{ account.account ? "账号设置" : mode === "login" ? "欢迎回来" : "创建账号" }}</h2>
-				<button class="text-slate-400 hover:text-slate-700" aria-label="关闭" @click="open = false">✕</button>
-			</div>
-			<template v-if="account.account">
-				<p class="mb-4 text-sm text-slate-500">登录用户名：{{ account.account.username }}</p>
-				<label class="block text-sm font-medium text-slate-600">昵称<input v-model="nickname" class="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400" maxlength="40" /></label>
-				<button class="mt-5 w-full rounded-xl bg-indigo-600 py-3 font-bold text-white hover:bg-indigo-700" @click="saveNickname">保存昵称</button>
-				<button class="mt-3 w-full py-2 text-sm text-slate-500 hover:text-slate-800" @click="logout">退出当前设备</button>
-			</template>
-			<form v-else class="space-y-4" @submit.prevent="submit">
-				<label class="block text-sm font-medium text-slate-600">用户名<input v-model="username" autocomplete="username" required class="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400" /></label>
-				<label class="block text-sm font-medium text-slate-600">密码<input v-model="password" type="password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" required class="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400" /></label>
-				<label v-if="mode === 'register'" class="block text-sm font-medium text-slate-600">昵称（选填）<input v-model="nickname" maxlength="40" class="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-indigo-400" /></label>
-				<p v-if="mode === 'register'" class="text-xs text-slate-400">用户名至少 3 个字符，密码至少 8 个字符。</p>
-				<button :disabled="busy" class="w-full rounded-xl bg-indigo-600 py-3 font-bold text-white hover:bg-indigo-700 disabled:opacity-50">{{ busy ? "请稍候…" : mode === "login" ? "登录" : "注册并登录" }}</button>
-				<button type="button" class="w-full text-sm text-indigo-600" @click="mode = mode === 'login' ? 'register' : 'login'">{{ mode === "login" ? "还没有账号？注册" : "已有账号？登录" }}</button>
-			</form>
-		</section>
-	</div>
+ <div class="entry-account-position" :class="{ 'in-room': props.inRoom }"><button ref="triggerRef" class="entry-account-trigger" @click="nickname = account.account?.nickname || ''; open = true"><span class="entry-avatar"><UserRound :size="16"/></span><span>{{ account.account?.nickname || '登录 / 注册' }}</span><ChevronDown :size="14"/></button></div>
+ <Teleport to="body"><div v-if="open" class="entry-modal" @click.self="open = false" @keydown.esc="open = false"><section ref="dialogRef" tabindex="-1" class="entry-dialog entry-account-dialog" role="dialog" aria-modal="true" aria-label="账号">
+  <div class="entry-dialog-header"><div><h2>{{ account.account ? '账号设置' : mode === 'login' ? '登录 Aevia' : '创建账号' }}</h2><p>{{ account.account ? '管理你的个人资料' : mode === 'login' ? '登录后管理你的房间' : '注册后即可创建和管理房间' }}</p></div><button class="entry-icon-button" aria-label="关闭" @click="open = false"><X :size="18"/></button></div>
+  <template v-if="account.account"><div class="entry-profile-line"><span>登录用户名</span><strong>{{ account.account.username }}</strong></div><div class="entry-form"><label>昵称<input v-model="nickname" maxlength="40" /></label></div><button class="entry-button primary wide" @click="saveNickname">保存昵称</button><button class="entry-dialog-link" @click="logout">退出当前设备</button></template>
+  <form v-else @submit.prevent="submit"><div class="entry-form"><label>用户名<input v-model="username" autocomplete="username" required /></label><label>密码<input v-model="password" type="password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" required /></label><label v-if="mode === 'register'">昵称 <span class="entry-optional">选填</span><input v-model="nickname" maxlength="40" /></label><p v-if="mode === 'register'" class="entry-form-hint">用户名至少 3 个字符，密码至少 8 个字符。</p></div><button :disabled="busy" class="entry-button primary wide">{{ busy ? '请稍候…' : mode === 'login' ? '登录' : '注册并登录' }}</button><button type="button" class="entry-dialog-link" @click="mode = mode === 'login' ? 'register' : 'login'">{{ mode === 'login' ? '还没有账号？注册' : '已有账号？登录' }}</button></form>
+ </section></div></Teleport>
 </template>

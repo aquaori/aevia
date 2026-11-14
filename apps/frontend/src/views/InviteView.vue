@@ -1,7 +1,8 @@
 <script setup lang="ts">
 	import { ref, onMounted } from "vue";
 	import { useRoute, useRouter } from "vue-router";
-	import { User, Lock, ArrowRight, Loader2, Sparkles } from "lucide-vue-next";
+	import { ArrowRight, Loader2, Palette, Users } from "lucide-vue-next";
+	import "../entry.css";
 	import axios from "axios";
 	import { toast } from "vue-sonner";
 	import { useUserStore } from "../store/userStore";
@@ -33,7 +34,7 @@
 	const isLoading = ref(false);
 	const passwordRequired = ref(false);
 
-	const mockRoomName = ref(roomName); // Mock data
+	const inviteError = ref(false);
 
 	onMounted(() => {
 		userStore.clearAll();
@@ -45,6 +46,7 @@
 				passwordRequired.value = meta.passwordRequired;
 			})
 			.catch((err) => {
+				inviteError.value = true;
 				console.error("Error fetching room info: ", err.response?.data?.msg || "未知错误");
 			});
 	});
@@ -89,132 +91,7 @@
 </script>
 
 <template>
-	<div
-		class="min-h-screen relative flex items-center justify-center p-4 bg-slate-50 overflow-hidden font-sans"
-	>
-		<!-- Animated Background (Simplified from HomeView) -->
-		<div class="fixed inset-0 overflow-hidden pointer-events-none">
-			<div
-				class="absolute -top-[10%] -left-[10%] w-[50vh] h-[50vh] rounded-full mix-blend-multiply filter blur-[80px] opacity-70 bg-purple-300 animate-blob"
-			></div>
-			<div
-				class="absolute bottom-[10%] right-[10%] w-[60vh] h-[60vh] rounded-full mix-blend-multiply filter blur-[80px] opacity-70 bg-indigo-200 animate-blob"
-				style="animation-delay: 2s"
-			></div>
-		</div>
-
-		<!-- Card -->
-		<div class="relative z-10 w-full max-w-[420px]">
-			<div
-				class="bg-white/80 backdrop-blur-2xl rounded-4xl shadow-2xl shadow-indigo-500/10 border border-white overflow-hidden"
-			>
-				<!-- Header Decoration -->
-				<div
-					class="h-1.5 w-full bg-linear-to-r from-indigo-500 via-purple-500 to-pink-500"
-				></div>
-
-				<div class="p-8 sm:p-10">
-					<div class="text-center mb-8">
-						<div
-							class="inline-flex items-center justify-center p-3 mb-4 rounded-2xl bg-indigo-50 text-indigo-600 shadow-sm ring-1 ring-indigo-100"
-						>
-							<Sparkles class="w-6 h-6" />
-						</div>
-						<h1 class="text-2xl font-black text-slate-800 tracking-tight mb-2">
-							邀请你加入
-						</h1>
-						<p
-							class="text-lg font-bold text-transparent bg-clip-text bg-linear-to-r from-indigo-600 to-purple-600"
-						>
-							{{ mockRoomName }}
-						</p>
-						<p class="text-slate-400 text-sm mt-1 font-mono">ID: {{ roomId }}</p>
-					</div>
-
-					<div class="space-y-5">
-						<div class="group">
-							<label
-								class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1"
-								>你的名字</label
-							>
-							<div
-								class="relative transition-all duration-300 focus-within:transform focus-within:-translate-y-1"
-							>
-								<div
-									class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors"
-								>
-									<User class="w-5 h-5" />
-								</div>
-								<input
-									v-model="username"
-									:disabled="!!accountStore.account"
-									type="text"
-									placeholder="怎么称呼你？"
-									@keyup.enter="joinRoom"
-									class="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all font-medium text-slate-800 placeholder:text-slate-400"
-								/>
-							</div>
-						</div>
-
-						<div class="group">
-							<label
-								class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1"
-								>房间密码 {{ passwordRequired ? "(必填)" : "(如有)" }}</label
-							>
-							<div
-								class="relative transition-all duration-300 focus-within:transform focus-within:-translate-y-1"
-							>
-								<div
-									class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors"
-								>
-									<Lock class="w-5 h-5" />
-								</div>
-								<input
-									v-model="password"
-									type="password"
-									placeholder="••••••"
-									@keyup.enter="joinRoom"
-									class="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all font-medium text-slate-800 placeholder:text-slate-400"
-								/>
-							</div>
-						</div>
-
-						<button
-							@click="joinRoom"
-							:disabled="!username || isLoading"
-							class="w-full py-4 bg-linear-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-2xl font-bold text-lg shadow-xl shadow-indigo-500/20 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 flex items-center justify-center gap-2 mt-2"
-						>
-							<span v-if="isLoading">
-								<Loader2 class="w-5 h-5 animate-spin" />
-							</span>
-							<span v-else class="flex items-center gap-2">
-								立即加入 <ArrowRight class="w-5 h-5" />
-							</span>
-						</button>
-					</div>
-				</div>
-			</div>
-		</div>
-	</div>
+ <div class="entry-app"><header class="entry-topbar"><div class="entry-brand"><span class="entry-brand-icon"><Palette :size="19"/></span><strong>Aevia</strong><span class="entry-brand-separator"></span><span class="entry-brand-sub">协作白板</span></div></header>
+  <main class="entry-invite-wrap"><a href="/" class="entry-back-link">← 返回首页</a><section class="entry-invite-card"><div class="entry-invite-icon"><Users :size="21"/></div><h1>加入协作房间</h1><p class="entry-invite-lead">{{ inviteError ? '邀请链接无效或已过期' : '你收到了一条房间邀请' }}</p><div v-if="!inviteError" class="entry-invite-room"><strong>{{ roomName || '正在加载房间…' }}</strong><span>房间号 {{ roomId || '—' }}</span></div><div v-if="!inviteError" class="entry-form"><label>你的名字<input v-model="username" :disabled="!!accountStore.account" placeholder="输入名字" @keyup.enter="joinRoom" /></label><label>房间密码 <span class="entry-optional">{{ passwordRequired ? '必填' : '如有' }}</span><input v-model="password" type="password" placeholder="输入房间密码" @keyup.enter="joinRoom" /></label></div><button v-if="!inviteError" class="entry-button primary wide" :disabled="!roomId || !username || isLoading" @click="joinRoom"><Loader2 v-if="isLoading" class="entry-spin" :size="16"/><template v-else>进入房间 <ArrowRight :size="16"/></template></button><a v-else class="entry-button secondary wide" href="/">返回首页</a></section></main>
+ </div>
 </template>
-
-<style>
-	@keyframes blob {
-		0% {
-			transform: translate(0px, 0px) scale(1);
-		}
-		33% {
-			transform: translate(30px, -50px) scale(1.1);
-		}
-		66% {
-			transform: translate(-20px, 20px) scale(0.9);
-		}
-		100% {
-			transform: translate(0px, 0px) scale(1);
-		}
-	}
-
-	.animate-blob {
-		animation: blob 10s infinite cubic-bezier(0.4, 0, 0.2, 1);
-	}
-</style>
