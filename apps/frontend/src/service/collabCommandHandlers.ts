@@ -1122,6 +1122,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(meta.totalChunks ?? meta.totalPointChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.renderExpectedChunkCount !== null && pageChangeStreamState.renderExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.renderExpectedChunkCount = expectedChunkCountRaw;
 		}
 	};
@@ -1199,6 +1200,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(donePayload.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.renderExpectedChunkCount !== null && pageChangeStreamState.renderExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.renderExpectedChunkCount = expectedChunkCountRaw;
 		}
 		pageChangeStreamState.renderDoneReceived = true;
@@ -1231,6 +1233,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 		const expectedChunkCountRaw = Number(meta.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.commandsExpectedChunkCount !== null && pageChangeStreamState.commandsExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.commandsExpectedChunkCount = expectedChunkCountRaw;
 		}
 	};
@@ -1283,6 +1286,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(donePayload.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.commandsExpectedChunkCount !== null && pageChangeStreamState.commandsExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.commandsExpectedChunkCount = expectedChunkCountRaw;
 		}
 		pageChangeStreamState.commandsDoneReceived = true;
@@ -1303,6 +1307,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			typeof donePayload.snapshotVersion === "number" &&
 			donePayload.snapshotVersion !== pageChangeStreamState.snapshotVersion
 		) {
+			return;
+		}
+		if (!pageChangeStreamState.renderReady || !pageChangeStreamState.commandsReady) {
+			options.onInitStreamInvalid?.();
 			return;
 		}
 		pageChangeStreamState.completeReceived = true;
