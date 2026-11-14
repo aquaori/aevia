@@ -15,9 +15,12 @@
 	import { toast } from "vue-sonner";
 	import { useUserStore } from "../store/userStore";
 	import { apiUrl } from "../config/endpoints";
+	import AccountPanel from "../components/AccountPanel.vue";
+	import { useAccountStore } from "../store/accountStore";
 
 	const router = useRouter();
 	const userStore = useUserStore();
+	const accountStore = useAccountStore();
 
 	const applySessionAuth = (payload: {
 		sessionToken?: string;
@@ -347,6 +350,7 @@
 	};
 
 	onMounted(() => {
+		void accountStore.refresh();
 		if (userStore.token) {
 			userStore.clearAll();
 		}
@@ -357,6 +361,7 @@
 	<div
 		class="min-h-screen relative flex items-center justify-center p-4 bg-slate-50 overflow-hidden font-sans"
 	>
+		<AccountPanel />
 		<!-- 动画背景斑点 -->
 		<div class="fixed inset-0 overflow-hidden pointer-events-none">
 			<div
