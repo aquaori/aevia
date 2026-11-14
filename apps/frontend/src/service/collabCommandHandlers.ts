@@ -225,6 +225,7 @@ interface PageChangeStreamState {
 	pendingChunks: Map<number, PageChangeChunkPayload>;
 	receivedChunkIndexes: Set<number>;
 	commands: Command[];
+	liveCommands: Command[];
 	flatPoints: FlatPoint[];
 	renderNextChunkIndex: number;
 	renderExpectedChunkCount: number | null;
@@ -867,15 +868,16 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			return;
 		}
 
+		const mergedCommands = Array.from(new Map([...pageChangeStreamState.commands, ...pageChangeStreamState.liveCommands].map((command) => [command.id, command])).values());
 		options.applyLoadedPageDelta({
 			loadedPageIds: pageChangeStreamState.loadedPageIds,
 			loadPageIds: pageChangeStreamState.loadPageIds,
 			unloadPageIds: pageChangeStreamState.unloadPageIds,
-			commands: pageChangeStreamState.commands,
+			commands: mergedCommands,
 		});
 		commandStore.updateLastSortedPoints([]);
 		options.setInitSceneOperations?.(
-			[...options.commands.value, ...pageChangeStreamState.commands],
+			[...options.commands.value, ...mergedCommands],
 			pageChangeStreamState.pageId
 		);
 		options.finishInitRenderStream?.();
@@ -981,14 +983,15 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		if (pageChangeStreamState.commandsReady) return;
 
+		const mergedCommands = Array.from(new Map([...pageChangeStreamState.commands, ...pageChangeStreamState.liveCommands].map((command) => [command.id, command])).values());
 		options.applyLoadedPageDelta({
 			loadedPageIds: pageChangeStreamState.loadedPageIds,
 			loadPageIds: pageChangeStreamState.loadPageIds,
 			unloadPageIds: pageChangeStreamState.unloadPageIds,
-			commands: pageChangeStreamState.commands,
+			commands: mergedCommands,
 		});
 		options.loadedPageIds.value = pageChangeStreamState.loadedPageIds;
-		options.setInitSceneOperations?.([...options.commands.value, ...pageChangeStreamState.commands], pageChangeStreamState.pageId);
+		options.setInitSceneOperations?.([...options.commands.value, ...mergedCommands], pageChangeStreamState.pageId);
 		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
 		useLamportStore().syncLamport(pageChangeStreamState.lastLamport);
 		pageChangeStreamState.commandsReady = true;
@@ -1032,6 +1035,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			pendingChunks: new Map(),
 			receivedChunkIndexes: new Set(),
 			commands: [],
+			liveCommands: [],
 			flatPoints: [],
 			renderNextChunkIndex: 0,
 			renderExpectedChunkCount: Number.isFinite(renderExpectedChunkCountRaw)
@@ -1328,6 +1332,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			}
 			useLamportStore().syncLamport(Number(msg.data.lamport ?? cmd.lamport ?? 0));
 			return;
+		}
+
+		if (pushType === "normal" && cmd && pageChangeStreamState && !pageChangeStreamState.commandsReady && pageChangeStreamState.loadedPageIds.includes(cmd.pageId)) {
+			pageChangeStreamState.liveCommands.push(cmd);
 		}
 
 		if ((pushType === "normal" || pushType === "start") && cmd) {

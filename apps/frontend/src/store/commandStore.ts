@@ -218,7 +218,10 @@ export const useCommandStore = defineStore("command", () => {
 			}
 		});
 
+		const existingIds = new Set(Array.from(nextBuckets.values()).flatMap((bucket) => bucket.map((command) => command.id)));
 		input.commands.forEach((command) => {
+			if (existingIds.has(command.id)) return;
+			existingIds.add(command.id);
 			stripCommandPoints(command);
 			const bucket = nextBuckets.get(command.pageId) ?? [];
 			bucket.push(command);
