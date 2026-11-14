@@ -175,10 +175,16 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, "Unable to join room")
 			return
 		}
+		if role == "" {
+			role = policy.DefaultRole
+		}
+	}
+	if role == "" {
+		role = policy.DefaultRole
 	}
 	token, expiresAt, err := s.tokens.Sign(auth.Claims{
 		UserID: userID, UserName: req.UserName, RoomID: roomData.RoomID,
-		RoomName: roomData.Name, RoomCreatedAt: roomData.CreatedAt, TokenType: "session",
+		RoomName: roomData.Name, RoomCreatedAt: roomData.CreatedAt, TokenType: "session", Account: accountErr == nil, Role: role,
 	}, s.cfg.SessionTTL)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "Token generation failed")
@@ -190,6 +196,20 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) generateShareToken(w http.ResponseWriter, r *http.Request) {
 	claims, _ := claimsFrom(r)
+	role := claims.Role
+	if claims.Account {
+		var banned bool
+		var err error
+		role, banned, err = s.store.MemberRole(r.Context(), claims.RoomID, claims.UserID)
+		if err != nil || banned {
+			fail(w, 403, "没有邀请权限")
+			return
+		}
+	}
+	if role == "viewer" || (claims.Account && role == "") {
+		fail(w, 403, "没有邀请权限")
+		return
+	}
 	roomID := claims.RoomID
 	if requested := r.URL.Query().Get("roomId"); requested != "" && requested != roomID {
 		fail(w, http.StatusForbidden, "Token room does not match request room")
@@ -239,7 +259,7 @@ func (s *Server) renewSession(w http.ResponseWriter, r *http.Request) {
 	}
 	token, expiresAt, err := s.tokens.Sign(auth.Claims{
 		UserID: claims.UserID, UserName: claims.UserName, RoomID: roomData.RoomID,
-		RoomName: roomData.Name, RoomCreatedAt: roomData.CreatedAt, TokenType: "session",
+		RoomName: roomData.Name, RoomCreatedAt: roomData.CreatedAt, TokenType: "session", Account: claims.Account, Role: claims.Role,
 	}, s.cfg.SessionTTL)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "Token generation failed")

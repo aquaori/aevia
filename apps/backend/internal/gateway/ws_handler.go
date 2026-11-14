@@ -14,6 +14,7 @@ import (
 	"collaborative-whiteboard/apps/backend/internal/auth"
 	"collaborative-whiteboard/apps/backend/internal/config"
 	"collaborative-whiteboard/apps/backend/internal/room"
+	"collaborative-whiteboard/apps/backend/internal/storage"
 	"github.com/coder/websocket"
 )
 
@@ -36,6 +37,13 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !exists || roomData.CreatedAt != claims.RoomCreatedAt {
 		fail(w, http.StatusUnauthorized, "Invalid room session")
 		return
+	}
+	if claims.Account {
+		role, banned, lookupErr := s.store.MemberRole(r.Context(), claims.RoomID, claims.UserID)
+		if lookupErr != nil || banned || role == "" {
+			fail(w, http.StatusForbidden, "房间访问权限已失效")
+			return
+		}
 	}
 	actor, err := s.registry.Get(r.Context(), claims.RoomID)
 	if err != nil {
@@ -70,6 +78,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(s.cfg.WSMaxPayloadBytes)
 
 	client := newWSClient(conn, actor, claims, initialPageID(r), s.cfg)
+	client.store = s.store
 	// Start consuming the outbound queue before Join builds the initial stream.
 	// Otherwise a large snapshot can fill the bounded queue before writePump has
 	// started, causing init chunks (including init-complete) to be dropped.
@@ -122,6 +131,7 @@ func lastRoomSeq(r *http.Request) uint64 {
 }
 
 type wsClient struct {
+	store       *storage.Store
 	conn        *websocket.Conn
 	actor       *room.Actor
 	claims      auth.Claims

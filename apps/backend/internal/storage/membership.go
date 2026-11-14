@@ -72,6 +72,50 @@ func (s *Store) MarkPasswordVerified(ctx context.Context, roomID, userID string,
 	return err
 }
 
+func (s *Store) UpdateRoomPolicy(ctx context.Context, roomID, name, password string, setPassword, requirePassword bool, p RoomPolicy) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `UPDATE rooms SET name=? WHERE room_id=?`, name, roomID); err != nil {
+		return err
+	}
+	if setPassword {
+		if _, err = tx.ExecContext(ctx, `UPDATE rooms SET password=? WHERE room_id=?`, password, roomID); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO room_policies(room_id,default_role,allow_room_code,guest_by_code,guest_by_invite,password_version) VALUES(?,?,?,?,?,?) ON CONFLICT(room_id) DO UPDATE SET default_role=excluded.default_role,allow_room_code=excluded.allow_room_code,guest_by_code=excluded.guest_by_code,guest_by_invite=excluded.guest_by_invite,password_version=room_policies.password_version+?`, roomID, p.DefaultRole, p.AllowRoomCode, p.GuestByCode, p.GuestByInvite, 0, func() int {
+		if setPassword && requirePassword {
+			return 1
+		}
+		return 0
+	}())
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) UpdateMember(ctx context.Context, roomID, userID, action string) error {
+	switch action {
+	case "editor", "viewer":
+		_, err := s.db.ExecContext(ctx, `UPDATE room_members SET role=? WHERE room_id=? AND user_id=? AND role<>'owner'`, action, roomID, userID)
+		return err
+	case "kick", "leave":
+		_, err := s.db.ExecContext(ctx, `DELETE FROM room_members WHERE room_id=? AND user_id=? AND role<>'owner'`, roomID, userID)
+		return err
+	case "ban":
+		_, err := s.db.ExecContext(ctx, `UPDATE room_members SET banned_at=? WHERE room_id=? AND user_id=? AND role<>'owner'`, time.Now().Unix(), roomID, userID)
+		return err
+	case "unban":
+		_, err := s.db.ExecContext(ctx, `DELETE FROM room_members WHERE room_id=? AND user_id=? AND banned_at IS NOT NULL`, roomID, userID)
+		return err
+	}
+	return errors.New("invalid member action")
+}
+
 type AccountRoom struct {
 	RoomID           string `json:"roomId"`
 	Name             string `json:"name"`

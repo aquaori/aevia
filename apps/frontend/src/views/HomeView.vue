@@ -16,6 +16,7 @@
 	import { useUserStore } from "../store/userStore";
 	import { apiUrl } from "../config/endpoints";
 	import AccountPanel from "../components/AccountPanel.vue";
+	import RoomSettings from "../components/RoomSettings.vue";
 	import { useAccountStore } from "../store/accountStore";
 
 	const router = useRouter();
@@ -214,6 +215,7 @@
 
 	type AccountRoom = { roomId: string; name: string; role: string; passwordRequired: boolean };
 	const rooms = ref<AccountRoom[]>([]);
+	const settingsRoom = ref<AccountRoom | null>(null);
 	const loadRooms = async () => {
 		if (!accountStore.token) { rooms.value = []; return; }
 		try { rooms.value = (await axios.get(apiUrl("/v2/rooms"), { headers: accountStore.headers() })).data.data; }
@@ -263,6 +265,7 @@
 		class="min-h-screen relative flex items-center justify-center p-4 bg-slate-50 overflow-hidden font-sans"
 	>
 		<AccountPanel />
+		<RoomSettings v-if="settingsRoom" :room-id="settingsRoom.roomId" :room-name="settingsRoom.name" :role="settingsRoom.role" @close="settingsRoom = null" @changed="loadRooms" />
 		<!-- 动画背景斑点 -->
 		<div class="fixed inset-0 overflow-hidden pointer-events-none">
 			<div
@@ -311,9 +314,10 @@
 					<div v-if="accountStore.account && rooms.length && step === 1" class="mb-6">
 						<h2 class="mb-2 text-sm font-bold text-slate-700">我的房间</h2>
 						<div class="max-h-40 space-y-2 overflow-y-auto">
-							<button v-for="room in rooms" :key="room.roomId" class="flex w-full items-center justify-between rounded-xl bg-slate-50 px-4 py-3 text-left hover:bg-indigo-50" @click="enterSavedRoom(room)">
-								<span class="font-medium text-slate-700">{{ room.name }}</span><span class="text-xs text-slate-400">{{ room.roomId }} →</span>
-							</button>
+							<div v-for="room in rooms" :key="room.roomId" class="flex items-center rounded-xl bg-slate-50 hover:bg-indigo-50">
+								<button class="flex flex-1 items-center justify-between px-4 py-3 text-left" @click="enterSavedRoom(room)"><span class="font-medium text-slate-700">{{ room.name }}</span><span class="text-xs text-slate-400">{{ room.roomId }} →</span></button>
+								<button class="px-3 text-xs text-indigo-600" @click="settingsRoom = room">设置</button>
+							</div>
 						</div>
 					</div>
 
