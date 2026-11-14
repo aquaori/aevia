@@ -3,6 +3,8 @@ package gateway
 import (
 	"net/http"
 	"testing"
+
+	"collaborative-whiteboard/apps/backend/internal/auth"
 )
 
 func TestAccountSessionFlow(t *testing.T) {
@@ -73,5 +75,30 @@ func TestRoomOwnerManagesMembers(t *testing.T) {
 	}
 	if status, _ := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777002"}, memberToken); status != 200 {
 		t.Fatalf("unbanned member failed to rejoin: %d", status)
+	}
+}
+
+func TestInviteCanBeRevoked(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "inviter", "password": "password123"}, "")
+	accountToken := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777003", "roomName": "Room"}, accountToken)
+	_, joined := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777003"}, accountToken)
+	roomToken := joined.Data["sessionToken"].(string)
+	_, issued := do(t, server, "GET", "/generate-share-token?roomId=777003&hours=1", nil, roomToken)
+	invite := issued.Data["inviteToken"].(string)
+	if status, _ := do(t, server, "GET", "/get-token-info?token="+invite, nil, ""); status != 200 {
+		t.Fatalf("invite unavailable: %d", status)
+	}
+	// Extract the signed invitation's identifier as the server does when listing it.
+	claims, err := auth.NewTokenService("test-secret").Verify(invite, "invite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := do(t, server, "POST", "/room-invites/revoke", map[string]any{"id": claims.InviteID}, roomToken); status != 200 {
+		t.Fatalf("revoke: %d", status)
+	}
+	if status, _ := do(t, server, "GET", "/get-token-info?token="+invite, nil, ""); status == 200 {
+		t.Fatal("revoked invite accepted")
 	}
 }

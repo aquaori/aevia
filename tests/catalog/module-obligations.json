@@ -27,6 +27,12 @@
       "state": "uncovered"
     },
     {
+      "id": "frontend:apps/frontend/src/components/RoomInvites.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomInvites.vue",
+      "state": "uncovered"
+    },
+    {
       "id": "frontend:apps/frontend/src/components/RoomMemberList.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomMemberList.vue",
@@ -598,6 +604,13 @@
       "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
+      "id": "go:apps/backend/internal/gateway/invite_handlers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/invite_handlers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
+    },
+    {
       "id": "go:apps/backend/internal/gateway/metrics_handler.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/metrics_handler.go",
@@ -867,6 +880,13 @@
       "id": "go:apps/backend/internal/storage/commands.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/commands.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/invites.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/invites.go",
       "state": "covered",
       "owner": "apps/backend/internal/storage/store_test.go"
     },

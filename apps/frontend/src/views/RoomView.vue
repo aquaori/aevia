@@ -64,6 +64,7 @@
 	import RoomConnectionOverlays from "../components/RoomConnectionOverlays.vue";
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
+	import RoomInvites from "../components/RoomInvites.vue";
 	import RoomTextEditor from "../components/RoomTextEditor.vue";
 	import { fetchPageOverview, type PageOverviewItem } from "../service/pageOverviewService";
 	import type { SelectionState } from "../utils/editorTypes";
@@ -72,6 +73,7 @@
 	// 路由钩子，获取URL中的token参数
 	const router = useRouter();
 	const userStore = useUserStore();
+	const showInvites = ref(false);
 
 	// --- 断线重连状态 (Reconnection State) ---
 	const {
@@ -761,10 +763,11 @@
 			:online-count="onlineCount"
 			:has-copied="hasCopied"
 			:on-toggle-more="roomPanelController.toggleMoreMenu"
-			:on-copy-link="roomHeaderController.copyLink"
+			:on-copy-link="() => { showInvites = true; }"
 			:on-open-member-list="roomPanelController.openMemberList"
 			:on-toggle-shortcuts="roomPanelController.toggleShortcuts"
 		/>
+		<RoomInvites v-if="showInvites" :room-id="roomId" :token="token" @close="showInvites = false" />
 
 		<!-- Custom Cursor for Eraser -->
 		<div
