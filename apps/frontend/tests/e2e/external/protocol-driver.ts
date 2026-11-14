@@ -21,13 +21,14 @@ type ProtocolMessage = { type?: string; data?: Record<string, unknown> };
 const requestJson = async (
 	url: string,
 	body: unknown,
-	failurePrefix: string
+	failurePrefix: string,
+	token?: string
 ): Promise<ApiResponse> => {
 	let response: Response;
 	try {
 		response = await fetch(url, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
 			body: JSON.stringify(body),
 		});
 	} catch (error: unknown) {
@@ -55,10 +56,20 @@ export const assertFrontendReachable = async (config: ExternalConfig) => {
 };
 
 export const createRoom = async (config: ExternalConfig, roomId = randomRoomId()) => {
+	const account = await requestJson(
+		`${config.apiUrl}/v2/auth/register`,
+		{ username: `ext-${uuidv4()}`, password: "external-test-password" },
+		"register failed"
+	);
+	const token = account.data?.token;
+	if (account.code !== 200 || !token) {
+		throw new Error(`register rejected: ${JSON.stringify(account)}`);
+	}
 	const data = await requestJson(
 		`${config.apiUrl}/create-room`,
 		{ roomId, roomName: `External_${roomId}`, password: "" },
-		"create-room failed"
+		"create-room failed",
+		token
 	);
 	if (data?.code !== 200 && !String(data?.message || "").includes("已存在")) {
 		throw new Error(`create-room rejected: ${JSON.stringify(data)}`);
