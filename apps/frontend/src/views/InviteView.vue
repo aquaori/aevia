@@ -147,6 +147,7 @@
 								</div>
 								<input
 									v-model="username"
+									:disabled="!!accountStore.account"
 									type="text"
 									placeholder="怎么称呼你？"
 									@keyup.enter="joinRoom"

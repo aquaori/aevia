@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"collaborative-whiteboard/apps/backend/internal/auth"
+	"github.com/coder/websocket"
 )
 
 func TestAccountSessionFlow(t *testing.T) {
@@ -163,4 +164,20 @@ func TestOwnerCanRemoveGuestSession(t *testing.T) {
 	if status, _ := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777006", "userName": "游客"}, ""); status != 200 {
 		t.Fatalf("guest cannot rejoin: %d", status)
 	}
+}
+
+func TestAccountDeviceReplacement(t *testing.T) {
+	server := newTestServer(t)
+	_, account := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "multidevice", "password": "password123"}, "")
+	token := account.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777007", "roomName": "Room"}, token)
+	_, first := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777007"}, token)
+	firstConn := dialGatewayWebsocket(t, server, first.Data["sessionToken"].(string))
+	defer firstConn.Close(websocket.StatusNormalClosure, "")
+	readGatewayWSType(t, firstConn, "init-complete")
+	_, second := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777007"}, token)
+	secondConn := dialGatewayWebsocket(t, server, second.Data["sessionToken"].(string))
+	defer secondConn.Close(websocket.StatusNormalClosure, "")
+	readGatewayWSType(t, firstConn, "session.replaced")
+	readGatewayWSType(t, secondConn, "init-complete")
 }

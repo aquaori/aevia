@@ -778,7 +778,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 						}
 						if (msg.type === "role.changed" && typeof msg.data?.role === "string") {
 							options.onRoomRoleChanged?.(msg.data.role);
-							toast.info(msg.data.role === "viewer" ? "房主已将你设为只读者" : "房主已允许你编辑");
+							toast.info(msg.data.role === "owner" ? "你已成为房主" : msg.data.role === "viewer" ? "房主已将你设为只读者" : "房间角色已更新为编辑者");
 							return;
 						}
 						if (msg.type === "resync.required") {

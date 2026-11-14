@@ -13,6 +13,12 @@ type RoomTransfer struct {
 	OwnerNickname string `json:"ownerNickname"`
 }
 
+func (s *Store) TransferOwner(ctx context.Context, roomID, targetID string) (string, error) {
+	var owner string
+	err := s.db.QueryRowContext(ctx, `SELECT owner_id FROM room_transfers WHERE room_id=? AND target_id=?`, roomID, targetID).Scan(&owner)
+	return owner, err
+}
+
 func (s *Store) RequestTransfer(ctx context.Context, roomID, ownerID, targetID string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO room_transfers(room_id,owner_id,target_id,created_at) VALUES(?,?,?,?) ON CONFLICT(room_id) DO UPDATE SET owner_id=excluded.owner_id,target_id=excluded.target_id,created_at=excluded.created_at`, roomID, ownerID, targetID, time.Now().Unix())
 	return err

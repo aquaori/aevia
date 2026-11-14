@@ -23,6 +23,7 @@ type Outbound struct {
 	Close  bool
 	Bytes  int
 	Frozen bool
+	Stream *InitStream
 }
 
 type Envelope struct {

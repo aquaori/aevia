@@ -4,6 +4,7 @@
 
 	const props = defineProps<{
 		visible: boolean;
+		canShare: boolean;
 		roomName: string;
 		roomId: string;
 		moreOpen: boolean;
@@ -100,6 +101,7 @@
 								class="absolute top-full right-0 mt-3 w-56 hmd:w-64 bg-white/95 backdrop-blur-sm border border-white/20 rounded-2xl shadow-2xl overflow-hidden origin-top-right p-1.5 flex flex-col gap-1 z-50"
 							>
 								<button
+									v-if="props.canShare"
 									@click="props.onCopyLink"
 									class="flex items-center gap-2 hmd:gap-3 w-full p-1.5 hmd:p-3 rounded-xl hover:bg-indigo-50 group text-left transition-colors"
 								>
@@ -111,10 +113,10 @@
 									</div>
 									<div class="flex-1">
 										<div class="text-[11px] hmd:text-sm font-bold text-slate-700">
-											{{ props.hasCopied ? "已复制链接" : "复制邀请链接" }}
+											邀请协作
 										</div>
 										<div class="hidden hmd:block text-[10px] text-slate-400">
-											点击复制房间地址
+											管理邀请链接
 										</div>
 									</div>
 								</button>

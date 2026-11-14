@@ -65,10 +65,12 @@ func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPa
 	commandChunksDuration := time.Since(commandChunksStartedAt)
 	meta["maxLamport"] = maxCommandLamport(state.Commands)
 	meta["chunkSummary"] = map[string]any{
-		"renderChunks":  len(renderChunks),
-		"commandChunks": len(commandChunks),
-		"pointCount":    len(points),
-		"commandCount":  len(commands),
+		"renderChunks":       len(renderChunks),
+		"commandChunks":      len(commandChunks),
+		"totalRenderChunks":  len(renderChunks),
+		"totalCommandChunks": len(commandChunks),
+		"pointCount":         len(points),
+		"commandCount":       len(commands),
 	}
 	if profile {
 		slog.Info("init profile build",

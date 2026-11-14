@@ -379,11 +379,13 @@ func (a *Actor) handleJoin(msg joinMessage) {
 	online := len(a.state.Clients)
 	members := a.state.OnlineMembers()
 	result := JoinResult{Room: a.state.Room, Deltas: deltas, Resume: resume, ResumeSeq: msg.LastRoomSeq, Online: online, Members: members}
-	if resume == "snapshot" && client.Done != nil {
+	if client.Done != nil {
 		// Materialize a stable snapshot while the actor owns the state, then
 		// serialize and send it off the actor. Live events queue until the stream
 		// completes, preserving render metadata/binary frame ordering.
-		result.Init = a.builder.Init(a.state, client.PageID)
+		if resume == "snapshot" {
+			result.Init = a.builder.Init(a.state, client.PageID)
+		}
 		out := client.Send
 		live := make(chan Outbound, cap(out))
 		client.Send = live
@@ -394,6 +396,10 @@ func (a *Actor) handleJoin(msg joinMessage) {
 			for {
 				select {
 				case event := <-live:
+					if event.Stream != nil {
+						sendPageChangeStreamWait(out, client.Abort, client.Done, *event.Stream, true)
+						continue
+					}
 					select {
 					case out <- event:
 					case <-client.Done:
@@ -457,7 +463,13 @@ func (a *Actor) handlePageChange(msg pageChangeMessage) {
 		client.PageID = normalizePageID(*msg.Request.NextPageID, a.state.Room.TotalPage)
 	}
 	a.state.Clients[msg.ClientID] = client
-	sendPageChangeStream(client.Send, client.Abort, stream)
+	if client.Done != nil {
+		if !sendOutbound(client.Send, Outbound{Stream: &stream, Frozen: true}) && client.Abort != nil {
+			client.Abort()
+		}
+	} else {
+		sendPageChangeStream(client.Send, client.Abort, stream)
+	}
 }
 
 func (a *Actor) broadcastExcept(exclude ClientID, json any, binary []byte) {

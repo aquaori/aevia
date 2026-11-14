@@ -502,6 +502,7 @@
 											</div>
 											<input
 												v-model="username"
+													:disabled="!!accountStore.account"
 												type="text"
 												placeholder="怎么称呼你？"
 												class="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all font-medium text-slate-800 placeholder:text-slate-400"

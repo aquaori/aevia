@@ -13,6 +13,7 @@
 	const setPassword = ref(false);
 	const requirePassword = ref(false);
 	const policy = ref({ defaultRole: "editor", allowRoomCode: true, guestByCode: true, guestByInvite: true });
+	const savedDefaultRole = ref("editor");
 	const members = ref<{ userId: string; nickname: string; username: string; role: string; banned: boolean }[]>([]);
 	const base = `/v2/rooms/${props.roomId}`;
 	const options = () => ({ headers: account.headers() });
@@ -22,7 +23,7 @@
 			members.value = (await axios.get(apiUrl(`${base}/members`), options())).data.data;
 			if (props.role === "owner") {
 				const data = (await axios.get(apiUrl(`${base}/settings`), options())).data.data;
-				name.value = data.name; policy.value = data.policy;
+				name.value = data.name; policy.value = data.policy; savedDefaultRole.value = data.policy.defaultRole;
 			}
 		} catch { toast.error("无法读取房间信息"); }
 	}
@@ -45,7 +46,7 @@
 		catch { toast.error("退出失败，请重试"); }
 	}
 	async function transfer(userId: string, nickname: string) {
-		const nextRole = policy.value.defaultRole === "editor" ? "编辑者" : "只读者";
+		const nextRole = savedDefaultRole.value === "editor" ? "编辑者" : "只读者";
 		if (!window.confirm(`向 ${nickname} 发起房主转让？对方接受后，你将成为${nextRole}。`)) return;
 		try { await axios.post(apiUrl(`${base}/transfer`), { userId }, options()); toast.success("转让请求已发送，等待对方确认"); }
 		catch { toast.error("发起转让失败"); }

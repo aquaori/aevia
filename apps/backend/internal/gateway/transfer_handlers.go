@@ -53,9 +53,18 @@ func (s *Server) respondTransfer(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "请求无效")
 		return
 	}
+	roomID := r.PathValue("roomId")
+	owner, _ := s.store.TransferOwner(r.Context(), roomID, account.ID)
 	if err = s.store.RespondTransfer(r.Context(), r.PathValue("roomId"), account.ID, req.Accept); err != nil {
 		fail(w, 400, "转让请求已失效")
 		return
+	}
+	if req.Accept {
+		if actor, actorErr := s.registry.Get(r.Context(), roomID); actorErr == nil {
+			policy, _ := s.store.Policy(r.Context(), roomID)
+			_ = actor.NotifyUser(owner, "role.changed", policy.DefaultRole, false)
+			_ = actor.NotifyUser(account.ID, "role.changed", "owner", false)
+		}
 	}
 	okNoData(w)
 }

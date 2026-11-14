@@ -144,7 +144,11 @@ func sendDeltaReplay(ch *streamSender, result JoinResult) {
 }
 
 func sendPageChangeStream(out chan Outbound, abort func(), stream InitStream) {
-	ch := &streamSender{out: out, abort: abort}
+	sendPageChangeStreamWait(out, abort, nil, stream, false)
+}
+
+func sendPageChangeStreamWait(out chan Outbound, abort func(), done <-chan struct{}, stream InitStream, wait bool) {
+	ch := &streamSender{out: out, abort: abort, done: done, wait: wait}
 	requestID, _ := stream.Meta["requestId"].(int)
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "page-change-meta", Data: withStreamMeta(stream)}})
 	sendRenderStream(ch, "page-change", requestID, stream)

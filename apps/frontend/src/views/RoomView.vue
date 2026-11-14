@@ -754,6 +754,7 @@
 			:on-close="roomPanelController.closeShortcuts"
 		/>
 		<RoomPageOverview
+			:can-edit="userStore.roomRole !== 'viewer'"
 			:visible="showPageOverview"
 			:total-pages="pageOverviewTotalPages || totalPages"
 			:current-page-id="currentPageId"
@@ -788,6 +789,7 @@
 
 		<RoomHeader
 			:visible="!isFullscreen"
+			:can-share="userStore.roomRole !== 'viewer'"
 			:room-name="roomName"
 			:room-id="roomId"
 			:more-open="headerMenuOpen"
@@ -814,6 +816,7 @@
 		></div>
 
 		<RoomPagination
+			:can-edit="userStore.roomRole !== 'viewer'"
 			:current-page-id="currentPageId"
 			:total-pages="totalPages"
 			:show-page-overview="showPageOverview"
@@ -827,7 +830,7 @@
 			<!-- Main Drawing Canvas (Bottom Layer) -->
 			<canvas
 				ref="canvasRef"
-				@dblclick="roomPointerControllerRef?.editSelectedText($event)"
+				@dblclick="userStore.roomRole !== 'viewer' && roomPointerControllerRef?.editSelectedText($event)"
 				@pointerdown="userStore.roomRole !== 'viewer' && startDrawing($event)"
 				@pointermove="userStore.roomRole !== 'viewer' && draw($event)"
 				@pointerup="userStore.roomRole !== 'viewer' && stopDrawing($event)"
