@@ -87,6 +87,7 @@ interface RoomCollabTransportOptions {
 		buffer: ArrayBuffer
 	) => void;
 	finishInitRenderStream?: () => void;
+	confirmInitScene?: () => Promise<boolean>;
 	setInitSceneOperations?: (commands: Command[], pageId: number) => void;
 	syncWorkerScene?: (commands: Command[], pageId: number, transformingCmdIds?: string[]) => void;
 	renderSceneFromFlatPoints?: (points: FlatPoint[], pageId: number) => void;
@@ -148,6 +149,8 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	const enableDeltaReplay = import.meta.env.VITE_ENABLE_DELTA_REPLAY !== "0";
 	let lastRoomSeq = 0;
 	let snapshotPending = false;
+	let snapshotGeneration = 0;
+	let renderWorkerFailed = false;
 	let sceneAppendBinary = false;
 	let sceneTextBoxV1 = false;
 	const appliedSequences = new Set<number>();
@@ -498,13 +501,19 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			scheduleSessionRenewal();
 		},
 		onInitSnapshotCommitted: (snapshotVersion) => {
-			lastRoomSeq = snapshotVersion;
-			snapshotPending = false;
-			for (const seq of appliedSequences) if (seq <= lastRoomSeq) appliedSequences.delete(seq);
-			advanceRoomSeq();
-			if (appliedSequences.size > 0) socket.value?.close();
-			retryPendingSceneOperations();
-			initLocalCommands = [];
+			const connection = socket.value;
+			const generation = snapshotGeneration;
+			void (options.confirmInitScene?.() ?? Promise.resolve(true)).then((valid) => {
+				if (!connection || socket.value !== connection || generation !== snapshotGeneration) return;
+				if (!valid) { lastRoomSeq = 0; appliedSequences.clear(); connection.close(); return; }
+				lastRoomSeq = snapshotVersion;
+				snapshotPending = false;
+				for (const seq of appliedSequences) if (seq <= lastRoomSeq) appliedSequences.delete(seq);
+				advanceRoomSeq();
+				if (appliedSequences.size > 0) connection.close();
+				retryPendingSceneOperations();
+				initLocalCommands = [];
+			});
 		},
 		getInitLocalCommands: () => initLocalCommands,
 		onInitStreamInvalid: () => {
@@ -544,7 +553,18 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		connect();
 	};
 
+	const handleRenderWorkerFailure = () => {
+		renderWorkerFailed = true;
+		lastRoomSeq = 0;
+		appliedSequences.clear();
+		snapshotGeneration += 1;
+		isIntentionalClose.value = true;
+		markReconnectFailed("画布渲染进程异常，请刷新页面重新加载；尚未确认的操作可能未保存。");
+		socket.value?.close();
+	};
+
 	const retryReconnect = () => {
+		if (renderWorkerFailed) { window.location.reload(); return; }
 		isIntentionalClose.value = false;
 		clearReconnectState();
 		if (typeof navigator !== "undefined") {
@@ -638,7 +658,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		if (type === "push-cmd" && outgoing?.cmd?.type === "scene-op" && outgoing.cmd.id) {
 			pendingSceneOperations.set(outgoing.cmd.id, JSON.parse(JSON.stringify(outgoing)));
 			const localCmd = (data as OutgoingPayload)?.cmd;
-			if (snapshotPending && localCmd) initLocalCommands.push(localCmd);
+			if (localCmd) {
+				dispatcher.recordPageChangeLocalCommand(localCmd);
+				if (snapshotPending) initLocalCommands.push(localCmd);
+			}
 		}
 		return true;
 	};
@@ -680,10 +703,12 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			const wsUrl = `${wsBaseUrl}?pageId=${statePageToProtocol(options.currentPageId.value)}${
 				enableDeltaReplay && lastRoomSeq > 0 ? `&lastRoomSeq=${lastRoomSeq}` : ""
 			}`;
-			socket.value = new WebSocket(wsUrl, [tokenStr]);
-			socket.value.binaryType = "arraybuffer";
+			const connection = new WebSocket(wsUrl, [tokenStr]);
+			socket.value = connection;
+			connection.binaryType = "arraybuffer";
 
-			socket.value.onopen = () => {
+			connection.onopen = () => {
+				if (socket.value !== connection) return;
 				if (labEnabled()) {
 					labMark(LAB_MARK_WS_OPEN);
 				}
@@ -691,7 +716,8 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				scheduleSessionRenewal();
 			};
 
-			socket.value.onmessage = (event) => {
+			connection.onmessage = (event) => {
+				if (socket.value !== connection) return;
 				try {
 					if (typeof event.data === "string") {
 						const msg = JSON.parse(event.data);
@@ -708,6 +734,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 						if (msg.type === "init-meta" && typeof window !== "undefined") {
 							snapshotPending = true;
+							snapshotGeneration += 1;
 							initLocalCommands = Array.from(pendingSceneOperations.values(), (data) => (data as OutgoingPayload).cmd).filter((cmd): cmd is Command => Boolean(cmd)).map(normalizeCommandFromProtocol);
 							lastRoomSeq = 0;
 							appliedSequences.clear();
@@ -804,7 +831,9 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				}
 			};
 
-			socket.value.onclose = () => {
+			connection.onclose = () => {
+				if (socket.value !== connection) return;
+				dispatcher.clearInitCompletionTimer();
 				pendingRenderBinaryChunk = null;
                 sceneAppendBinary = false;
 				sceneTextBoxV1 = false;
@@ -815,7 +844,8 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				scheduleReconnect();
 			};
 
-			socket.value.onerror = (error) => {
+			connection.onerror = (error) => {
+				if (socket.value !== connection) return;
 				console.error("WebSocket error:", error);
 			};
 		} catch (error) {
@@ -839,6 +869,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		connect,
 		disconnect,
 		retryReconnect,
+		handleRenderWorkerFailure,
 		doReconnect,
 	};
 };

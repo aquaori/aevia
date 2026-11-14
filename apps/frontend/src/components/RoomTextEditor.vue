@@ -20,7 +20,7 @@
 	const lineScale = ref(1);
 	let textLayout: SceneElementDescriptor["textLayout"];
 	let matrix: AffineMatrix = [1, 0, 0, 1, 0, 0];
-	let composing: boolean = false;
+	const composing = ref(false);
 	let resolveRequest: ((value: string | null) => void) | null = null;
 	let changeListener: ((value: string, reason: "input" | "ime") => void) | null = null;
 	let styleListener: ((style: Partial<SceneElementStyle>) => void) | null = null;
@@ -163,7 +163,7 @@
 	const cancel = () => close(null);
 
 	const handleKeydown = (event: KeyboardEvent) => {
-		if (composing) return;
+		if (composing.value) return;
 		if (event.key === "Escape") {
 			event.preventDefault();
 			cancel();
@@ -176,15 +176,15 @@
 	};
 
 	const handleInput = (event: Event) => {
-		if (composing) return;
+		if (composing.value) return;
 		changeListener?.((event.target as HTMLTextAreaElement).value, "input");
 	};
 	const handleCompositionStart = () => {
-		composing = true;
+		composing.value = true;
 	};
 
 	const handleCompositionEnd = (event: CompositionEvent) => {
-		composing = false;
+		composing.value = false;
 		changeListener?.((event.target as HTMLTextAreaElement).value, "ime");
 	};
 
@@ -203,7 +203,7 @@
 		onBoxChange?: (box: aabbBox) => boolean | void;
 	}) => {
 		if (resolveRequest) resolveRequest(null);
-		composing = false;
+		composing.value = false;
 		kind.value = input.kind;
 		textLayout = input.textLayout;
 		matrix = input.matrix ?? [1, 0, 0, 1, 0, 0];
@@ -238,7 +238,7 @@
 	};
 
 	onBeforeUnmount(() => close(null));
-	defineExpose({ open, notifyRemotePatch });
+	defineExpose({ open, notifyRemotePatch, submit });
 </script>
 
 <template>
@@ -276,7 +276,7 @@
 					<button type="button" class="toolbar-action confirm" aria-label="完成" @click="submit"><Check :size="15" /></button>
 				</div>
 
-				<div class="room-text-editor" :class="{ 'room-text-editor--sticky': kind === 'sticky' }">
+				<div class="room-text-editor" :class="{ 'room-text-editor--sticky': kind === 'sticky', 'is-composing': composing }">
 					<template v-if="kind === 'text'">
 						<span v-for="handle in 8" :key="handle" class="selection-handle" :class="`handle-${handle}`" aria-hidden="true" @pointerdown="beginResize($event, handle)"></span>
 					</template>
@@ -368,7 +368,7 @@
 		height: 100%;
 		border: 0;
 		outline: 1.5px solid #4f7cff;
-		background: rgba(255, 255, 255, 0.94);
+		background: transparent;
 		box-shadow: 0 0 0 1px rgba(79, 124, 255, 0.08);
 	}
 
@@ -433,6 +433,8 @@
 		overflow-wrap: anywhere;
 		caret-color: #4f46e5;
 	}
+	.room-text-editor:not(.room-text-editor--sticky):not(.is-composing) .room-text-editor__input { -webkit-text-fill-color: transparent; }
+	.room-text-editor.is-composing:not(.room-text-editor--sticky) { background: white; }
 	.room-text-editor__input::placeholder { color: rgba(71, 85, 105, 0.42); }
 	.room-text-editor--sticky .room-text-editor__input { caret-color: #b7791f; }
 

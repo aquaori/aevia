@@ -298,6 +298,7 @@
 		},
 		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects),
 		onSceneResyncRequired: requestSceneIntegrityResync,
+		onWorkerFailure: () => roomCollabTransport.handleRenderWorkerFailure(),
 	});
 
 	const roomPointerControllerRef = ref<ReturnType<typeof createRoomPointerController> | null>(null);
@@ -313,7 +314,10 @@
 		interactionMode,
 	});
 
-	const startDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.startDrawing(e);
+	const startDrawing = (e: PointerEvent) => {
+		textEditorRef.value?.submit();
+		return roomPointerControllerRef.value?.startDrawing(e);
+	};
 	const draw = (e: PointerEvent) => roomPointerControllerRef.value?.draw(e);
 	const stopDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.stopDrawing(e);
 
@@ -371,6 +375,7 @@
 		appendInitRenderBinaryChunk: (meta, buffer) =>
 			workerBridge.appendInitRenderBinaryChunk(meta, buffer),
 		finishInitRenderStream: () => workerBridge.finishInitRenderStream(),
+		confirmInitScene: () => workerBridge.confirmInitScene(),
 		setInitSceneOperations: (nextCommands, pageId) =>
 			workerBridge.setInitSceneOperations(nextCommands, pageId),
 		syncWorkerScene: (

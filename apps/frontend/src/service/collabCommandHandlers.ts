@@ -225,6 +225,7 @@ interface PageChangeStreamState {
 	pendingChunks: Map<number, PageChangeChunkPayload>;
 	receivedChunkIndexes: Set<number>;
 	commands: Command[];
+	liveCommands: Command[];
 	flatPoints: FlatPoint[];
 	renderNextChunkIndex: number;
 	renderExpectedChunkCount: number | null;
@@ -249,6 +250,11 @@ interface PageChangeStreamState {
 export const createCollabCommandHandlers = (options: CollabMessageDispatcherOptions) => {
 	const commandStore = useCommandStore();
 	let initStreamState: InitStreamState | null = null;
+	let initCompletionTimer: ReturnType<typeof setTimeout> | null = null;
+	const clearInitCompletionTimer = () => {
+		if (initCompletionTimer !== null) clearTimeout(initCompletionTimer);
+		initCompletionTimer = null;
+	};
 	let initFirstRenderChunkMarked = false;
 	let pageChangeStreamState: PageChangeStreamState | null = null;
 	let remoteUpdateFlushFrameId: number | null = null;
@@ -468,6 +474,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			initStreamState.renderReady &&
 			initStreamState.commandsReady
 		) {
+			clearInitCompletionTimer();
 			options.onInitSnapshotCommitted?.(initStreamState.snapshotVersion);
 			initStreamState = null;
 		}
@@ -573,6 +580,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	const handleInitMeta = (msg: CollabIncomingMessage) => {
+		clearInitCompletionTimer();
 		if (labEnabled()) {
 			labMark(LAB_MARK_INIT_META);
 		}
@@ -801,6 +809,12 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		initStreamState.completeReceived = true;
 		tryFinalizeInitCommands();
 		tryCompleteInitStream();
+		if (initStreamState && initCompletionTimer === null) {
+			initCompletionTimer = setTimeout(() => {
+				initCompletionTimer = null;
+				options.onInitStreamInvalid?.();
+			}, 10000);
+		}
 	};
 
 	/**
@@ -867,15 +881,16 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			return;
 		}
 
+		const mergedCommands = Array.from(new Map([...pageChangeStreamState.commands, ...pageChangeStreamState.liveCommands].map((command) => [command.id, command])).values());
 		options.applyLoadedPageDelta({
 			loadedPageIds: pageChangeStreamState.loadedPageIds,
 			loadPageIds: pageChangeStreamState.loadPageIds,
 			unloadPageIds: pageChangeStreamState.unloadPageIds,
-			commands: pageChangeStreamState.commands,
+			commands: mergedCommands,
 		});
 		commandStore.updateLastSortedPoints([]);
 		options.setInitSceneOperations?.(
-			[...options.commands.value, ...pageChangeStreamState.commands],
+			[...options.commands.value, ...mergedCommands],
 			pageChangeStreamState.pageId
 		);
 		options.finishInitRenderStream?.();
@@ -981,14 +996,15 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		if (pageChangeStreamState.commandsReady) return;
 
+		const mergedCommands = Array.from(new Map([...pageChangeStreamState.commands, ...pageChangeStreamState.liveCommands].map((command) => [command.id, command])).values());
 		options.applyLoadedPageDelta({
 			loadedPageIds: pageChangeStreamState.loadedPageIds,
 			loadPageIds: pageChangeStreamState.loadPageIds,
 			unloadPageIds: pageChangeStreamState.unloadPageIds,
-			commands: pageChangeStreamState.commands,
+			commands: mergedCommands,
 		});
 		options.loadedPageIds.value = pageChangeStreamState.loadedPageIds;
-		options.setInitSceneOperations?.([...options.commands.value, ...pageChangeStreamState.commands], pageChangeStreamState.pageId);
+		options.setInitSceneOperations?.([...options.commands.value, ...mergedCommands], pageChangeStreamState.pageId);
 		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
 		useLamportStore().syncLamport(pageChangeStreamState.lastLamport);
 		pageChangeStreamState.commandsReady = true;
@@ -1032,6 +1048,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			pendingChunks: new Map(),
 			receivedChunkIndexes: new Set(),
 			commands: [],
+			liveCommands: [],
 			flatPoints: [],
 			renderNextChunkIndex: 0,
 			renderExpectedChunkCount: Number.isFinite(renderExpectedChunkCountRaw)
@@ -1118,6 +1135,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(meta.totalChunks ?? meta.totalPointChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.renderExpectedChunkCount !== null && pageChangeStreamState.renderExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.renderExpectedChunkCount = expectedChunkCountRaw;
 		}
 	};
@@ -1195,6 +1213,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(donePayload.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.renderExpectedChunkCount !== null && pageChangeStreamState.renderExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.renderExpectedChunkCount = expectedChunkCountRaw;
 		}
 		pageChangeStreamState.renderDoneReceived = true;
@@ -1227,6 +1246,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 
 		const expectedChunkCountRaw = Number(meta.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.commandsExpectedChunkCount !== null && pageChangeStreamState.commandsExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.commandsExpectedChunkCount = expectedChunkCountRaw;
 		}
 	};
@@ -1279,6 +1299,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		const expectedChunkCountRaw = Number(donePayload.totalChunks ?? NaN);
 		if (Number.isFinite(expectedChunkCountRaw)) {
+			if (pageChangeStreamState.commandsExpectedChunkCount !== null && pageChangeStreamState.commandsExpectedChunkCount !== expectedChunkCountRaw) { options.onInitStreamInvalid?.(); return; }
 			pageChangeStreamState.commandsExpectedChunkCount = expectedChunkCountRaw;
 		}
 		pageChangeStreamState.commandsDoneReceived = true;
@@ -1301,6 +1322,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		) {
 			return;
 		}
+		if (!pageChangeStreamState.renderReady || !pageChangeStreamState.commandsReady) {
+			options.onInitStreamInvalid?.();
+			return;
+		}
 		pageChangeStreamState.completeReceived = true;
 		tryCompletePageChangeStream();
 	};
@@ -1319,6 +1344,12 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		tryFinalizePageChangeStream(donePayload);
 	};
 
+	const recordPageChangeLocalCommand = (command: Command) => {
+		if (pageChangeStreamState && !pageChangeStreamState.commandsReady && pageChangeStreamState.loadedPageIds.includes(command.pageId)) {
+			pageChangeStreamState.liveCommands.push(command);
+		}
+	};
+
 	const handlePushCommand = (msg: CollabIncomingMessage) => {
 		const cmd = msg.data.cmd ? normalizeCommandFromProtocol(msg.data.cmd as Command) : undefined;
 		const pushType = msg.pushType as "normal" | "start" | "update" | "stop";
@@ -1328,6 +1359,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			}
 			useLamportStore().syncLamport(Number(msg.data.lamport ?? cmd.lamport ?? 0));
 			return;
+		}
+
+		if (pushType === "normal" && cmd && pageChangeStreamState && !pageChangeStreamState.commandsReady && pageChangeStreamState.loadedPageIds.includes(cmd.pageId)) {
+			pageChangeStreamState.liveCommands.push(cmd);
 		}
 
 		if ((pushType === "normal" || pushType === "start") && cmd) {
@@ -1565,6 +1600,9 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const payload = (msg.data ?? {}) as OperationRejectedPayload;
 		const opType = String(payload.opType ?? "unknown");
 		const cmdId = typeof payload.cmdId === "string" ? payload.cmdId : null;
+		if (cmdId && pageChangeStreamState) {
+			pageChangeStreamState.liveCommands = pageChangeStreamState.liveCommands.filter((command) => command.id !== cmdId);
+		}
 		const cmd = cmdId ? options.commandMap.get(cmdId) ?? null : null;
 		const canRollbackRejectedPush = opType === "push-cmd" && Boolean(cmdId && cmd);
 		const shouldResync =
@@ -1631,6 +1669,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	return {
+		clearInitCompletionTimer,
 		handleInitMeta,
 		handleInitRenderMeta,
 		handleInitRenderChunkMeta,
@@ -1654,6 +1693,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		handlePageChangeChunk,
 		handlePageChangeDone,
 		handlePushCommand,
+		recordPageChangeLocalCommand,
 		handleDeleteCommand,
 		handlePageAdd,
 		handleUndoRedo,

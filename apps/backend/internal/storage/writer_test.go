@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -218,5 +220,71 @@ func TestGenerateRoomIDIsUnusedAndWellFormed(t *testing.T) {
 	}
 	if exists {
 		t.Fatal("generated id should not already be in use")
+	}
+}
+
+// A failed barrier must not advance the durable sequence or persist the command.
+func TestDatabaseFullDoesNotCommitSceneWrite(t *testing.T) {
+	store := openTestStore(t)
+	store.db.SetMaxOpenConns(1)
+	ctx := context.Background()
+	if err := store.CreateRoom(ctx, domain.Room{RoomID: "full-room", Name: "full", CreatedAt: domain.NowMillis(), TotalPage: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var pages int
+	if err := store.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, fmt.Sprintf("PRAGMA max_page_count = %d", pages)); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := domain.CommandFromPayload([]byte(fmt.Sprintf(`{"id":"full-op","type":"path","pageId":0,"lamport":1,"padding":"%s"}`, strings.Repeat("x", 1<<20))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCommandAtSeq("full-room", cmd, 1, true); err == nil {
+		t.Fatal("expected a full database to reject the write")
+	}
+	room, ok, err := store.GetRoom(ctx, "full-room")
+	if err != nil || !ok || room.DurableSeq != 0 {
+		t.Fatalf("failed write advanced sequence: room=%+v ok=%v err=%v", room, ok, err)
+	}
+	commands, err := store.ListCommands(ctx, "full-room")
+	if err != nil || len(commands) != 0 {
+		t.Fatalf("failed write persisted: commands=%v err=%v", commands, err)
+	}
+}
+
+func TestBusyWriteCanBeRetriedAfterLockIsReleased(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	if err := store.CreateRoom(ctx, domain.Room{RoomID: "busy-room", Name: "busy", CreatedAt: domain.NowMillis(), TotalPage: 1}); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if _, err := lock.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer lock.ExecContext(ctx, "ROLLBACK")
+	cmd, err := domain.CommandFromPayload([]byte(`{"id":"busy-op","type":"path","pageId":0,"lamport":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCommandAtSeq("busy-room", cmd, 1, true); err == nil {
+		t.Fatal("expected locked database to reject the write")
+	}
+	if _, err := lock.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCommandAtSeq("busy-room", cmd, 1, true); err != nil {
+		t.Fatalf("retry after unlock: %v", err)
+	}
+	commands, err := store.ListCommands(ctx, "busy-room")
+	if err != nil || len(commands) != 1 || commands[0].ID() != "busy-op" {
+		t.Fatalf("unexpected retry result: commands=%v err=%v", commands, err)
 	}
 }
