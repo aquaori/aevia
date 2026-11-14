@@ -11,6 +11,6 @@
 
 - `collabCommandHandlers.spec.ts`、`commandStore.spec.ts` 覆盖切页快照与实时操作交错及 ID 去重。
 - `renderWorkerBridge.unit.spec.ts` 和 `roomCollabTransport.spec.ts` 覆盖 Worker 屏障与连接变更时的恢复序号；它们是局部逻辑检查，不是完整多端故障矩阵。
-- `persistence_test.go` 覆盖只读拒绝携带 ID；`storage/writer_test.go` 覆盖等待和异步写入失败；`gateway/server_test.go` 含重启后的持久化和相同操作重试检查。
+- `persistence_test.go` 覆盖只读拒绝携带 ID；`storage/writer_test.go` 覆盖等待和异步写入失败、SQLite 写满后不推进持久序号、锁释放后存储层可重试；`gateway/server_test.go` 含重启后的持久化和相同操作重试检查。
 - 大场景单次诊断及 run ID 见 `scene-s04-capacity.md`。现有测试目录的 `covered` 表示有测试归属，不代表模块全部行为已覆盖。
 - 离线操作队列只在当前页面进程内，刷新或浏览器崩溃后不保证保留；不属于持久离线编辑。磁盘满、锁竞争、跨设备及复杂乱序仍未形成完整的端到端故障覆盖，不能据此声明所有故障已认证。
