@@ -286,6 +286,17 @@ describe("collab command handlers", () => {
 		expect(fixture.options.finishInitRenderStream).not.toHaveBeenCalled();
 	});
 
+	it("recovers if an init stream completes while chunks remain missing", () => {
+		vi.useFakeTimers();
+		try {
+			const fixture = createFixture();
+			startInitStream(fixture);
+			fixture.handlers.handleInitComplete(message("init-complete", { snapshotVersion: 1 }));
+			vi.advanceTimersByTime(10000);
+			expect(fixture.options.onInitStreamInvalid).toHaveBeenCalledOnce();
+		} finally { vi.useRealTimers(); }
+	});
+
 	it("normalizes the init loaded-page window on init-meta", () => {
 		const fixture = createFixture();
 
@@ -378,6 +389,69 @@ describe("collab command handlers", () => {
 			message("page-change-complete", { requestId: 7, snapshotVersion: 2 })
 		);
 		expect(fixture.options.clearActivePageChangeRequest).toHaveBeenCalledWith(7);
+	});
+
+	it("keeps live operations for a page while its snapshot is loading", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.getActivePageChangeTargetId.mockReturnValue(2);
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 2, loadedPageIds: [1, 2], loadPageIds: [2], unloadPageIds: [0], snapshotVersion: 2,
+			chunkSummary: { totalRenderChunks: 0, totalCommandChunks: 1 },
+		}));
+		const snapshot = createIncomingCommand({ id: "snapshot", pageId: 2 });
+		const live = createIncomingCommand({ id: "live", pageId: 2, lamport: 3 });
+		fixture.handlers.handlePushCommand(message("push-cmd", { cmd: live, lamport: 3 }, "normal"));
+		fixture.handlers.handlePageChangeCommandsChunk(message("page-change-commands-chunk", {
+			requestId: 7, snapshotVersion: 2, chunkIndex: 0, commands: [snapshot, live],
+		}));
+		fixture.handlers.handlePageChangeCommandsDone(message("page-change-commands-done", { requestId: 7, snapshotVersion: 2, totalChunks: 1 }));
+		expect(fixture.options.applyLoadedPageDelta).toHaveBeenCalledWith(expect.objectContaining({
+			commands: [expect.objectContaining({ id: "snapshot" }), expect.objectContaining({ id: "live" })],
+		}));
+		expect(fixture.options.setInitSceneOperations).toHaveBeenLastCalledWith(expect.arrayContaining([expect.objectContaining({ id: "live" })]), 2);
+	});
+
+	it("keeps local page writes during loading and removes rejected writes", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 2, loadedPageIds: [2], loadPageIds: [2], snapshotVersion: 2,
+			chunkSummary: { totalRenderChunks: 0, totalCommandChunks: 0 },
+		}));
+		fixture.handlers.recordPageChangeLocalCommand(createIncomingCommand({ id: "local-write", pageId: 2, userId: "u1" }));
+		fixture.handlers.recordPageChangeLocalCommand(createIncomingCommand({ id: "rejected", pageId: 2, userId: "u1" }));
+		fixture.handlers.handleOperationRejected(message("op-rejected", { opType: "push-cmd", cmdId: "rejected" }));
+		fixture.handlers.handlePageChangeCommandsDone(message("page-change-commands-done", { requestId: 7, snapshotVersion: 2, totalChunks: 0 }));
+		expect(fixture.options.applyLoadedPageDelta).toHaveBeenCalledWith(expect.objectContaining({
+			commands: [expect.objectContaining({ id: "local-write" })],
+		}));
+	});
+
+	it("rejects an incomplete or inconsistent page-change stream", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 1, loadedPageIds: [1], loadPageIds: [1], snapshotVersion: 2,
+			chunkSummary: { totalRenderChunks: 1, totalCommandChunks: 0 },
+		}));
+		fixture.handlers.handlePageChangeRenderDone(message("page-change-render-done", { requestId: 7, snapshotVersion: 2, totalChunks: 0 }));
+		expect(fixture.options.onInitStreamInvalid).toHaveBeenCalledOnce();
+		expect(fixture.options.finishInitRenderStream).not.toHaveBeenCalled();
+	});
+
+	it("reconnects instead of silently waiting when a completed page stream is missing chunks", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 1, loadedPageIds: [1], loadPageIds: [1], snapshotVersion: 2,
+			chunkSummary: { totalRenderChunks: 1, totalCommandChunks: 0 },
+		}));
+		fixture.handlers.handlePageChangeRenderDone(message("page-change-render-done", { requestId: 7, snapshotVersion: 2, totalChunks: 1 }));
+		fixture.handlers.handlePageChangeCommandsDone(message("page-change-commands-done", { requestId: 7, snapshotVersion: 2, totalChunks: 0 }));
+		fixture.handlers.handlePageChangeComplete(message("page-change-complete", { requestId: 7, snapshotVersion: 2 }));
+		expect(fixture.options.onInitStreamInvalid).toHaveBeenCalledOnce();
+		expect(fixture.options.clearActivePageChangeRequest).not.toHaveBeenCalled();
 	});
 
 	it("replays cached scene history when returning to a loaded page", () => {

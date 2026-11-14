@@ -347,7 +347,8 @@
       "id": "frontend:apps/frontend/src/service/roomCollabTransport.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/roomCollabTransport.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/roomCollabTransport.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/roomPageService.ts",
@@ -361,7 +362,7 @@
       "kind": "frontend",
       "path": "apps/frontend/src/service/roomSessionContext.ts",
       "state": "covered",
-      "owner": "apps/frontend/src/service/roomPageService.spec.ts"
+      "owner": "apps/frontend/src/service/roomCollabTransport.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/service/sessionApi.ts",

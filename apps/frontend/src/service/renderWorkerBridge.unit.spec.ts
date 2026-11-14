@@ -61,6 +61,29 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("waits for the worker to confirm snapshot processing", async () => {
+		let instance: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId: string } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId: string } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { instance = this; }
+			postMessage(message: { type: string; data?: { requestId: string } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			const confirmation = bridge.confirmInitScene();
+			const requestId = instance!.sent.at(-1)!.data!.requestId;
+			instance!.onmessage?.({ data: { type: "init-scene-barrier-result", requestId, valid: false } });
+			expect(await confirmation).toBe(false);
+		} finally {
+			bridge.dispose();
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it("flushes queued stroke pixels before sending an undo operation", () => {
 		const messages: string[] = [];
 		vi.stubGlobal("requestAnimationFrame", () => 1);

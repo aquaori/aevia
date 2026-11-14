@@ -313,6 +313,13 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			onChange: applyText,
 			onStyleChange: (style) => {
 				draftStyle = { ...draftStyle, ...style };
+				if (created) {
+					const groupId = uuidv4();
+					if (pushSceneStyle(elementId, style, groupId)?.ok) {
+						historyGroups.add(groupId);
+						createdStyle = { ...draftStyle };
+					}
+				}
 			},
 			onBoxChange: (nextBox) => {
 				if (!created) {
@@ -1144,7 +1151,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 						if (canvasRect?.width && canvasRect.height) descriptor.textLayout = { version: 1, referenceWidth: canvasRect.width, aspectRatio: canvasRect.width / canvasRect.height };
 						const elementId = options.currentDrawingId.value;
 						if (e.target && (e.target as HTMLElement).hasPointerCapture(e.pointerId)) (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-						await editText(elementId, descriptor);
+						void editText(elementId, descriptor);
 					}
 					if (toolDefinition.inputMode === "sticker") descriptor.sticker = options.currentSticker.value;
 					if (toolDefinition.inputMode !== "text") {
@@ -1216,6 +1223,16 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			} else if (cursorStopResult.transformPayload && options.dragStartPos.value) {
 				const { targets } = cursorStopResult.transformPayload;
 				if (targets.length > 0) {
+					let textBox: aabbBox | null = null;
+					if (options.interactionMode.value === "resizing" && targets.length === 1 && options.previewTransform.value) {
+						const textScene = new SceneEngine();
+						textScene.rebuildFromCommands(options.commands.value, options.currentPageId.value);
+						textBox = textScene.getResizedTextBox(targets[0]!.elementId, options.previewTransform.value);
+					}
+					if (textBox) {
+						const result = pushSceneStyle(targets[0]!.elementId, {}, uuidv4(), textBox);
+						if (result?.ok && options.initialGroupBox.value && options.previewTransform.value) options.selectedSceneBounds.value = options.interactionController.transformBox(options.initialGroupBox.value, options.previewTransform.value);
+					} else {
 					const committedBounds = options.initialGroupBox.value && options.previewTransform.value
 						? options.interactionController.transformBox(options.initialGroupBox.value, options.previewTransform.value)
 						: options.selectedSceneBounds.value;
@@ -1251,6 +1268,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 					});
 					if (result?.ok && renderFinished) await renderFinished;
 					options.selectedSceneBounds.value = committedBounds;
+					}
 				}
 
 				finalizeDrop();

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Point, SceneOperationEnvelopeV2 } from "@collaborative-whiteboard/shared";
 import { cutIntervalsForStrokeAtom } from "./eraseGeometry";
 import { DirtyRegionSet } from "./dirtyRegionSet";
@@ -53,6 +53,38 @@ const eraseOperation: SceneOperationEnvelopeV2 = {
 };
 
 describe("SceneEngine", () => {
+	it("keeps erased holes transparent in the transformed selection preview", () => {
+		const transforms: number[][] = [];
+		const layerContext = new Proxy({ transform: (...values: number[]) => transforms.push(values) }, {
+			get(target, key) { return key in target ? Reflect.get(target, key) : () => {}; },
+		});
+		class TestCanvas {
+			constructor(public width: number, public height: number) {}
+			getContext() { return layerContext; }
+		}
+		vi.stubGlobal("OffscreenCanvas", TestCanvas);
+		try {
+			const engine = new SceneEngine();
+			engine.applyOperation(createOperation);
+			engine.applyOperation({
+				...base("mask", 4), kind: "element.erase",
+				payload: { targets: [{ elementId: "element-a", mask: {
+					points: [{ x: 0.4, y: 0.4, p: 1, lamport: 4 }], size: 12,
+					width: 1000, height: 1000, inverseMatrix: [1, 0, 0, 1, 0, 0],
+				} }] },
+			});
+			const colors: string[] = [];
+			const context = {
+				canvas: { width: 1000, height: 1000 }, shadowColor: "rgba(0, 0, 0, 0.2)",
+				save() {}, restore() {}, drawImage() { colors.push(this.shadowColor); },
+			};
+			engine.renderElements(context as unknown as CanvasRenderingContext2D, new Set(["element-a"]), [1, 0, 0, 1, 0.1, 0.2], 1000, 1000);
+			expect(colors).toEqual(["transparent"]);
+			expect(transforms).toContainEqual([1, 0, 0, 1, 100, 200]);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 	it("buffers missing stroke points and completes only after the gap closes", () => {
 		const engine = new SceneEngine();
 		const create = { ...createOperation, payload: { ...createOperation.payload, points: [points[0]!], isComplete: false } } as SceneOperationEnvelopeV2;

@@ -93,6 +93,7 @@ export interface SceneElementState {
 	points: Point[];
 	atomRefs: number[];
 	erasedIntervals: Map<string, Array<{ start: number; end: number }>>;
+	eraseMasks: import("@collaborative-whiteboard/shared").EraseMask[];
 	characters: Map<string, TextCharacterState>;
 }
 

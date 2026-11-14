@@ -174,8 +174,15 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 			target, ok := raw.(map[string]any)
 			whole, _ := target["eraseWhole"].(bool)
 			intervals := anySlice(target["intervals"])
+			maskValid := false
+			if mask, ok := target["mask"].(map[string]any); ok {
+				size, sizeOK := finiteNumber(mask["size"])
+				width, widthOK := finiteNumber(mask["width"])
+				height, heightOK := finiteNumber(mask["height"])
+				maskValid = sizeOK && size > 0 && widthOK && width > 0 && heightOK && height > 0 && validMatrix(mask["inverseMatrix"]) && validPoints(mask["points"])
+			}
 			if !ok || !validReferenceID(target["elementId"]) || !validEraseIntervals(target["intervals"]) ||
-				(!whole && (!validReferenceID(target["atomId"]) || len(intervals) == 0)) {
+				(!whole && !maskValid && (!validReferenceID(target["atomId"]) || len(intervals) == 0)) {
 				return "INVALID_SCENE_OPERATION", "Erase target intervals are invalid.", false
 			}
 		}

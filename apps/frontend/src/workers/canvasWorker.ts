@@ -221,6 +221,8 @@ const decodeInitRenderBinaryChunk = (data: InitRenderBinaryChunkData): FlatPoint
 	return points;
 };
 
+let initStreamValid = true;
+
 const validateInitRenderBinaryChunk = (data: InitRenderBinaryChunkData, view: DataView) => {
 	if (view.byteLength < INIT_RENDER_CHUNK_HEADER_SIZE) {
 		console.error("[canvasWorker] init render binary chunk header is truncated.");
@@ -658,6 +660,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "begin-init-stream") {
+		initStreamValid = true;
 		if (typeof data?.pageId === "number") {
 			currentPageId = data.pageId;
 		}
@@ -682,6 +685,12 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "append-init-binary-chunk") {
+		const chunk = data as InitRenderBinaryChunkData;
+		if (!validateInitRenderBinaryChunk(chunk, new DataView(chunk.buffer))) {
+			initStreamValid = false;
+			self.postMessage({ type: "scene-resync-required" });
+			return;
+		}
 		if (mainCtx && offscreenCanvas) {
 			appendInitRenderBinaryChunkToCanvas(data as InitRenderBinaryChunkData);
 			return;
@@ -698,6 +707,11 @@ self.onmessage = (event: MessageEvent) => {
 			snapshotVersion: (data as InitRenderBinaryChunkData).snapshotVersion,
 			chunkIndex: (data as InitRenderBinaryChunkData).chunkIndex,
 		});
+		return;
+	}
+
+	if (type === "init-scene-barrier") {
+		self.postMessage({ type: "init-scene-barrier-result", requestId: data.requestId, valid: initStreamValid && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() });
 		return;
 	}
 

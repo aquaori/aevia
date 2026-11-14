@@ -105,6 +105,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	const cursorLabelWidthCache = new Map<string, number>();
 	const transformPreviewEngine = new SceneEngine();
 	let transformPreviewSignature = "";
+	let transformPreviewCommands: Command[] = [];
 
 	const drawProductPreview = (width: number, height: number) => {
 		const preview = options.productPreview.value;
@@ -189,6 +190,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 		const signature = `${selectionKey}${relevant.map((command) => `${command.id}:${command.isDeleted ? 1 : 0}`).join(",")}`;
 		if (signature === transformPreviewSignature) return;
 		transformPreviewSignature = signature;
+		transformPreviewCommands = relevant;
 		transformPreviewEngine.rebuildFromCommands(relevant, options.currentPageId.value);
 	};
 
@@ -350,13 +352,14 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 				uiCtx.value.shadowOffsetY = 6;
 			}
 
-			transformPreviewEngine.renderElements(
-				uiCtx.value,
-				options.transformingCmdIds.value,
-				options.previewTransform.value,
-				width,
-				height
-			);
+			let previewMatrix = options.previewTransform.value;
+			if (options.interactionMode.value === "resizing" && previewMatrix && options.transformingCmdIds.value.size === 1) {
+				const elementId = [...options.transformingCmdIds.value][0]!;
+				transformPreviewEngine.rebuildFromCommands(transformPreviewCommands, options.currentPageId.value);
+				const box = transformPreviewEngine.getResizedTextBox(elementId, previewMatrix);
+				if (box) { transformPreviewEngine.previewTextBox(elementId, box); previewMatrix = null; }
+			}
+			transformPreviewEngine.renderElements(uiCtx.value, options.transformingCmdIds.value, previewMatrix, width, height);
 
 			uiCtx.value.restore();
 		}

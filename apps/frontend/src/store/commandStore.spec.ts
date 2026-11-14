@@ -102,6 +102,15 @@ describe("commandStore ordering", () => {
 		expect(store.commands[0]!.lamport).toBe(1);
 	});
 
+	it("deduplicates snapshot commands against live commands during a page change", () => {
+		const store = useCommandStore();
+		store.replaceLoadedPageWindow([0], [makeCommand("live", 2)]);
+		store.applyLoadedPageDelta({ loadedPageIds: [0, 1], loadPageIds: [1], unloadPageIds: [], commands: [
+			makeCommand("live", 2), makeCommand("snapshot", 1, 1), makeCommand("snapshot", 1, 1),
+		] });
+		expect(store.commands.map((cmd) => cmd.id)).toEqual(["snapshot", "live"]);
+	});
+
 	it("reflects insertions and removals in the merged view", () => {
 		const store = useCommandStore();
 		store.replaceLoadedPageWindow([0], []);
