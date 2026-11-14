@@ -485,6 +485,9 @@ export class SceneEngine {
 				layerCtx.restore();
 			}
 			ctx.save();
+			// A drop shadow behind the composited stroke can fill small erased holes
+			// while the selection is being dragged.
+			if (activeElement.eraseMasks.length > 0) ctx.shadowColor = "transparent";
 			if (highlighter) { ctx.globalAlpha = activeElement.descriptor.style.opacity ?? 0.32; ctx.globalCompositeOperation = "multiply"; }
 			ctx.drawImage(layer, 0, 0, logicalWidth, logicalHeight);
 			ctx.restore();
