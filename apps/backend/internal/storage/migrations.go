@@ -89,6 +89,15 @@ CREATE TABLE IF NOT EXISTS room_transfers (
   FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS guest_sessions (
+  room_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  kicked INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(room_id,user_id),
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS room_role_capabilities (
   room_id TEXT NOT NULL,
   role TEXT NOT NULL,

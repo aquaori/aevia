@@ -327,8 +327,9 @@
 							<div class="mt-2 flex gap-4 text-indigo-600"><button @click="respondTransfer(transfer.roomId, true)">接受</button><button @click="respondTransfer(transfer.roomId, false)">拒绝</button></div>
 						</div>
 					</div>
-					<div v-if="accountStore.account && rooms.length && step === 1" class="mb-6">
+					<div v-if="accountStore.account && step === 1" class="mb-6">
 						<h2 class="mb-2 text-sm font-bold text-slate-700">我的房间</h2>
+						<p v-if="!rooms.length" class="py-2 text-sm text-slate-400">还没有房间，创建或加入一个开始协作吧。</p>
 						<div class="max-h-40 space-y-2 overflow-y-auto">
 							<div v-for="room in rooms" :key="room.roomId" class="flex items-center rounded-xl bg-slate-50 hover:bg-indigo-50">
 								<button class="flex flex-1 items-center justify-between px-4 py-3 text-left" @click="enterSavedRoom(room)"><span class="font-medium text-slate-700">{{ room.name }}</span><span class="text-xs text-slate-400">{{ room.roomId }} →</span></button>

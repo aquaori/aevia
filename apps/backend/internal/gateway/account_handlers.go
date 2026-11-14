@@ -59,6 +59,7 @@ func (s *Server) loginAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	account, hash, err := s.store.AccountByUsername(r.Context(), strings.TrimSpace(req.Username))
 	if err != nil || !auth.VerifyPassword(req.Password, hash) {
+		s.notePasswordFailure(r)
 		fail(w, 401, "用户名或密码错误")
 		return
 	}

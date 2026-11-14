@@ -101,6 +101,9 @@ func (s *Server) leaveRoom(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "退出失败")
 		return
 	}
+	if actor, err := s.registry.Get(r.Context(), r.PathValue("roomId")); err == nil {
+		_ = actor.NotifyUser(account.ID, "access.revoked", "", true)
+	}
 	okNoData(w)
 }
 
@@ -117,6 +120,44 @@ func (s *Server) changeMember(w http.ResponseWriter, r *http.Request, action str
 	if err = s.store.UpdateMember(r.Context(), r.PathValue("roomId"), userID, action); err != nil {
 		fail(w, 500, "成员操作失败")
 		return
+	}
+	if actor, err := s.registry.Get(r.Context(), r.PathValue("roomId")); err == nil {
+		if action == "editor" || action == "viewer" {
+			_ = actor.NotifyUser(userID, "role.changed", action, false)
+		}
+		if action == "kick" || action == "ban" {
+			_ = actor.NotifyUser(userID, "access.revoked", "", true)
+		}
+	}
+	okNoData(w)
+}
+
+func (s *Server) changeGuest(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.roomAccount(w, r, true); !ok {
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if decodeJSON(r, &req) != nil || (req.Action != "editor" && req.Action != "viewer" && req.Action != "kick") {
+		fail(w, 400, "操作无效")
+		return
+	}
+	roomID, userID := r.PathValue("roomId"), r.PathValue("userId")
+	if _, _, err := s.store.GuestRole(r.Context(), roomID, userID); err != nil {
+		fail(w, 404, "游客不存在")
+		return
+	}
+	if err := s.store.UpdateGuest(r.Context(), roomID, userID, req.Action); err != nil {
+		fail(w, 500, "操作失败")
+		return
+	}
+	if actor, err := s.registry.Get(r.Context(), roomID); err == nil {
+		if req.Action == "kick" {
+			_ = actor.NotifyUser(userID, "access.revoked", "", true)
+		} else {
+			_ = actor.NotifyUser(userID, "role.changed", req.Action, false)
+		}
 	}
 	okNoData(w)
 }

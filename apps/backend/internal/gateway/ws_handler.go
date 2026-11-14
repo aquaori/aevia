@@ -45,6 +45,13 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !claims.Account && claims.Role != "" {
+		_, kicked, lookupErr := s.store.GuestRole(r.Context(), claims.RoomID, claims.UserID)
+		if lookupErr != nil || kicked {
+			fail(w, http.StatusForbidden, "房间访问权限已失效")
+			return
+		}
+	}
 	actor, err := s.registry.Get(r.Context(), claims.RoomID)
 	if err != nil {
 		if errors.Is(err, room.ErrActorStopped) {
@@ -101,6 +108,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	room.SendInitStream(client.send, roomData.Name, client.info(), result)
 	client.readPump(ctx)
 	client.actor.Leave(client.id)
+	client.abortConnection()
 	_ = client.conn.Close(websocket.StatusNormalClosure, "closed")
 	acquiredConnection = false
 	s.connectionLimit.Release(ip, claims.RoomID)
@@ -177,7 +185,7 @@ func (c *wsClient) abortConnection() {
 func (c *wsClient) info() room.ClientInfo {
 	return room.ClientInfo{
 		ID: c.id, UserID: c.claims.UserID, UserName: c.claims.UserName, Account: c.claims.Account,
-		PageID: c.pageID, Send: c.send, Abort: c.abortConnection,
+		PageID: c.pageID, Send: c.send, Abort: c.abortConnection, Done: c.abort,
 	}
 }
 

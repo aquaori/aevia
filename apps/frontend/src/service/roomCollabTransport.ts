@@ -116,6 +116,7 @@ interface RoomCollabTransportOptions {
 	cancelRejectedOperation?: () => void;
 	notifyRemoteTextPatch?: (elementId: string) => void;
 	persistSessionAuth?: (payload: { sessionToken: string; expiresAt: number | null }) => void;
+	onRoomRoleChanged?: (role: string) => void;
 	onSessionExpired?: () => void;
 }
 
@@ -767,6 +768,17 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							isIntentionalClose.value = true;
 							markReconnectFailed("此账号已在其他设备进入房间，请返回首页重新进入。");
 							connection.close();
+							return;
+						}
+						if (msg.type === "access.revoked") {
+							isIntentionalClose.value = true;
+							markReconnectFailed("你已离开房间或访问权限已被房主移除。");
+							connection.close();
+							return;
+						}
+						if (msg.type === "role.changed" && typeof msg.data?.role === "string") {
+							options.onRoomRoleChanged?.(msg.data.role);
+							toast.info(msg.data.role === "viewer" ? "房主已将你设为只读者" : "房主已允许你编辑");
 							return;
 						}
 						if (msg.type === "resync.required") {

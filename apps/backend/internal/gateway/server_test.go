@@ -118,6 +118,10 @@ type apiResponse struct {
 
 func do(t *testing.T, server *httptest.Server, method, path string, body any, token string) (int, apiResponse) {
 	t.Helper()
+	if method == "POST" && path == "/create-room" && token == "" {
+		_, registered := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "test-" + randomID(), "password": "password123"}, "")
+		token, _ = registered.Data["token"].(string)
+	}
 	var reader *bytes.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)

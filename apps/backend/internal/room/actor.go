@@ -127,6 +127,10 @@ func (a *Actor) Leave(clientID ClientID) {
 	_ = a.sendReliable(leaveMessage{ClientID: clientID})
 }
 
+func (a *Actor) NotifyUser(userID, typ, role string, close bool) error {
+	return a.sendReliable(notifyUserMessage{UserID: userID, Type: typ, Role: role, Close: close})
+}
+
 func (a *Actor) Event(clientID ClientID, typ string, data map[string]any, binary bool) error {
 	msg := clientEventMessage{ClientID: clientID, Type: typ, Data: data, Binary: binary}
 	if isRealtime(typ) {
@@ -292,6 +296,20 @@ func (a *Actor) handle(msg actorMessage) bool {
 		a.handleJoin(m)
 	case leaveMessage:
 		a.handleLeave(m)
+	case notifyUserMessage:
+		for id, client := range a.state.Clients {
+			if client.UserID != m.UserID {
+				continue
+			}
+			if m.Close {
+				drainOutbound(client.Send)
+			}
+			sendOutbound(client.Send, Outbound{JSON: Envelope{Type: m.Type, Data: map[string]any{"role": m.Role}}})
+			if m.Close {
+				sendOutbound(client.Send, Outbound{Close: true})
+				delete(a.state.Clients, id)
+			}
+		}
 	case clientEventMessage:
 		a.handleClientEvent(m)
 	case pageChangeMessage:
@@ -361,7 +379,32 @@ func (a *Actor) handleJoin(msg joinMessage) {
 	online := len(a.state.Clients)
 	members := a.state.OnlineMembers()
 	result := JoinResult{Room: a.state.Room, Deltas: deltas, Resume: resume, ResumeSeq: msg.LastRoomSeq, Online: online, Members: members}
-	if resume == "snapshot" {
+	if resume == "snapshot" && client.Done != nil {
+		// Materialize a stable snapshot while the actor owns the state, then
+		// serialize and send it off the actor. Live events queue until the stream
+		// completes, preserving render metadata/binary frame ordering.
+		result.Init = a.builder.Init(a.state, client.PageID)
+		out := client.Send
+		live := make(chan Outbound, cap(out))
+		client.Send = live
+		a.state.Clients[client.ID] = client
+		streamResult := result
+		go func() {
+			sendInitStream(out, streamResult.Room.Name, client, streamResult, true)
+			for {
+				select {
+				case event := <-live:
+					select {
+					case out <- event:
+					case <-client.Done:
+						return
+					}
+				case <-client.Done:
+					return
+				}
+			}
+		}()
+	} else if resume == "snapshot" {
 		a.builder.SendLiveInitStream(client.Send, a.state, client, online, members)
 	} else {
 		SendInitStream(client.Send, a.state.Room.Name, client, result)

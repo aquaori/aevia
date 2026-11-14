@@ -65,6 +65,11 @@
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
 	import RoomInvites from "../components/RoomInvites.vue";
+	import AccountPanel from "../components/AccountPanel.vue";
+	import { useAccountStore } from "../store/accountStore";
+	import axios from "axios";
+	import { toast } from "vue-sonner";
+	import { apiUrl } from "../config/endpoints";
 	import RoomTextEditor from "../components/RoomTextEditor.vue";
 	import { fetchPageOverview, type PageOverviewItem } from "../service/pageOverviewService";
 	import type { SelectionState } from "../utils/editorTypes";
@@ -73,7 +78,30 @@
 	// 路由钩子，获取URL中的token参数
 	const router = useRouter();
 	const userStore = useUserStore();
+	const accountStore = useAccountStore();
 	const showInvites = ref(false);
+	const changeGuest = async (userId: string, action: string) => {
+		if (action === "kick" && !window.confirm("游客未登录，踢出后无法永久阻止其再次进入。需要更严格的管理时，可关闭游客入口或修改房间密码。确定踢出吗？")) return;
+		try { await axios.post(apiUrl(`/v2/rooms/${roomId.value}/guests/${userId}`), { action }, { headers: accountStore.headers() }); }
+		catch { toast.error("操作失败，请重试"); }
+	};
+	const enterWithAccount = async () => {
+		const join = (password: string) => axios.post(apiUrl("/join-room"), { roomId: roomId.value, password }, { headers: accountStore.headers() });
+		try {
+			let response;
+			try { response = await join(""); }
+			catch (error) {
+				if (!axios.isAxiosError(error) || error.response?.data?.msg !== "Password incorrect") throw error;
+				const password = window.prompt("请输入房间密码，以账号身份重新进入")
+				if (password === null) return;
+				response = await join(password);
+			}
+			userStore.setToken(response.data.data.sessionToken);
+			userStore.setSessionExpiresAt(response.data.data.expiresAt);
+			userStore.setRoomRole(response.data.data.role || "editor");
+			window.location.reload();
+		} catch { toast.error("无法以账号身份进入房间，请返回首页重试"); }
+	};
 
 	// --- 断线重连状态 (Reconnection State) ---
 	const {
@@ -409,6 +437,7 @@
 			userStore.setToken(sessionToken);
 			userStore.setSessionExpiresAt(expiresAt);
 		},
+		onRoomRoleChanged: (role) => userStore.setRoomRole(role),
 		onSessionExpired: () => {
 			userStore.clearAll();
 		},
@@ -741,6 +770,8 @@
 			:online-count="onlineCount"
 			:member-list="memberList"
 			:current-user-id="userId"
+			:is-owner="userStore.roomRole === 'owner'"
+			:on-guest-action="changeGuest"
 			:on-close="roomPanelController.closeMemberList"
 		/>
 
@@ -768,6 +799,7 @@
 			:on-toggle-shortcuts="roomPanelController.toggleShortcuts"
 		/>
 		<RoomInvites v-if="showInvites" :room-id="roomId" :token="token" @close="showInvites = false" />
+		<AccountPanel v-if="!accountStore.account" in-room @authenticated="enterWithAccount" />
 
 		<!-- Custom Cursor for Eraser -->
 		<div

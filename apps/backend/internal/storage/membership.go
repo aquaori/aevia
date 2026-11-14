@@ -116,6 +116,27 @@ func (s *Store) UpdateMember(ctx context.Context, roomID, userID, action string)
 	return errors.New("invalid member action")
 }
 
+func (s *Store) CreateGuest(ctx context.Context, roomID, userID, role string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO guest_sessions(room_id,user_id,role) VALUES(?,?,?)`, roomID, userID, role)
+	return err
+}
+
+func (s *Store) GuestRole(ctx context.Context, roomID, userID string) (string, bool, error) {
+	var role string
+	var kicked bool
+	err := s.db.QueryRowContext(ctx, `SELECT role,kicked FROM guest_sessions WHERE room_id=? AND user_id=?`, roomID, userID).Scan(&role, &kicked)
+	return role, kicked, err
+}
+
+func (s *Store) UpdateGuest(ctx context.Context, roomID, userID, action string) error {
+	if action == "kick" {
+		_, err := s.db.ExecContext(ctx, `UPDATE guest_sessions SET kicked=1 WHERE room_id=? AND user_id=?`, roomID, userID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE guest_sessions SET role=? WHERE room_id=? AND user_id=?`, action, roomID, userID)
+	return err
+}
+
 type AccountRoom struct {
 	RoomID           string `json:"roomId"`
 	Name             string `json:"name"`

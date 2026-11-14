@@ -15,9 +15,12 @@ func (s *Server) createAccountRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req createRoomRequest
-	if decodeJSON(r, &req) != nil || len(req.RoomID) != 6 || strings.TrimSpace(req.RoomName) == "" {
-		fail(w, 400, "请输入房间号和房间名称")
+	if decodeJSON(r, &req) != nil || req.RoomID == "" {
+		fail(w, 400, "Room ID is required")
 		return
+	}
+	if strings.TrimSpace(req.RoomName) == "" {
+		req.RoomName = "房间" + req.RoomID
 	}
 	password, err := auth.HashPassword(req.Password)
 	if err != nil {
@@ -27,7 +30,7 @@ func (s *Server) createAccountRoom(w http.ResponseWriter, r *http.Request) {
 	err = s.store.CreateOwnedRoom(r.Context(), domain.Room{RoomID: req.RoomID, Name: strings.TrimSpace(req.RoomName), Password: password, CreatedAt: domain.NowMillis()}, account.ID)
 	if err != nil {
 		if isUniqueConstraintError(err) {
-			fail(w, 409, "房间号已存在")
+			fail(w, 400, "Room already exists")
 		} else {
 			fail(w, 500, "创建房间失败")
 		}

@@ -109,6 +109,10 @@ func (c *wsClient) canEdit(event string) bool {
 		role, banned, err := c.store.MemberRole(context.Background(), c.claims.RoomID, c.claims.UserID)
 		return err == nil && !banned && (role == "owner" || role == "editor")
 	}
+	if c.store != nil && c.claims.Role != "" {
+		role, kicked, err := c.store.GuestRole(context.Background(), c.claims.RoomID, c.claims.UserID)
+		return err == nil && !kicked && role == "editor"
+	}
 	return c.claims.Role != "viewer"
 }
 

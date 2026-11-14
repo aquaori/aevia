@@ -13,6 +13,7 @@ type ClientInfo struct {
 	Epoch    uint64
 	Send     chan Outbound
 	Abort    func()
+	Done     <-chan struct{}
 }
 
 type Outbound struct {

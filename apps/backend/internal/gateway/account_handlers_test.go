@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"collaborative-whiteboard/apps/backend/internal/auth"
@@ -126,5 +127,40 @@ func TestRoomTransferAndDelete(t *testing.T) {
 	}
 	if status, _ := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777004", "userName": "Guest"}, ""); status == 200 {
 		t.Fatal("deleted room is accessible")
+	}
+}
+
+func TestGuestRequiresAccountToCreateRoom(t *testing.T) {
+	server := newTestServer(t)
+	response, err := http.Post(server.URL+"/create-room", "application/json", strings.NewReader(`{"roomId":"777005"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous room creation returned %d", response.StatusCode)
+	}
+}
+
+func TestOwnerCanRemoveGuestSession(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "guestowner", "password": "password123"}, "")
+	accountToken := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777006", "roomName": "Room"}, accountToken)
+	_, guest := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777006", "userName": "游客"}, "")
+	guestToken := guest.Data["sessionToken"].(string)
+	claims, err := auth.NewTokenService("test-secret").Verify(guestToken, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v2/rooms/777006/guests/" + claims.UserID
+	if status, _ := do(t, server, "POST", path, map[string]any{"action": "kick"}, accountToken); status != 200 {
+		t.Fatalf("kick: %d", status)
+	}
+	if status, _ := do(t, server, "GET", "/generate-share-token?roomId=777006", nil, guestToken); status != 403 {
+		t.Fatalf("removed guest can share: %d", status)
+	}
+	if status, _ := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777006", "userName": "游客"}, ""); status != 200 {
+		t.Fatalf("guest cannot rejoin: %d", status)
 	}
 }

@@ -17,6 +17,7 @@ func (s *Server) registerV2Placeholders(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v2/rooms/{roomId}/settings", s.getRoomSettings)
 	mux.HandleFunc("PATCH /v2/rooms/{roomId}/settings", s.updateRoomSettings)
 	mux.HandleFunc("POST /v2/rooms/{roomId}/leave", s.leaveRoom)
+	mux.HandleFunc("POST /v2/rooms/{roomId}/guests/{userId}", s.changeGuest)
 	mux.HandleFunc("POST /v2/rooms/{roomId}/transfer", s.requestTransfer)
 	mux.HandleFunc("POST /v2/rooms/{roomId}/transfer/respond", s.respondTransfer)
 	mux.HandleFunc("GET /v2/transfers", s.pendingTransfers)

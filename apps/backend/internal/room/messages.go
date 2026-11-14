@@ -15,6 +15,13 @@ type leaveMessage struct {
 	ClientID ClientID
 }
 
+type notifyUserMessage struct {
+	UserID string
+	Type   string
+	Role   string
+	Close  bool
+}
+
 type clientEventMessage struct {
 	ClientID ClientID
 	Type     string
@@ -71,6 +78,7 @@ type PageReviewItem struct {
 
 func (joinMessage) isActorMessage()        {}
 func (leaveMessage) isActorMessage()       {}
+func (notifyUserMessage) isActorMessage()  {}
 func (clientEventMessage) isActorMessage() {}
 func (pageChangeMessage) isActorMessage()  {}
 func (snapshotRequest) isActorMessage()    {}

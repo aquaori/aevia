@@ -6,6 +6,8 @@
 		onlineCount: number;
 		memberList: [string, string][];
 		currentUserId: string;
+		isOwner: boolean;
+		onGuestAction: (userId: string, action: string) => void;
 		onClose: () => void;
 	}>();
 </script>
@@ -72,6 +74,11 @@
 								>我</span
 							>
 						</div>
+					</div>
+					<div v-if="props.isOwner && member[0].length === 32 && member[0] !== props.currentUserId" class="flex flex-col gap-1 text-xs text-indigo-600">
+						<button @click="props.onGuestAction(member[0], 'viewer')">只读</button>
+						<button @click="props.onGuestAction(member[0], 'editor')">编辑</button>
+						<button class="text-rose-500" @click="props.onGuestAction(member[0], 'kick')">踢出</button>
 					</div>
 				</div>
 			</div>

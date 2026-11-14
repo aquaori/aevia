@@ -5,6 +5,8 @@
 	import axios from "axios";
 
 	const account = useAccountStore();
+	const props = defineProps<{ inRoom?: boolean }>();
+	const emit = defineEmits<{ authenticated: [] }>();
 	const open = ref(false);
 	const mode = ref<"login" | "register">("login");
 	const username = ref("");
@@ -18,6 +20,7 @@
 			await account.authenticate(mode.value, username.value, password.value, nickname.value);
 			password.value = "";
 			open.value = false;
+			emit("authenticated");
 		} catch (error) {
 			toast.error(axios.isAxiosError(error) ? error.response?.data?.msg || "无法连接到服务器" : "登录失败");
 		} finally { busy.value = false; }
@@ -35,7 +38,7 @@
 </script>
 
 <template>
-	<div class="absolute right-5 top-5 z-20">
+	<div class="absolute right-5 z-20" :class="props.inRoom ? 'bottom-5' : 'top-5'">
 		<button class="rounded-full bg-white/80 px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm ring-1 ring-slate-200 hover:text-indigo-600" @click="nickname = account.account?.nickname || ''; open = true">
 			{{ account.account?.nickname || "登录 / 注册" }}
 		</button>
