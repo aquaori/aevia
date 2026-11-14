@@ -17,6 +17,7 @@ interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
 	onDirtyRects?: (rects: aabbBox[]) => void;
 	onSceneResyncRequired?: () => void;
+	onWorkerFailure?: () => void;
 }
 
 interface FlatPointRequest {
@@ -245,6 +246,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		if (labEnabled()) {
 			worker.postMessage({ type: "lab-configure", data: { enabled: true } });
 		}
+
+		const handleWorkerFailure = () => {
+			for (const callback of pendingInitBarriers.values()) callback(false);
+			pendingInitBarriers.clear();
+			options.onWorkerFailure?.();
+		};
+		worker.onerror = handleWorkerFailure;
+		worker.onmessageerror = handleWorkerFailure;
 
 		worker.onmessage = (event) => {
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;

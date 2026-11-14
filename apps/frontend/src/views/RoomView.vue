@@ -298,6 +298,7 @@
 		},
 		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects),
 		onSceneResyncRequired: requestSceneIntegrityResync,
+		onWorkerFailure: () => roomCollabTransport.handleRenderWorkerFailure(),
 	});
 
 	const roomPointerControllerRef = ref<ReturnType<typeof createRoomPointerController> | null>(null);
