@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -175,9 +176,29 @@ func TestAccountDeviceReplacement(t *testing.T) {
 	firstConn := dialGatewayWebsocket(t, server, first.Data["sessionToken"].(string))
 	defer firstConn.Close(websocket.StatusNormalClosure, "")
 	readGatewayWSType(t, firstConn, "init-complete")
+	userID := account.Data["account"].(map[string]any)["id"].(string)
+	writeGatewayWSJSON(t, firstConn, testScenePush("device-stroke", userID, "777007"))
+	readGatewayWSType(t, firstConn, "ack.accepted")
+	undo := testScenePush("history-device-before", userID, "777007")
+	undoCmd := undo["data"].(map[string]any)["cmd"].(map[string]any)
+	undoOp := undoCmd["sceneOperation"].(map[string]any)
+	undoOp["kind"] = "history.toggle"
+	undoOp["payload"] = map[string]any{"targetHistoryGroupId": "history-device-stroke", "enabled": false}
+	writeGatewayWSJSON(t, firstConn, undo)
+	readGatewayWSType(t, firstConn, "ack.accepted")
 	_, second := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777007"}, token)
 	secondConn := dialGatewayWebsocket(t, server, second.Data["sessionToken"].(string))
 	defer secondConn.Close(websocket.StatusNormalClosure, "")
 	readGatewayWSType(t, firstConn, "session.replaced")
 	readGatewayWSType(t, secondConn, "init-complete")
+	for index, enabled := range []bool{true, false, true} {
+		id := fmt.Sprintf("history-device-%d", index)
+		msg := testScenePush(id, userID, "777007")
+		cmd := msg["data"].(map[string]any)["cmd"].(map[string]any)
+		op := cmd["sceneOperation"].(map[string]any)
+		op["kind"] = "history.toggle"
+		op["payload"] = map[string]any{"targetHistoryGroupId": "history-device-stroke", "enabled": enabled}
+		writeGatewayWSJSON(t, secondConn, msg)
+		readGatewayWSType(t, secondConn, "ack.accepted")
+	}
 }
