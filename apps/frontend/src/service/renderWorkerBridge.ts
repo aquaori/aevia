@@ -121,6 +121,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	let pendingIncrementFlushRafId: number | null = null;
 	let streamedInitPoints: FlatPoint[] = [];
 	const pendingRequests = new Map<string, (points: FlatPoint[]) => void>();
+	const pendingInitBarriers = new Map<string, (valid: boolean) => void>();
+	let initBarrierId = 0;
 	const pendingCommandPointRequests = new Map<string, (result: CommandPointsResult[]) => void>();
 	const pendingEraseTargetRequests = new Map<string, (result: EraseTarget[]) => void>();
 	const pendingSceneHitRequests = new Map<string, (result: { elementId: string | null; bounds: aabbBox | null }) => void>();
@@ -247,6 +249,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		worker.onmessage = (event) => {
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
 			if (type === "scene-resync-required") { options.onSceneResyncRequired?.(); return; }
+			if (type === "init-scene-barrier-result") {
+				const callback = pendingInitBarriers.get(requestId);
+				pendingInitBarriers.delete(requestId);
+				callback?.(event.data.valid === true);
+				return;
+			}
 
 			if (type === "lab:marks") {
 				if (labEnabled()) {
@@ -450,6 +458,16 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const finishInitRenderStream = () => {
 		if (!worker) return;
 		worker.postMessage({ type: "finish-init-stream" });
+	};
+
+	const confirmInitScene = () => {
+		if (!worker) return Promise.resolve(false);
+		const requestId = `init-barrier-${++initBarrierId}`;
+		return new Promise<boolean>((resolve) => {
+			const timeout = setTimeout(() => { pendingInitBarriers.delete(requestId); resolve(false); }, 30000);
+			pendingInitBarriers.set(requestId, (valid) => { clearTimeout(timeout); resolve(valid); });
+			worker!.postMessage({ type: "init-scene-barrier", data: { requestId } });
+		});
 	};
 
 	const syncWorkerScene = (
@@ -686,6 +704,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const dispose = () => {
+		for (const callback of pendingInitBarriers.values()) callback(false);
+		pendingInitBarriers.clear();
 		pendingRequests.clear();
 		pendingCommandPointRequests.clear();
 		pendingEraseTargetRequests.clear();
@@ -720,6 +740,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		appendInitRenderChunk,
 		appendInitRenderBinaryChunk,
 		finishInitRenderStream,
+		confirmInitScene,
 		setInitSceneOperations,
 		syncWorkerScene,
 		renderSceneFromFlatPoints,

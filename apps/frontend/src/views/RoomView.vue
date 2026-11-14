@@ -374,6 +374,7 @@
 		appendInitRenderBinaryChunk: (meta, buffer) =>
 			workerBridge.appendInitRenderBinaryChunk(meta, buffer),
 		finishInitRenderStream: () => workerBridge.finishInitRenderStream(),
+		confirmInitScene: () => workerBridge.confirmInitScene(),
 		setInitSceneOperations: (nextCommands, pageId) =>
 			workerBridge.setInitSceneOperations(nextCommands, pageId),
 		syncWorkerScene: (
