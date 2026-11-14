@@ -63,6 +63,21 @@ describe("snapshot recovery cursor", () => {
 		transport.disconnect();
 	});
 
+	it("stops recovery and reports a worker failure instead of resuming from its cursor", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const transport = makeTransport(() => Promise.resolve(true));
+		await transport.connect();
+		FakeSocket.instances[0]!.receive("init-meta", { snapshotVersion: 42 });
+		dispatcherState.onSnapshot(42);
+		await Promise.resolve();
+		transport.handleRenderWorkerFailure();
+		expect(FakeSocket.instances[0]!.readyState).toBe(3);
+		expect(transport.isIntentionalClose.value).toBe(true);
+		await transport.connect();
+		expect(FakeSocket.instances).toHaveLength(1);
+	});
+
 	it("uses the snapshot sequence after worker confirmation", async () => {
 		vi.useFakeTimers();
 		vi.stubGlobal("WebSocket", FakeSocket);

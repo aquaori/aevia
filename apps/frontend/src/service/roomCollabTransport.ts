@@ -150,6 +150,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	let lastRoomSeq = 0;
 	let snapshotPending = false;
 	let snapshotGeneration = 0;
+	let renderWorkerFailed = false;
 	let sceneAppendBinary = false;
 	let sceneTextBoxV1 = false;
 	const appliedSequences = new Set<number>();
@@ -552,7 +553,18 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		connect();
 	};
 
+	const handleRenderWorkerFailure = () => {
+		renderWorkerFailed = true;
+		lastRoomSeq = 0;
+		appliedSequences.clear();
+		snapshotGeneration += 1;
+		isIntentionalClose.value = true;
+		markReconnectFailed("画布渲染进程异常，请刷新页面重新加载；尚未确认的操作可能未保存。");
+		socket.value?.close();
+	};
+
 	const retryReconnect = () => {
+		if (renderWorkerFailed) { window.location.reload(); return; }
 		isIntentionalClose.value = false;
 		clearReconnectState();
 		if (typeof navigator !== "undefined") {
@@ -857,6 +869,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		connect,
 		disconnect,
 		retryReconnect,
+		handleRenderWorkerFailure,
 		doReconnect,
 	};
 };
