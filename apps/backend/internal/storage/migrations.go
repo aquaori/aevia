@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS room_password_verifications (
   FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS room_invites (
+  invite_id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL,
+  creator_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS room_role_capabilities (
   room_id TEXT NOT NULL,
   role TEXT NOT NULL,

@@ -59,6 +59,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /generate-room-id", s.generateRoomID)
 	mux.HandleFunc("POST /join-room", s.joinRoom)
 	mux.HandleFunc("GET /generate-share-token", s.withSession(s.generateShareToken))
+	mux.HandleFunc("GET /room-invites", s.withSession(s.listRoomInvites))
+	mux.HandleFunc("POST /room-invites/revoke", s.withSession(s.revokeRoomInvite))
 	mux.HandleFunc("GET /get-token-info", s.getTokenInfo)
 	mux.HandleFunc("GET /get-page-review", s.withSession(s.getPageReview))
 	mux.HandleFunc("POST /renew-room-session", s.withSession(s.renewSession))

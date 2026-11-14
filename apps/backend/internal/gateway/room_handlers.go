@@ -3,10 +3,13 @@ package gateway
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/auth"
 	"collaborative-whiteboard/apps/backend/internal/domain"
+	"collaborative-whiteboard/apps/backend/internal/storage"
 )
 
 // notePasswordFailure charges one token against the caller's failure budget.
@@ -142,7 +145,7 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 	invited := false
 	if req.InviteToken != "" {
 		invite, verifyErr := s.tokens.Verify(req.InviteToken, "invite")
-		if verifyErr != nil || invite.RoomID != req.RoomID || invite.RoomCreatedAt != roomData.CreatedAt {
+		if verifyErr != nil || invite.RoomID != req.RoomID || invite.RoomCreatedAt != roomData.CreatedAt || !s.store.InviteValid(r.Context(), invite.InviteID, req.RoomID) {
 			fail(w, 403, "邀请链接无效或已过期")
 			return
 		}
@@ -196,6 +199,40 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) generateShareToken(w http.ResponseWriter, r *http.Request) {
 	claims, _ := claimsFrom(r)
+	if !s.canShareRoom(w, r, claims) {
+		return
+	}
+	roomID := claims.RoomID
+	if requested := r.URL.Query().Get("roomId"); requested != "" && requested != roomID {
+		fail(w, 403, "Token room does not match request room")
+		return
+	}
+	roomData, exists, err := s.store.GetRoom(r.Context(), roomID)
+	if err != nil || !exists {
+		fail(w, 400, "Room does not exist")
+		return
+	}
+	ttl := s.cfg.InviteTTL
+	if hours, err := strconv.Atoi(r.URL.Query().Get("hours")); err == nil && hours > 0 && hours <= 24*30 {
+		ttl = time.Duration(hours) * time.Hour
+	}
+	id, err := storage.RandomID()
+	if err != nil {
+		fail(w, 500, "无法创建邀请")
+		return
+	}
+	token, expiresAt, err := s.tokens.Sign(auth.Claims{
+		RoomID: roomData.RoomID, RoomName: roomData.Name, RoomCreatedAt: roomData.CreatedAt,
+		PasswordRequired: roomData.Password != "", TokenType: "invite", InviteID: id,
+	}, ttl)
+	if err != nil || s.store.CreateInvite(r.Context(), id, roomID, claims.UserID, expiresAt/1000) != nil {
+		fail(w, 500, "无法创建邀请")
+		return
+	}
+	ok(w, map[string]any{"inviteToken": token, "token": token, "passwordRequired": roomData.Password != "", "expiresAt": expiresAt})
+}
+
+func (s *Server) canShareRoom(w http.ResponseWriter, r *http.Request, claims auth.Claims) bool {
 	role := claims.Role
 	if claims.Account {
 		var banned bool
@@ -203,32 +240,14 @@ func (s *Server) generateShareToken(w http.ResponseWriter, r *http.Request) {
 		role, banned, err = s.store.MemberRole(r.Context(), claims.RoomID, claims.UserID)
 		if err != nil || banned {
 			fail(w, 403, "没有邀请权限")
-			return
+			return false
 		}
 	}
 	if role == "viewer" || (claims.Account && role == "") {
 		fail(w, 403, "没有邀请权限")
-		return
+		return false
 	}
-	roomID := claims.RoomID
-	if requested := r.URL.Query().Get("roomId"); requested != "" && requested != roomID {
-		fail(w, http.StatusForbidden, "Token room does not match request room")
-		return
-	}
-	roomData, exists, err := s.store.GetRoom(r.Context(), roomID)
-	if err != nil || !exists {
-		fail(w, http.StatusBadRequest, "Room does not exist")
-		return
-	}
-	token, _, err := s.tokens.Sign(auth.Claims{
-		RoomID: roomData.RoomID, RoomName: roomData.Name, RoomCreatedAt: roomData.CreatedAt,
-		PasswordRequired: roomData.Password != "", TokenType: "invite",
-	}, s.cfg.InviteTTL)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, "Token generation failed")
-		return
-	}
-	ok(w, map[string]any{"inviteToken": token, "token": token, "passwordRequired": roomData.Password != ""})
+	return true
 }
 
 func (s *Server) getTokenInfo(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +264,10 @@ func (s *Server) getTokenInfo(w http.ResponseWriter, r *http.Request) {
 	roomData, exists, err := s.store.GetRoom(r.Context(), claims.RoomID)
 	if err != nil || !exists || claims.RoomCreatedAt != roomData.CreatedAt {
 		fail(w, http.StatusBadRequest, "Room does not exist")
+		return
+	}
+	if !s.store.InviteValid(r.Context(), claims.InviteID, claims.RoomID) {
+		fail(w, http.StatusBadRequest, "Invalid invite token")
 		return
 	}
 	ok(w, map[string]any{"roomId": roomData.RoomID, "roomName": roomData.Name, "roomCreatedAt": roomData.CreatedAt, "passwordRequired": roomData.Password != ""})
