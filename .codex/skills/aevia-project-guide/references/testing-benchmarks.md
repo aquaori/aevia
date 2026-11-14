@@ -19,8 +19,9 @@ Root:
 - `apps/backend/internal/gateway/surface_catalog_test.go`: Go AST parity checks for backend surfaces and public 501 contracts for reserved V2 routes.
 - `tests/report/feature-obligations.spec.ts`: TypeScript AST parity checks for frontend routes/tools, validates evidence references, and verifies catalog shape.
 - `tests/browser-launch.ts`: selected Playwright browser and Chromium executable resolution.
-- `.github/workflows/quick.yml`: push/PR commit and PR-title lint, changed-file ESLint/gofmt, and task-dependent quick checks.
-- `.github/workflows/ci.yml`: Linux/Chromium core on push/PR; OS/browser matrix is scheduled or manually dispatched. It does not run performance gates.
+- `.github/workflows/quick.yml`: development branch push commit-message lint and changed-file ESLint/gofmt. PR-title validation is in `pr.yml`.
+- `.github/workflows/ci.yml`: Linux/Chromium core on development branch push; OS/browser matrix is scheduled or manually dispatched. It does not run performance gates.
+- `.github/workflows/pr.yml`: validates the source push runs and runs the `pr` managed profile on the proposed merge; `.github/workflows/main.yml` builds and smoke-checks the merged main commit. See `docs/git-event-ci.md`.
 - `tests/reports/`: generated report outputs.
 
 Frontend:

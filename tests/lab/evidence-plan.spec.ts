@@ -38,6 +38,13 @@ afterEach(() => {
 });
 
 describe("lab evidence plans", () => {
+	it("checks the merge build and requested PR scenarios with recorded evidence", () => {
+		const plan = buildLabEvidencePlan("pr", context());
+		expect(stepIds(plan)).toEqual(["build", "external-focused", "external-focused-resilience", "source-check"]);
+		const cases = plan.artifacts.filter(item => item.kind === "external").flatMap(item => item.expectedCases ?? []);
+		expect(cases).toEqual(expect.arrayContaining(["harness-health", "correctness-smoke", "undo-redo-convergence", "late-joiner-undo-consistency", "resilience-network-recovery"]));
+	});
+
 	it("builds a smoke plan with gate evidence and isolated services", () => {
 		const plan = buildSmokePlan(context());
 		expect(stepIds(plan)).toEqual(["catalog-check", "frontend-test", "external-smoke", "source-check"]);

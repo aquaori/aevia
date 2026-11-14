@@ -484,11 +484,22 @@ export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResul
 };
 
 export const buildLabEvidencePlan = (
-	profile: "smoke" | "nightly" | "single",
+	profile: "smoke" | "pr" | "nightly" | "single",
 	ctx: LabPlanContext,
 	selection?: LabResolveResult
 ): LabEvidencePlan => {
 	if (profile === "smoke") return withOptionalPerfRequest(buildSmokePlan(ctx), ctx);
+	if (profile === "pr") {
+		const plan = buildSinglePlan(ctx, { unresolved: [], selections: [{ kind: "external", caseIds: [
+			EXTERNAL_CASES.harnessHealth.id,
+			EXTERNAL_CASES.correctnessSmoke.id,
+			EXTERNAL_CASES.undoRedoConvergence.id,
+			EXTERNAL_CASES.lateJoinerUndoConsistency.id,
+			EXTERNAL_CASES.networkRecovery.id,
+		] }] });
+		plan.steps.unshift({ id: "build", title: "Build merge result", description: "Building the proposed merge result.", command: "npm --silent run build", timeoutMs: 300000 });
+		return plan;
+	}
 	if (profile === "nightly") return withOptionalPerfRequest(buildNightlyPlan(ctx), ctx);
 	return buildSinglePlan(ctx, selection);
 };
