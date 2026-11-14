@@ -3,10 +3,12 @@ package gateway
 import "net/http"
 
 func (s *Server) registerV2Placeholders(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v2/auth/register", s.notImplementedV2)
-	mux.HandleFunc("POST /v2/auth/login", s.notImplementedV2)
+	mux.HandleFunc("POST /v2/auth/register", s.registerAccount)
+	mux.HandleFunc("POST /v2/auth/login", s.loginAccount)
 	mux.HandleFunc("POST /v2/auth/refresh", s.notImplementedV2)
-	mux.HandleFunc("POST /v2/auth/logout", s.notImplementedV2)
+	mux.HandleFunc("GET /v2/auth/me", s.accountProfile)
+	mux.HandleFunc("PATCH /v2/auth/me", s.updateAccountProfile)
+	mux.HandleFunc("POST /v2/auth/logout", s.logoutAccount)
 	mux.HandleFunc("POST /v2/rooms", s.notImplementedV2)
 	mux.HandleFunc("POST /v2/rooms/{roomId}/admission", s.notImplementedV2)
 	mux.HandleFunc("POST /v2/rooms/{roomId}/ws-ticket", s.notImplementedV2)

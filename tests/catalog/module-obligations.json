@@ -9,6 +9,12 @@
       "state": "uncovered"
     },
     {
+      "id": "frontend:apps/frontend/src/components/AccountPanel.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/AccountPanel.vue",
+      "state": "uncovered"
+    },
+    {
       "id": "frontend:apps/frontend/src/components/RoomConnectionOverlays.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomConnectionOverlays.vue",
@@ -417,6 +423,12 @@
       "state": "uncovered"
     },
     {
+      "id": "frontend:apps/frontend/src/store/accountStore.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/store/accountStore.ts",
+      "state": "uncovered"
+    },
+    {
       "id": "frontend:apps/frontend/src/store/commandStore.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/store/commandStore.ts",
@@ -552,116 +564,123 @@
       "owner": "apps/backend/internal/domain/types_test.go"
     },
     {
+      "id": "go:apps/backend/internal/gateway/account_handlers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/account_handlers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
+    },
+    {
       "id": "go:apps/backend/internal/gateway/health_handlers.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/health_handlers.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/http_helpers.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/http_helpers.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/metrics_handler.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/metrics_handler.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/middleware.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/middleware.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/origin.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/origin.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/page_review_handler.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/page_review_handler.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/random.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/random.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/rate_limiter.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/rate_limiter.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/room_handlers.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/room_handlers.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/scene_validation.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/scene_validation.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/server.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/server.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/session_tokens.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/session_tokens.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/v2_placeholders.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/v2_placeholders.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/ws_handler.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/ws_handler.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/ws_limits.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/ws_limits.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/gateway/ws_messages.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/ws_messages.go",
       "state": "covered",
-      "owner": "apps/backend/internal/gateway/metrics_handler_test.go"
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
       "id": "go:apps/backend/internal/protocol/realtime.go",
@@ -809,6 +828,13 @@
       "path": "apps/backend/internal/room/window.go",
       "state": "covered",
       "owner": "apps/backend/internal/room/delta_buffer_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/accounts.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/accounts.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/checkpoint.go",
