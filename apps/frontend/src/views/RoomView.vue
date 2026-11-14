@@ -65,6 +65,7 @@
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
 	import RoomInvites from "../components/RoomInvites.vue";
+	import RoomSettings from "../components/RoomSettings.vue";
 	import AccountPanel from "../components/AccountPanel.vue";
 	import { useAccountStore } from "../store/accountStore";
 	import axios from "axios";
@@ -80,6 +81,7 @@
 	const userStore = useUserStore();
 	const accountStore = useAccountStore();
 	const showInvites = ref(false);
+	const showRoomSettings = ref(false);
 	const changeGuest = async (userId: string, action: string) => {
 		if (action === "kick" && !window.confirm("游客未登录，踢出后无法永久阻止其再次进入。需要更严格的管理时，可关闭游客入口或修改房间密码。确定踢出吗？")) return;
 		try { await axios.post(apiUrl(`/v2/rooms/${roomId.value}/guests/${userId}`), { action }, { headers: accountStore.headers() }); }
@@ -790,6 +792,7 @@
 		<RoomHeader
 			:visible="!isFullscreen"
 			:can-share="userStore.roomRole !== 'viewer'"
+			:can-manage-room="!!accountStore.account && accountStore.account.id === userId"
 			:room-name="roomName"
 			:room-id="roomId"
 			:more-open="headerMenuOpen"
@@ -798,9 +801,11 @@
 			:on-toggle-more="roomPanelController.toggleMoreMenu"
 			:on-copy-link="() => { showInvites = true; }"
 			:on-open-member-list="roomPanelController.openMemberList"
+			:on-open-room-settings="() => { headerMenuOpen = false; showRoomSettings = true; }"
 			:on-toggle-shortcuts="roomPanelController.toggleShortcuts"
 		/>
 		<RoomInvites v-if="showInvites" :room-id="roomId" :token="token" @close="showInvites = false" />
+		<RoomSettings v-if="showRoomSettings" :room-id="roomId" :room-name="roomName" :role="userStore.roomRole" @close="showRoomSettings = false" @changed="(name) => { roomName = name; }" @exit="() => { userStore.clearAll(); router.push('/'); }" />
 		<AccountPanel v-if="!accountStore.account" in-room @authenticated="enterWithAccount" />
 
 		<!-- Custom Cursor for Eraser -->

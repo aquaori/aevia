@@ -6,7 +6,7 @@
 	import { useAccountStore } from "../store/accountStore";
 
 	const props = defineProps<{ roomId: string; roomName: string; role: string }>();
-	const emit = defineEmits<{ close: []; changed: [] }>();
+	const emit = defineEmits<{ close: []; changed: [name: string]; exit: [] }>();
 	const account = useAccountStore();
 	const name = ref(props.roomName);
 	const password = ref("");
@@ -30,7 +30,7 @@
 	async function save() {
 		try {
 			await axios.patch(apiUrl(`${base}/settings`), { name: name.value, password: password.value, setPassword: setPassword.value, requirePassword: requirePassword.value, policy: policy.value }, options());
-			emit("changed"); emit("close");
+			emit("changed", name.value.trim()); emit("close");
 		} catch { toast.error("保存失败，请重试"); }
 	}
 	async function memberAction(userId: string, action: string) {
@@ -42,7 +42,7 @@
 	}
 	async function leave() {
 		if (!window.confirm("退出后，这个房间将从你的列表移除。确定退出吗？")) return;
-		try { await axios.post(apiUrl(`${base}/leave`), {}, options()); emit("changed"); emit("close"); }
+		try { await axios.post(apiUrl(`${base}/leave`), {}, options()); emit("exit"); emit("close"); }
 		catch { toast.error("退出失败，请重试"); }
 	}
 	async function transfer(userId: string, nickname: string) {
@@ -53,7 +53,7 @@
 	}
 	async function deleteRoom() {
 		if (!window.confirm("确定永久删除房间及全部白板内容？此操作无法撤销。")) return;
-		try { await axios.delete(apiUrl(base), options()); emit("changed"); emit("close"); }
+		try { await axios.delete(apiUrl(base), options()); emit("exit"); emit("close"); }
 		catch { toast.error("删除失败，请重试"); }
 	}
 	onMounted(load);

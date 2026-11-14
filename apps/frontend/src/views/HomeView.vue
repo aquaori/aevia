@@ -275,7 +275,7 @@
 		class="min-h-screen relative flex items-center justify-center p-4 bg-slate-50 overflow-hidden font-sans"
 	>
 		<AccountPanel />
-		<RoomSettings v-if="settingsRoom" :room-id="settingsRoom.roomId" :room-name="settingsRoom.name" :role="settingsRoom.role" @close="settingsRoom = null" @changed="loadRooms" />
+		<RoomSettings v-if="settingsRoom" :room-id="settingsRoom.roomId" :room-name="settingsRoom.name" :role="settingsRoom.role" @close="settingsRoom = null" @changed="loadRooms" @exit="loadRooms" />
 		<!-- 动画背景斑点 -->
 		<div class="fixed inset-0 overflow-hidden pointer-events-none">
 			<div
