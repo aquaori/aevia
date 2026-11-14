@@ -571,6 +571,13 @@
       "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
+      "id": "go:apps/backend/internal/gateway/account_room_handlers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/account_room_handlers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
+    },
+    {
       "id": "go:apps/backend/internal/gateway/health_handlers.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/health_handlers.go",
@@ -847,6 +854,13 @@
       "id": "go:apps/backend/internal/storage/commands.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/commands.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/membership.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/membership.go",
       "state": "covered",
       "owner": "apps/backend/internal/storage/store_test.go"
     },

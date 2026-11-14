@@ -30,3 +30,21 @@ func TestAccountSessionFlow(t *testing.T) {
 		t.Fatalf("other session: %d %+v", status, profile)
 	}
 }
+
+func TestAccountRoomJoin(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "owner", "password": "password123"}, "")
+	token := owner.Data["token"].(string)
+	status, created := do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777001", "roomName": "协作空间", "password": "secret"}, token)
+	if status != http.StatusOK {
+		t.Fatalf("create: %d %+v", status, created)
+	}
+	status, joined := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777001"}, token)
+	if status != http.StatusOK || joined.Data["sessionToken"] == nil {
+		t.Fatalf("owner join: %d %+v", status, joined)
+	}
+	status, _ = do(t, server, "POST", "/join-room", map[string]any{"roomId": "777001", "userName": "游客"}, "")
+	if status == http.StatusOK {
+		t.Fatal("guest joined a protected room without password")
+	}
+}

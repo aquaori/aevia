@@ -33,9 +33,10 @@ type createRoomRequest struct {
 }
 
 type joinRoomRequest struct {
-	RoomID   string `json:"roomId"`
-	UserName string `json:"userName"`
-	Password string `json:"password"`
+	RoomID      string `json:"roomId"`
+	UserName    string `json:"userName"`
+	Password    string `json:"password"`
+	InviteToken string `json:"inviteToken"`
 }
 
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +108,10 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "Room ID is required")
 		return
 	}
+	account, accountErr := s.accountFromRequest(r)
+	if accountErr == nil {
+		req.UserName = account.Nickname
+	}
 	if req.UserName == "" {
 		fail(w, http.StatusBadRequest, "User Name is required")
 		return
@@ -116,12 +121,61 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "Room does not exist")
 		return
 	}
-	if !auth.VerifyPassword(req.Password, roomData.Password) {
+	policy, err := s.store.Policy(r.Context(), req.RoomID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "Room lookup failed")
+		return
+	}
+	role := ""
+	if accountErr == nil {
+		var banned bool
+		role, banned, err = s.store.MemberRole(r.Context(), req.RoomID, account.ID)
+		if err != nil {
+			fail(w, 500, "Room lookup failed")
+			return
+		}
+		if banned {
+			fail(w, 403, "您已被房主禁止加入此房间")
+			return
+		}
+	}
+	invited := false
+	if req.InviteToken != "" {
+		invite, verifyErr := s.tokens.Verify(req.InviteToken, "invite")
+		if verifyErr != nil || invite.RoomID != req.RoomID || invite.RoomCreatedAt != roomData.CreatedAt {
+			fail(w, 403, "邀请链接无效或已过期")
+			return
+		}
+		invited = true
+	}
+	if role == "" {
+		if !invited && !policy.AllowRoomCode {
+			fail(w, 403, "房间已关闭房间号加入")
+			return
+		}
+		if accountErr != nil && ((!invited && !policy.GuestByCode) || (invited && !policy.GuestByInvite)) {
+			fail(w, 403, "房间不允许游客通过此方式加入")
+			return
+		}
+	}
+	passwordVerified := accountErr == nil && role != "" && s.store.PasswordVerified(r.Context(), req.RoomID, account.ID, policy.PasswordVersion)
+	if !passwordVerified && !auth.VerifyPassword(req.Password, roomData.Password) {
 		s.notePasswordFailure(r)
 		fail(w, http.StatusBadRequest, "Password incorrect")
 		return
 	}
 	userID := randomID()
+	if accountErr == nil {
+		if err := s.store.JoinAccountRoom(r.Context(), req.RoomID, account.ID); err != nil {
+			fail(w, http.StatusInternalServerError, "Unable to join room")
+			return
+		}
+		userID = account.ID
+		if err := s.store.MarkPasswordVerified(r.Context(), req.RoomID, account.ID, policy.PasswordVersion); err != nil {
+			fail(w, 500, "Unable to join room")
+			return
+		}
+	}
 	token, expiresAt, err := s.tokens.Sign(auth.Claims{
 		UserID: userID, UserName: req.UserName, RoomID: roomData.RoomID,
 		RoomName: roomData.Name, RoomCreatedAt: roomData.CreatedAt, TokenType: "session",
