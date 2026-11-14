@@ -380,6 +380,27 @@ describe("collab command handlers", () => {
 		expect(fixture.options.clearActivePageChangeRequest).toHaveBeenCalledWith(7);
 	});
 
+	it("keeps live operations for a page while its snapshot is loading", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.getActivePageChangeTargetId.mockReturnValue(2);
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 2, loadedPageIds: [1, 2], loadPageIds: [2], unloadPageIds: [0], snapshotVersion: 2,
+			chunkSummary: { totalRenderChunks: 0, totalCommandChunks: 1 },
+		}));
+		const snapshot = createIncomingCommand({ id: "snapshot", pageId: 2 });
+		const live = createIncomingCommand({ id: "live", pageId: 2, lamport: 3 });
+		fixture.handlers.handlePushCommand(message("push-cmd", { cmd: live, lamport: 3 }, "normal"));
+		fixture.handlers.handlePageChangeCommandsChunk(message("page-change-commands-chunk", {
+			requestId: 7, snapshotVersion: 2, chunkIndex: 0, commands: [snapshot, live],
+		}));
+		fixture.handlers.handlePageChangeCommandsDone(message("page-change-commands-done", { requestId: 7, snapshotVersion: 2, totalChunks: 1 }));
+		expect(fixture.options.applyLoadedPageDelta).toHaveBeenCalledWith(expect.objectContaining({
+			commands: [expect.objectContaining({ id: "snapshot" }), expect.objectContaining({ id: "live" })],
+		}));
+		expect(fixture.options.setInitSceneOperations).toHaveBeenLastCalledWith(expect.arrayContaining([expect.objectContaining({ id: "live" })]), 2);
+	});
+
 	it("replays cached scene history when returning to a loaded page", () => {
 		const fixture = createFixture();
 		fixture.getActivePageChangeRequestId.mockReturnValue(7);
