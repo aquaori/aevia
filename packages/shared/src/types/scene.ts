@@ -99,11 +99,20 @@ export interface QuantizedInterval {
 	end: number;
 }
 
+export interface EraseMask {
+	points: import("./collab").Point[];
+	size: number;
+	width: number;
+	height: number;
+	inverseMatrix: AffineMatrix;
+}
+
 export interface EraseTarget {
 	elementId: string;
 	atomId?: string;
 	intervals?: QuantizedInterval[];
 	eraseWhole?: boolean;
+	mask?: EraseMask;
 }
 
 export interface ElementErasePayload {

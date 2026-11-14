@@ -105,18 +105,36 @@ export const cutIntervalsForStrokeAtom = (
 			? [{ start: 0, end: ERASE_PARAMETER_MAX }]
 			: [];
 	}
-	const intervals: QuantizedInterval[] = [];
-	let runStart: number | null = null;
-	for (let step = 0; step <= CURVE_STEPS; step += 1) {
-		const t = step / CURVE_STEPS;
-		const localPoint = quadraticPoint(atom, t);
-		const point = transform(localPoint.x, localPoint.y);
-		const hit = touchesEraser(point.x, point.y, eraser, radius, width, height);
-		if (hit && runStart === null) runStart = Math.max(0, (step - 1) / CURVE_STEPS);
-		if (!hit && runStart !== null) {
-			intervals.push(quantizeInterval(runStart, Math.min(1, step / CURVE_STEPS)));
-			runStart = null;
+	const from = transform(atom.fromX, atom.fromY);
+	const via = transform(atom.viaX, atom.viaY);
+	const to = transform(atom.toX, atom.toY);
+	const length = Math.hypot((via.x - from.x) * width, (via.y - from.y) * height) + Math.hypot((to.x - via.x) * width, (to.y - via.y) * height);
+	const steps = Math.max(CURVE_STEPS, Math.min(2048, Math.ceil(length / Math.max(1, eraserSize / 4))));
+	const hitAt = (t: number) => {
+		const local = quadraticPoint(atom, t);
+		const point = transform(local.x, local.y);
+		return touchesEraser(point.x, point.y, eraser, radius, width, height);
+	};
+	const boundary = (left: number, right: number, leftHit: boolean) => {
+		for (let iteration = 0; iteration < 8; iteration += 1) {
+			const middle = (left + right) / 2;
+			if (hitAt(middle) === leftHit) left = middle;
+			else right = middle;
 		}
+		return (left + right) / 2;
+	};
+	const intervals: QuantizedInterval[] = [];
+	let previousHit = hitAt(0);
+	let runStart: number | null = previousHit ? 0 : null;
+	for (let step = 1; step <= steps; step += 1) {
+		const t = step / steps;
+		const hit = hitAt(t);
+		if (hit !== previousHit) {
+			const edge = boundary((step - 1) / steps, t, previousHit);
+			if (hit) runStart = edge;
+			else if (runStart !== null) { intervals.push(quantizeInterval(runStart, edge)); runStart = null; }
+		}
+		previousHit = hit;
 	}
 	if (runStart !== null) intervals.push(quantizeInterval(runStart, 1));
 	return mergeQuantizedIntervals(intervals);

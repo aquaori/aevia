@@ -313,7 +313,10 @@
 		interactionMode,
 	});
 
-	const startDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.startDrawing(e);
+	const startDrawing = (e: PointerEvent) => {
+		textEditorRef.value?.submit();
+		return roomPointerControllerRef.value?.startDrawing(e);
+	};
 	const draw = (e: PointerEvent) => roomPointerControllerRef.value?.draw(e);
 	const stopDrawing = (e: PointerEvent) => roomPointerControllerRef.value?.stopDrawing(e);
 

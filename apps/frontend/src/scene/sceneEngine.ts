@@ -290,6 +290,11 @@ export class SceneEngine {
 	finishElement(elementId: string) {
 		const element = this.elements.get(elementId);
 		if (!element || element.descriptor.recipeId !== "stroke") return [] as number[];
+		const state = this.compilerStates.get(elementId);
+		if (state && !state.finished && state.pointCount === 1 && (element.descriptor.toolId === "pencil" || element.descriptor.toolId === "highlighter")) {
+			state.finished = true;
+			return [...element.atomRefs];
+		}
 		const atoms = finishCompiledStroke({
 			elementId,
 			elementRevision: element.revision,
@@ -441,11 +446,9 @@ export class SceneEngine {
 		clear = true
 	) {
 		if (clear) this.clearContext(ctx, logicalWidth, logicalHeight);
-		let rendered = 0;
-		this.order.forEach((ref) => {
-			if (this.drawRef(ctx, ref, logicalWidth, logicalHeight, excludedElementIds)) rendered += 1;
-		});
-		return rendered;
+		const refs: number[] = [];
+		this.order.forEach((ref) => refs.push(ref));
+		return this.renderAtomRefs(ctx, refs, logicalWidth, logicalHeight, excludedElementIds);
 	}
 
 	renderAtomRefs(
@@ -453,12 +456,67 @@ export class SceneEngine {
 		refs: number[],
 		logicalWidth: number,
 		logicalHeight: number,
-		excludedElementIds: ReadonlySet<string> = new Set()
+		excludedElementIds: ReadonlySet<string> = new Set(),
+		deltaMatrix: AffineMatrix | null = null
 	) {
 		let rendered = 0;
+		let layer: OffscreenCanvas | HTMLCanvasElement | null = null;
+		let layerCtx: DrawingContext | null = null;
+		let activeElement: SceneElementState | null = null;
+		let highlighter = false;
+		const flush = () => {
+			if (!activeElement || !layer || !layerCtx) return;
+			for (const mask of activeElement.eraseMasks) {
+				const elementMatrix = deltaMatrix ? multiplyMatrices(deltaMatrix, activeElement.matrix) : activeElement.matrix;
+				const matrix = multiplyMatrices(elementMatrix, mask.inverseMatrix);
+				layerCtx.save();
+				layerCtx.globalCompositeOperation = "destination-out";
+				layerCtx.transform(matrix[0], matrix[1] * logicalHeight / logicalWidth, matrix[2] * logicalWidth / logicalHeight, matrix[3], matrix[4] * logicalWidth, matrix[5] * logicalHeight);
+				layerCtx.scale(logicalWidth / mask.width, logicalHeight / mask.height);
+				layerCtx.lineWidth = mask.size;
+				layerCtx.lineCap = "round";
+				layerCtx.lineJoin = "round";
+				layerCtx.beginPath();
+				const first = mask.points[0];
+				if (!first) { layerCtx.restore(); continue; }
+				layerCtx.moveTo(first.x * mask.width, first.y * mask.height);
+				for (const point of mask.points) layerCtx.lineTo(point.x * mask.width, point.y * mask.height);
+				layerCtx.stroke();
+				layerCtx.restore();
+			}
+			ctx.save();
+			if (highlighter) { ctx.globalAlpha = activeElement.descriptor.style.opacity ?? 0.32; ctx.globalCompositeOperation = "multiply"; }
+			ctx.drawImage(layer, 0, 0, logicalWidth, logicalHeight);
+			ctx.restore();
+			layerCtx.clearRect(0, 0, logicalWidth, logicalHeight);
+			activeElement = null;
+		};
 		for (const ref of refs) {
-			if (this.drawRef(ctx, ref, logicalWidth, logicalHeight, excludedElementIds)) rendered += 1;
+			const atom = this.atoms[ref];
+			const element = atom ? this.elements.get(atom.elementId) : undefined;
+			if (!atom || !element || !this.isAtomVisible(atom, element, excludedElementIds)) continue;
+			if (atom.toolId !== "highlighter" && element.eraseMasks.length === 0) {
+				flush();
+				if (deltaMatrix) {
+					drawPrimitive(ctx, atom, multiplyMatrices(deltaMatrix, element.matrix), logicalWidth, logicalHeight, element.erasedIntervals.get(atom.atomId));
+					rendered += 1;
+				} else if (this.drawRef(ctx, ref, logicalWidth, logicalHeight, excludedElementIds)) rendered += 1;
+				continue;
+			}
+			if (!layer) {
+				layer = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(ctx.canvas.width, ctx.canvas.height) : document.createElement("canvas");
+				layer.width = ctx.canvas.width;
+				layer.height = ctx.canvas.height;
+				layerCtx = layer.getContext("2d") as DrawingContext | null;
+				layerCtx?.scale(layer.width / logicalWidth, layer.height / logicalHeight);
+			}
+			if (!layerCtx) { if (this.drawRef(ctx, ref, logicalWidth, logicalHeight, excludedElementIds)) rendered += 1; continue; }
+			if (activeElement?.id !== element.id) { flush(); activeElement = element; highlighter = atom.toolId === "highlighter"; }
+			const renderedAtom = highlighter ? { ...atom, toolId: "pen" as const, style: { ...atom.style, opacity: 1 } } : atom;
+			drawPrimitive(layerCtx, renderedAtom, deltaMatrix ? multiplyMatrices(deltaMatrix, element.matrix) : element.matrix, logicalWidth, logicalHeight, element.erasedIntervals.get(atom.atomId));
+			rendered += 1;
 		}
+		flush();
 		return rendered;
 	}
 
@@ -469,16 +527,12 @@ export class SceneEngine {
 		logicalWidth: number,
 		logicalHeight: number
 	) {
-		let rendered = 0;
+		const refs: number[] = [];
 		this.order.forEach((ref) => {
 			const atom = this.atoms[ref];
-			const element = atom ? this.elements.get(atom.elementId) : undefined;
-			if (!atom || !element || !elementIds.has(atom.elementId) || !this.isAtomVisible(atom, element, new Set())) return;
-			const matrix = deltaMatrix ? multiplyMatrices(deltaMatrix, element.matrix) : element.matrix;
-			drawPrimitive(ctx, atom, matrix, logicalWidth, logicalHeight, element.erasedIntervals.get(atom.atomId));
-			rendered += 1;
+			if (atom && elementIds.has(atom.elementId)) refs.push(ref);
 		});
-		return rendered;
+		return this.renderAtomRefs(ctx, refs, logicalWidth, logicalHeight, new Set(), deltaMatrix);
 	}
 
 	renderDirty(
@@ -628,12 +682,14 @@ export class SceneEngine {
 			const atom = this.atoms[ref];
 			const element = atom ? this.elements.get(atom.elementId) : undefined;
 			if (!atom || !element || !this.isAtomVisible(atom, element, new Set()) || atom.toolId === "eraser") continue;
-			if (wholeObjects || atom.recipeId !== "stroke") {
+			if (!wholeObjects && atom.recipeId !== "stroke") continue;
+			if (wholeObjects) {
 				if (this.eraserTouchesAtom(atom, element, eraser, eraserSize, logicalWidth, logicalHeight)) {
 					targets.set(element.id, { elementId: element.id, eraseWhole: true });
 				}
 				continue;
 			}
+			if (atom.recipeId !== "stroke") continue;
 			const intervals = cutIntervalsForStrokeAtom(
 				atom,
 				eraser,
@@ -643,7 +699,10 @@ export class SceneEngine {
 				(x, y) => transformPoint(element.matrix, x, y),
 				matrixScale(element.matrix)
 			);
-			if (intervals.length > 0) targets.set(atom.atomId, { elementId: element.id, atomId: atom.atomId, intervals });
+			if (intervals.length > 0) {
+				const inverseMatrix = invertMatrix(element.matrix);
+				if (inverseMatrix) targets.set(element.id, { elementId: element.id, mask: { points: eraser.map((point) => ({ ...point })), size: eraserSize, width: logicalWidth, height: logicalHeight, inverseMatrix } });
+			}
 		}
 		return Array.from(targets.values()).sort((left, right) => left.elementId < right.elementId ? -1 : left.elementId > right.elementId ? 1 : (left.atomId ?? "") < (right.atomId ?? "") ? -1 : 1);
 	}
@@ -656,6 +715,18 @@ export class SceneEngine {
 			matrix: [...element.matrix] as AffineMatrix,
 			characters: this.orderedCharacters(element.characters).filter((character) => !character.deleted).map(({ charId, grapheme }) => ({ charId, grapheme })),
 		};
+	}
+
+	getResizedTextBox(elementId: string, delta: AffineMatrix) {
+		const element = this.elements.get(elementId);
+		if (!element || element.descriptor.elementKind !== "text" || !element.descriptor.box) return null;
+		const inverse = invertMatrix(element.matrix);
+		if (!inverse) return null;
+		return transformBounds(multiplyMatrices(multiplyMatrices(inverse, delta), element.matrix), element.descriptor.box);
+	}
+
+	previewTextBox(elementId: string, box: AabbBox) {
+		this.applyElementStyle(elementId, {}, box);
 	}
 
 	getElementBounds(elementId: string) {
@@ -733,7 +804,7 @@ export class SceneEngine {
 			const element = atom ? this.elements.get(atom.elementId) : undefined;
 			if (!atom || !this.isAtomVisible(atom, element, new Set())) return;
 			const geometry = { ...atom, ref: undefined, elementRevision: undefined };
-			rows.push(`${JSON.stringify(geometry)}|${element!.matrix.join(",")}|${JSON.stringify(element!.erasedIntervals.get(atom.atomId) ?? [])}`);
+			rows.push(`${JSON.stringify(geometry)}|${element!.matrix.join(",")}|${JSON.stringify(element!.erasedIntervals.get(atom.atomId) ?? [])}|${JSON.stringify(element!.eraseMasks)}`);
 		});
 		let hash = 2166136261;
 		for (const char of rows.join("\n")) {
@@ -755,6 +826,7 @@ export class SceneEngine {
 			points: [],
 			atomRefs: [],
 			erasedIntervals: new Map(),
+			eraseMasks: [],
 			characters: new Map(),
 		};
 		this.elements.set(id, element);
@@ -834,6 +906,7 @@ export class SceneEngine {
 				previous.matrix = cloneMatrix(IDENTITY_MATRIX);
 				previous.deleted = this.legacyDeleted.get(elementId) ?? false;
 				previous.erasedIntervals.clear();
+				previous.eraseMasks = [];
 				if (this.isElementBaseVisible(previous)) this.visibleAtomCount += previous.atomRefs.length;
 			} else {
 				if (previous) this.revisionSeed.set(elementId, previous.revision + 1);
@@ -1207,6 +1280,7 @@ export class SceneEngine {
 			}
 			return;
 		}
+		if (target.mask) { element.eraseMasks.push(target.mask); return; }
 		if (!target.atomId || !target.intervals) return;
 		const current = element.erasedIntervals.get(target.atomId) ?? [];
 		element.erasedIntervals.set(target.atomId, mergeQuantizedIntervals([...current, ...target.intervals]));
@@ -1239,6 +1313,7 @@ export class SceneEngine {
 			element.matrix = cloneMatrix(IDENTITY_MATRIX);
 			element.deleted = this.legacyDeleted.get(elementId) ?? false;
 			element.erasedIntervals.clear();
+			element.eraseMasks = [];
 		}
 		this.historyEnabled.clear();
 		this.pageClearBefore.clear();
@@ -1306,11 +1381,9 @@ export class SceneEngine {
 		if (!element || element.pageId !== this.pageId || element.deleted || excluded.has(element.id) || atom.elementRevision !== element.revision) return false;
 		const clearBefore = this.pageClearBefore.get(element.pageId);
 		if (clearBefore && compareRenderOrder(element.createOrder, clearBefore) <= 0) return false;
-		if (
-			atom.primitive === "dot" &&
-			element.points.length > 1 &&
-			(atom.toolId === "pencil" || atom.toolId === "highlighter")
-		) return false;
+		if (atom.primitive === "dot" && (atom.toolId === "pencil" || atom.toolId === "highlighter")) {
+			if (element.points.length > 1 || !this.compilerStates.get(element.id)?.finished) return false;
+		}
 		return true;
 	}
 

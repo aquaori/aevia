@@ -6,6 +6,29 @@ import type { QuadraticAtom, RenderAtom } from "./sceneTypes";
 
 type DrawingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
+const pencilPatterns = new WeakMap<DrawingContext, Map<string, CanvasPattern>>();
+const pencilPattern = (ctx: DrawingContext, color: string) => {
+	let patterns = pencilPatterns.get(ctx);
+	if (!patterns) { patterns = new Map(); pencilPatterns.set(ctx, patterns); }
+	const cached = patterns.get(color);
+	if (cached) return cached;
+	const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(32, 32) : document.createElement("canvas");
+	canvas.width = 32;
+	canvas.height = 32;
+	const texture = canvas.getContext("2d") as DrawingContext | null;
+	if (!texture) return null;
+	texture.fillStyle = color;
+	let seed = 1234567;
+	for (let y = 0; y < 32; y += 1) for (let x = 0; x < 32; x += 1) {
+		seed = Math.imul(seed ^ (seed >>> 13), 16777619);
+		texture.globalAlpha = 0.35 + ((seed >>> 24) / 255) * 0.55;
+		texture.fillRect(x, y, 1, 1);
+	}
+	const pattern = ctx.createPattern(canvas, "repeat");
+	if (pattern) patterns.set(color, pattern);
+	return pattern;
+};
+
 const dashFor = (pattern: StrokePattern | undefined, width: number) => {
 	switch (pattern) {
 		case "dashed":
@@ -157,19 +180,8 @@ export const drawPrimitive = (
 			drawQuadratic(ctx, pixelAtom, pixelMatrix, lineWidth, offset, erased);
 			drawQuadratic(ctx, pixelAtom, pixelMatrix, lineWidth, -offset, erased);
 		} else if (atom.toolId === "pencil") {
-			// Stable, translucent fibres approximate graphite without introducing
-			// random differences between a live stroke and later replay.
-			let seed = 2166136261;
-			for (const character of atom.atomId) seed = Math.imul(seed ^ character.charCodeAt(0), 16777619);
-			const baseAlpha = ctx.globalAlpha;
-			const strokeWidth = atom.width * matrixScale(matrix);
-			for (let index = 0; index < 5; index += 1) {
-				seed = Math.imul(seed ^ (seed >>> 13), 16777619);
-				const jitter = ((seed >>> 0) / 0xffffffff - 0.5) * 0.08;
-				ctx.globalAlpha = baseAlpha * (0.2 + ((seed >>> 8) & 7) / 100);
-				drawQuadratic(ctx, pixelAtom, pixelMatrix, Math.max(0.55, strokeWidth * 0.24), strokeWidth * ((index - 2) * 0.18 + jitter), erased);
-			}
-			ctx.globalAlpha = baseAlpha;
+			ctx.strokeStyle = pencilPattern(ctx, atom.style.color) ?? atom.style.color;
+			drawQuadratic(ctx, pixelAtom, pixelMatrix, atom.width * matrixScale(matrix), 0, erased);
 		} else {
 			drawQuadratic(ctx, pixelAtom, pixelMatrix, atom.width * matrixScale(matrix), 0, erased);
 		}
