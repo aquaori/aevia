@@ -646,7 +646,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		if (type === "push-cmd" && outgoing?.cmd?.type === "scene-op" && outgoing.cmd.id) {
 			pendingSceneOperations.set(outgoing.cmd.id, JSON.parse(JSON.stringify(outgoing)));
 			const localCmd = (data as OutgoingPayload)?.cmd;
-			if (snapshotPending && localCmd) initLocalCommands.push(localCmd);
+			if (localCmd) {
+				dispatcher.recordPageChangeLocalCommand(localCmd);
+				if (snapshotPending) initLocalCommands.push(localCmd);
+			}
 		}
 		return true;
 	};

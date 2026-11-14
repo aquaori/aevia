@@ -401,6 +401,22 @@ describe("collab command handlers", () => {
 		expect(fixture.options.setInitSceneOperations).toHaveBeenLastCalledWith(expect.arrayContaining([expect.objectContaining({ id: "live" })]), 2);
 	});
 
+	it("keeps local page writes during loading and removes rejected writes", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 2, loadedPageIds: [2], loadPageIds: [2], snapshotVersion: 2,
+			chunkSummary: { totalRenderChunks: 0, totalCommandChunks: 0 },
+		}));
+		fixture.handlers.recordPageChangeLocalCommand(createIncomingCommand({ id: "local-write", pageId: 2, userId: "u1" }));
+		fixture.handlers.recordPageChangeLocalCommand(createIncomingCommand({ id: "rejected", pageId: 2, userId: "u1" }));
+		fixture.handlers.handleOperationRejected(message("op-rejected", { opType: "push-cmd", cmdId: "rejected" }));
+		fixture.handlers.handlePageChangeCommandsDone(message("page-change-commands-done", { requestId: 7, snapshotVersion: 2, totalChunks: 0 }));
+		expect(fixture.options.applyLoadedPageDelta).toHaveBeenCalledWith(expect.objectContaining({
+			commands: [expect.objectContaining({ id: "local-write" })],
+		}));
+	});
+
 	it("rejects an incomplete or inconsistent page-change stream", () => {
 		const fixture = createFixture();
 		fixture.getActivePageChangeRequestId.mockReturnValue(7);

@@ -1331,6 +1331,12 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		tryFinalizePageChangeStream(donePayload);
 	};
 
+	const recordPageChangeLocalCommand = (command: Command) => {
+		if (pageChangeStreamState && !pageChangeStreamState.commandsReady && pageChangeStreamState.loadedPageIds.includes(command.pageId)) {
+			pageChangeStreamState.liveCommands.push(command);
+		}
+	};
+
 	const handlePushCommand = (msg: CollabIncomingMessage) => {
 		const cmd = msg.data.cmd ? normalizeCommandFromProtocol(msg.data.cmd as Command) : undefined;
 		const pushType = msg.pushType as "normal" | "start" | "update" | "stop";
@@ -1581,6 +1587,9 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		const payload = (msg.data ?? {}) as OperationRejectedPayload;
 		const opType = String(payload.opType ?? "unknown");
 		const cmdId = typeof payload.cmdId === "string" ? payload.cmdId : null;
+		if (cmdId && pageChangeStreamState) {
+			pageChangeStreamState.liveCommands = pageChangeStreamState.liveCommands.filter((command) => command.id !== cmdId);
+		}
 		const cmd = cmdId ? options.commandMap.get(cmdId) ?? null : null;
 		const canRollbackRejectedPush = opType === "push-cmd" && Boolean(cmdId && cmd);
 		const shouldResync =
@@ -1670,6 +1679,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		handlePageChangeChunk,
 		handlePageChangeDone,
 		handlePushCommand,
+		recordPageChangeLocalCommand,
 		handleDeleteCommand,
 		handlePageAdd,
 		handleUndoRedo,
