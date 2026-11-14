@@ -250,6 +250,11 @@ interface PageChangeStreamState {
 export const createCollabCommandHandlers = (options: CollabMessageDispatcherOptions) => {
 	const commandStore = useCommandStore();
 	let initStreamState: InitStreamState | null = null;
+	let initCompletionTimer: ReturnType<typeof setTimeout> | null = null;
+	const clearInitCompletionTimer = () => {
+		if (initCompletionTimer !== null) clearTimeout(initCompletionTimer);
+		initCompletionTimer = null;
+	};
 	let initFirstRenderChunkMarked = false;
 	let pageChangeStreamState: PageChangeStreamState | null = null;
 	let remoteUpdateFlushFrameId: number | null = null;
@@ -469,6 +474,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			initStreamState.renderReady &&
 			initStreamState.commandsReady
 		) {
+			clearInitCompletionTimer();
 			options.onInitSnapshotCommitted?.(initStreamState.snapshotVersion);
 			initStreamState = null;
 		}
@@ -574,6 +580,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	const handleInitMeta = (msg: CollabIncomingMessage) => {
+		clearInitCompletionTimer();
 		if (labEnabled()) {
 			labMark(LAB_MARK_INIT_META);
 		}
@@ -802,6 +809,12 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		initStreamState.completeReceived = true;
 		tryFinalizeInitCommands();
 		tryCompleteInitStream();
+		if (initStreamState && initCompletionTimer === null) {
+			initCompletionTimer = setTimeout(() => {
+				initCompletionTimer = null;
+				options.onInitStreamInvalid?.();
+			}, 10000);
+		}
 	};
 
 	/**
@@ -1656,6 +1669,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 	};
 
 	return {
+		clearInitCompletionTimer,
 		handleInitMeta,
 		handleInitRenderMeta,
 		handleInitRenderChunkMeta,

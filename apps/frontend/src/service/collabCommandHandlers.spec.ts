@@ -286,6 +286,17 @@ describe("collab command handlers", () => {
 		expect(fixture.options.finishInitRenderStream).not.toHaveBeenCalled();
 	});
 
+	it("recovers if an init stream completes while chunks remain missing", () => {
+		vi.useFakeTimers();
+		try {
+			const fixture = createFixture();
+			startInitStream(fixture);
+			fixture.handlers.handleInitComplete(message("init-complete", { snapshotVersion: 1 }));
+			vi.advanceTimersByTime(10000);
+			expect(fixture.options.onInitStreamInvalid).toHaveBeenCalledOnce();
+		} finally { vi.useRealTimers(); }
+	});
+
 	it("normalizes the init loaded-page window on init-meta", () => {
 		const fixture = createFixture();
 

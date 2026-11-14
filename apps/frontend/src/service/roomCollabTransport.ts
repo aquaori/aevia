@@ -821,6 +821,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 
 			connection.onclose = () => {
 				if (socket.value !== connection) return;
+				dispatcher.clearInitCompletionTimer();
 				pendingRenderBinaryChunk = null;
                 sceneAppendBinary = false;
 				sceneTextBoxV1 = false;
