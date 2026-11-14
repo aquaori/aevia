@@ -7,6 +7,8 @@ export const useUserStore = defineStore('user', () => {
     const sessionExpiresAt = ref<number | null>(null)
     const userId = ref('')
     const username = ref('')
+	const roomRole = ref('editor')
+	const setRoomRole = (value: string) => { roomRole.value = value }
 
     const setToken = (newToken: string) => {
         token.value = newToken
@@ -41,6 +43,7 @@ export const useUserStore = defineStore('user', () => {
     }
 
     const clearAll = () => {
+		roomRole.value = 'editor'
         clearToken()
         clearSessionExpiresAt()
         clearUserId()
@@ -52,6 +55,8 @@ export const useUserStore = defineStore('user', () => {
         sessionExpiresAt,
         userId,
         username,
+		roomRole,
+		setRoomRole,
         setToken,
         setSessionExpiresAt,
         setUserId,

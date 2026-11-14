@@ -796,10 +796,10 @@
 			<canvas
 				ref="canvasRef"
 				@dblclick="roomPointerControllerRef?.editSelectedText($event)"
-				@pointerdown="startDrawing"
-				@pointermove="draw"
-				@pointerup="stopDrawing"
-				@pointercancel="stopDrawing"
+				@pointerdown="userStore.roomRole !== 'viewer' && startDrawing($event)"
+				@pointermove="userStore.roomRole !== 'viewer' && draw($event)"
+				@pointerup="userStore.roomRole !== 'viewer' && stopDrawing($event)"
+				@pointercancel="userStore.roomRole !== 'viewer' && stopDrawing($event)"
 				@pointerenter="showEraserCursor = true"
 				@pointerleave="showEraserCursor = false; canvasCursor = 'default'"
 				class="absolute inset-0 w-full h-full touch-none z-5"
@@ -817,7 +817,7 @@
 			></canvas>
 		</div>
 
-		<RoomToolbar
+		<RoomToolbar v-if="userStore.roomRole !== 'viewer'"
 			:active-menu="activeMenu"
 			:current-tool="currentTool"
 			:current-color="currentColor"

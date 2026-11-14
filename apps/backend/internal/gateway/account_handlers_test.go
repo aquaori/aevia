@@ -102,3 +102,29 @@ func TestInviteCanBeRevoked(t *testing.T) {
 		t.Fatal("revoked invite accepted")
 	}
 }
+
+func TestRoomTransferAndDelete(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "firstowner", "password": "password123"}, "")
+	ownerToken := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777004", "roomName": "Transfer"}, ownerToken)
+	_, member := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "nextowner", "password": "password123"}, "")
+	memberToken := member.Data["token"].(string)
+	id := member.Data["account"].(map[string]any)["id"].(string)
+	do(t, server, "POST", "/join-room", map[string]any{"roomId": "777004"}, memberToken)
+	if status, _ := do(t, server, "POST", "/v2/rooms/777004/transfer", map[string]any{"userId": id}, ownerToken); status != 200 {
+		t.Fatalf("request transfer: %d", status)
+	}
+	if status, _ := do(t, server, "POST", "/v2/rooms/777004/transfer/respond", map[string]any{"accept": true}, memberToken); status != 200 {
+		t.Fatalf("accept transfer: %d", status)
+	}
+	if status, _ := do(t, server, "DELETE", "/v2/rooms/777004", nil, ownerToken); status != 403 {
+		t.Fatalf("old owner still controls room: %d", status)
+	}
+	if status, _ := do(t, server, "DELETE", "/v2/rooms/777004", nil, memberToken); status != 200 {
+		t.Fatalf("delete: %d", status)
+	}
+	if status, _ := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777004", "userName": "Guest"}, ""); status == 200 {
+		t.Fatal("deleted room is accessible")
+	}
+}

@@ -194,7 +194,7 @@ func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("room joined", "room", roomData.RoomID, "user", req.UserName, "userId", userID)
-	ok(w, map[string]any{"sessionToken": token, "token": token, "expiresAt": expiresAt})
+	ok(w, map[string]any{"sessionToken": token, "token": token, "expiresAt": expiresAt, "role": role})
 }
 
 func (s *Server) generateShareToken(w http.ResponseWriter, r *http.Request) {

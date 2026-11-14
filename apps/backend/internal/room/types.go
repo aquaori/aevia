@@ -8,6 +8,7 @@ type ClientInfo struct {
 	ID       ClientID
 	UserID   string
 	UserName string
+	Account  bool
 	PageID   int
 	Epoch    uint64
 	Send     chan Outbound

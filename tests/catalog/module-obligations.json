@@ -688,6 +688,13 @@
       "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
+      "id": "go:apps/backend/internal/gateway/transfer_handlers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/transfer_handlers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
+    },
+    {
       "id": "go:apps/backend/internal/gateway/v2_placeholders.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/v2_placeholders.go",
@@ -922,6 +929,13 @@
       "id": "go:apps/backend/internal/storage/store.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/store.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/store_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/transfers.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/transfers.go",
       "state": "covered",
       "owner": "apps/backend/internal/storage/store_test.go"
     },

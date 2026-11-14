@@ -345,6 +345,16 @@ func drainOutbound(ch chan Outbound) {
 
 func (a *Actor) handleJoin(msg joinMessage) {
 	client := msg.Client
+	if client.Account {
+		for id, existing := range a.state.Clients {
+			if existing.Account && existing.UserID == client.UserID {
+				drainOutbound(existing.Send)
+				sendOutbound(existing.Send, Outbound{JSON: Envelope{Type: "session.replaced"}})
+				sendOutbound(existing.Send, Outbound{Close: true})
+				delete(a.state.Clients, id)
+			}
+		}
+	}
 	client.PageID = normalizePageID(msg.PageID, a.state.Room.TotalPage)
 	a.state.Clients[client.ID] = client
 	resume, deltas := decideResume(a.state.Deltas, msg.LastRoomSeq, a.state.RoomSeq)

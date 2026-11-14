@@ -176,7 +176,7 @@ func (c *wsClient) abortConnection() {
 
 func (c *wsClient) info() room.ClientInfo {
 	return room.ClientInfo{
-		ID: c.id, UserID: c.claims.UserID, UserName: c.claims.UserName,
+		ID: c.id, UserID: c.claims.UserID, UserName: c.claims.UserName, Account: c.claims.Account,
 		PageID: c.pageID, Send: c.send, Abort: c.abortConnection,
 	}
 }

@@ -67,6 +67,7 @@
 						localStorage.setItem("wb_username", username.value);
 						userStore.setToken(res.data.data.sessionToken || res.data.data.token);
 						userStore.setSessionExpiresAt(res.data.data.expiresAt ?? null);
+						userStore.setRoomRole(res.data.data.role || "editor");
 						router.push({ name: "room" });
 					} else {
 						console.error("Error joining room: ", res.data.msg || "未知错误");

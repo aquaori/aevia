@@ -763,6 +763,12 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							handleServerDraining();
 							return;
 						}
+						if (msg.type === "session.replaced") {
+							isIntentionalClose.value = true;
+							markReconnectFailed("此账号已在其他设备进入房间，请返回首页重新进入。");
+							connection.close();
+							return;
+						}
 						if (msg.type === "resync.required") {
 							handleResyncRequired(msg.data);
 							return;

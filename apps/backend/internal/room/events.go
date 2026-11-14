@@ -53,6 +53,23 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 		return
 	}
 	if cmd.Type() == "scene-op" {
+		operation := sceneOperation(cmd)
+		if domain.String(operation["kind"]) == "history.toggle" {
+			payload, _ := operation["payload"].(map[string]any)
+			target := domain.String(payload["targetHistoryGroupId"])
+			owned := false
+			for _, existing := range a.state.Commands {
+				candidate := sceneOperation(existing)
+				if domain.String(candidate["historyGroupId"]) == target && existing.UserID() == client.UserID {
+					owned = true
+					break
+				}
+			}
+			if !owned {
+				a.reject(client, msg.Type, "FORBIDDEN", "只能撤回或重做自己的操作。", cmd.ID())
+				return
+			}
+		}
 		if existing, exists := a.state.Commands[cmd.ID()]; exists {
 			oldOperation, oldErr := json.Marshal(sceneOperation(existing))
 			newOperation, newErr := json.Marshal(sceneOperation(cmd))

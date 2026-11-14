@@ -44,6 +44,17 @@
 		try { await axios.post(apiUrl(`${base}/leave`), {}, options()); emit("changed"); emit("close"); }
 		catch { toast.error("退出失败，请重试"); }
 	}
+	async function transfer(userId: string, nickname: string) {
+		const nextRole = policy.value.defaultRole === "editor" ? "编辑者" : "只读者";
+		if (!window.confirm(`向 ${nickname} 发起房主转让？对方接受后，你将成为${nextRole}。`)) return;
+		try { await axios.post(apiUrl(`${base}/transfer`), { userId }, options()); toast.success("转让请求已发送，等待对方确认"); }
+		catch { toast.error("发起转让失败"); }
+	}
+	async function deleteRoom() {
+		if (!window.confirm("确定永久删除房间及全部白板内容？此操作无法撤销。")) return;
+		try { await axios.delete(apiUrl(base), options()); emit("changed"); emit("close"); }
+		catch { toast.error("删除失败，请重试"); }
+	}
 	onMounted(load);
 </script>
 
@@ -68,9 +79,11 @@
 					<button v-if="!member.banned" @click="memberAction(member.userId, member.role === 'viewer' ? 'editor' : 'viewer')">设为{{ member.role === "viewer" ? "编辑" : "只读" }}</button>
 					<button v-if="!member.banned" @click="memberAction(member.userId, 'kick')">踢出</button>
 					<button @click="memberAction(member.userId, member.banned ? 'unban' : 'ban')">{{ member.banned ? "解除封禁" : "封禁" }}</button>
+					<button v-if="!member.banned" @click="transfer(member.userId, member.nickname)">转让房主</button>
 				</div>
 			</div>
 			<button v-if="role !== 'owner'" class="mt-4 text-sm text-rose-600" @click="leave">退出房间</button>
+			<button v-else class="mt-4 text-sm text-rose-600" @click="deleteRoom">永久删除房间</button>
 		</section>
 	</div>
 </template>

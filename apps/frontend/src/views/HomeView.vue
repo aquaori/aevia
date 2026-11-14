@@ -27,9 +27,11 @@
 		sessionToken?: string;
 		token?: string;
 		expiresAt?: number | null;
+		role?: string;
 	}) => {
 		userStore.setToken(payload.sessionToken || payload.token || "");
 		userStore.setSessionExpiresAt(payload.expiresAt ?? null);
+		userStore.setRoomRole(payload.role || "editor");
 	};
 
 	type ResponseError = {
@@ -215,11 +217,19 @@
 
 	type AccountRoom = { roomId: string; name: string; role: string; passwordRequired: boolean };
 	const rooms = ref<AccountRoom[]>([]);
+	const transfers = ref<{ roomId: string; roomName: string; ownerNickname: string }[]>([]);
 	const settingsRoom = ref<AccountRoom | null>(null);
 	const loadRooms = async () => {
-		if (!accountStore.token) { rooms.value = []; return; }
-		try { rooms.value = (await axios.get(apiUrl("/v2/rooms"), { headers: accountStore.headers() })).data.data; }
+		if (!accountStore.token) { rooms.value = []; transfers.value = []; return; }
+		try {
+			rooms.value = (await axios.get(apiUrl("/v2/rooms"), { headers: accountStore.headers() })).data.data;
+			transfers.value = (await axios.get(apiUrl("/v2/transfers"), { headers: accountStore.headers() })).data.data;
+		}
 		catch { rooms.value = []; }
+	};
+	const respondTransfer = async (roomId: string, accept: boolean) => {
+		try { await axios.post(apiUrl(`/v2/rooms/${roomId}/transfer/respond`), { accept }, { headers: accountStore.headers() }); await loadRooms(); }
+		catch { toast.error("处理转让请求失败"); }
 	};
 	watch(() => accountStore.account, (value) => {
 		if (value) username.value = value.nickname;
@@ -311,6 +321,12 @@
 						</p>
 					</div>
 
+					<div v-if="accountStore.account && transfers.length && step === 1" class="mb-5 space-y-2">
+						<div v-for="transfer in transfers" :key="transfer.roomId" class="rounded-xl bg-indigo-50 p-3 text-sm text-slate-700">
+							<p>{{ transfer.ownerNickname }} 邀请你接任「{{ transfer.roomName }}」的房主</p>
+							<div class="mt-2 flex gap-4 text-indigo-600"><button @click="respondTransfer(transfer.roomId, true)">接受</button><button @click="respondTransfer(transfer.roomId, false)">拒绝</button></div>
+						</div>
+					</div>
 					<div v-if="accountStore.account && rooms.length && step === 1" class="mb-6">
 						<h2 class="mb-2 text-sm font-bold text-slate-700">我的房间</h2>
 						<div class="max-h-40 space-y-2 overflow-y-auto">
