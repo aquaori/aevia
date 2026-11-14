@@ -5,10 +5,12 @@
 	import axios from "axios";
 	import { toast } from "vue-sonner";
 	import { useUserStore } from "../store/userStore";
+	import { useAccountStore } from "../store/accountStore";
 	import { getInviteMeta } from "../service/sessionApi";
 	import { apiUrl } from "../config/endpoints";
 
 	const userStore = useUserStore();
+	const accountStore = useAccountStore();
 	const route = useRoute();
 	const router = useRouter();
 
@@ -26,7 +28,7 @@
 	};
 	const roomId = ref("");
 	const roomName = ref("");
-	const username = ref(localStorage.getItem("wb_username") || "");
+	const username = ref(accountStore.account?.nickname || localStorage.getItem("wb_username") || "");
 	const password = ref("");
 	const isLoading = ref(false);
 	const passwordRequired = ref(false);
@@ -58,7 +60,8 @@
 					roomId: roomId.value,
 					userName: username.value,
 					password: password.value,
-				})
+					inviteToken: token,
+				}, { headers: accountStore.token ? accountStore.headers() : {} })
 				.then((res) => {
 					if (res.data.code === 200) {
 						localStorage.setItem("wb_username", username.value);

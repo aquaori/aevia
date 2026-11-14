@@ -183,73 +183,7 @@
 				isLoading.value = false;
 			}
 		} else {
-			isLoading.value = true;
-			try {
-				if (mode.value === "create") {
-					await axios
-						.post(
-							apiUrl("/create-room"),
-							{
-								roomId: roomId.value,
-								roomName: roomName.value,
-								password: password.value || "",
-							}
-						)
-						.then((res) => {
-							if (res.data.code == 200) {
-								localStorage.setItem("wb_username", username.value);
-								axios
-									.post(
-										apiUrl("/join-room"),
-										{
-											roomId: roomId.value,
-											userName: username.value,
-											password: password.value || "",
-										}
-									)
-									.then((joinRes) => {
-										if (joinRes.data.code == 200) {
-											applySessionAuth(joinRes.data.data);
-											router.push({ name: "room" });
-										} else {
-											toast.error("加入房间失败，请重试");
-										}
-									})
-									.catch((err) => {
-										toast.error(
-											err.response?.data?.msg || "加入房间失败，请重试"
-										);
-									});
-							} else {
-								toast.error(
-									"房间创建失败：" + res.data.msg || "创建房间失败，请重试。"
-								);
-							}
-						})
-						.catch((err) => {
-							toast.error(
-								err.response?.data?.msg || "无法连接到服务器，请检查网络设置。"
-							);
-						});
-				} else {
-					await axios
-						.get(apiUrl(`/check-room?roomId=${roomId.value}`))
-						.then((res) => {
-							if (res.data.data.status == true) {
-								submit();
-							} else {
-								toast.error("房间不存在！");
-							}
-						})
-						.catch((err) => {
-							toast.error(
-								err.response?.data?.msg || "无法连接到服务器，请检查网络设置。"
-							);
-						});
-				}
-			} finally {
-				isLoading.value = false;
-			}
+			await submit();
 		}
 	};
 
@@ -278,75 +212,42 @@
 		}
 	});
 
-	const submit = () => {
-		localStorage.setItem("wb_username", username.value);
-		if (mode.value === "create") {
-			axios
-				.post(apiUrl("/create-room"), {
-					roomId: roomId.value,
-					roomName: roomName.value,
-					password: password.value || "",
-				})
-				.then((res) => {
-					if (res.data.code == 200) {
-						axios
-							.post(
-								apiUrl("/join-room"),
-								{
-									roomId: roomId.value,
-									userName: username.value,
-									password: password.value || "",
-								}
-							)
-							.then((res) => {
-								if (res.data.code == 200) {
-									applySessionAuth(res.data.data);
-									router.push({ name: "room" });
-								} else {
-									toast.error("房间不存在！");
-								}
-							})
-							.catch((err) => {
-								toast.error(
-									err.response?.data?.msg || "无法连接到服务器，请检查网络设置。"
-								);
-								console.error("加入房间失败:", err);
-							});
-					} else {
-						toast.error("房间创建失败：" + res.data.msg || "创建房间失败，请重试。");
-						console.error("创建房间失败:", res.data.msg || "创建房间失败。");
-					}
-				})
-				.catch((err) => {
-					toast.error(err.response?.data?.msg || "无法连接到服务器，请检查网络设置。");
-				});
-		} else {
-			axios
-				.post(apiUrl("/join-room"), {
-					roomId: roomId.value,
-					userName: username.value,
-					password: password.value || "",
-				})
-				.then((res) => {
-					if (res.data.code == 200) {
-						applySessionAuth(res.data.data);
-						router.push({ name: "room" });
-					} else {
-						toast.error("房间不存在！");
-					}
-				})
-				.catch((err) => {
-					console.error("加入房间失败:", err.response?.data?.msg);
-					if (err.response?.data?.msg == "Password incorrect") {
-						toast.error("密码错误！");
-					} else {
-						console.error(err);
-						toast.error(
-							err.response?.data?.msg || "无法连接到服务器，请检查网络设置。"
-						);
-					}
-				});
-		}
+	type AccountRoom = { roomId: string; name: string; role: string; passwordRequired: boolean };
+	const rooms = ref<AccountRoom[]>([]);
+	const loadRooms = async () => {
+		if (!accountStore.token) { rooms.value = []; return; }
+		try { rooms.value = (await axios.get(apiUrl("/v2/rooms"), { headers: accountStore.headers() })).data.data; }
+		catch { rooms.value = []; }
+	};
+	watch(() => accountStore.account, (value) => {
+		if (value) username.value = value.nickname;
+		void loadRooms();
+	}, { immediate: true });
+
+	const submit = async () => {
+		isLoading.value = true;
+		try {
+			if (mode.value === "create") {
+				if (!accountStore.token) { toast.error("请先登录后创建房间"); return; }
+				await axios.post(apiUrl("/v2/rooms"), { roomId: roomId.value, roomName: roomName.value, password: password.value }, { headers: accountStore.headers() });
+			}
+			localStorage.setItem("wb_username", username.value);
+			const response = await axios.post(apiUrl("/join-room"), {
+				roomId: roomId.value, userName: username.value, password: password.value,
+			}, { headers: accountStore.token ? accountStore.headers() : {} });
+			applySessionAuth(response.data.data);
+			await router.push({ name: "room" });
+		} catch (error) {
+			const responseError = error as ResponseError;
+			toast.error(responseError.response?.data?.msg || "无法连接到服务器，请检查网络设置。");
+		} finally { isLoading.value = false; }
+	};
+
+	const enterSavedRoom = (room: AccountRoom) => {
+		mode.value = "join";
+		otpDigits.value = room.roomId.split("");
+		password.value = "";
+		step.value = 2;
 	};
 
 	onMounted(() => {
@@ -405,6 +306,15 @@
 						<p class="text-slate-500 text-sm sm:text-base font-medium">
 							即时灵感，无缝协作
 						</p>
+					</div>
+
+					<div v-if="accountStore.account && rooms.length && step === 1" class="mb-6">
+						<h2 class="mb-2 text-sm font-bold text-slate-700">我的房间</h2>
+						<div class="max-h-40 space-y-2 overflow-y-auto">
+							<button v-for="room in rooms" :key="room.roomId" class="flex w-full items-center justify-between rounded-xl bg-slate-50 px-4 py-3 text-left hover:bg-indigo-50" @click="enterSavedRoom(room)">
+								<span class="font-medium text-slate-700">{{ room.name }}</span><span class="text-xs text-slate-400">{{ room.roomId }} →</span>
+							</button>
+						</div>
 					</div>
 
 					<!-- 步骤视图 -->

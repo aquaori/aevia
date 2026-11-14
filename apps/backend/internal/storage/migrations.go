@@ -53,6 +53,24 @@ CREATE TABLE IF NOT EXISTS room_members (
   FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS room_policies (
+  room_id TEXT PRIMARY KEY,
+  default_role TEXT NOT NULL DEFAULT 'editor',
+  allow_room_code INTEGER NOT NULL DEFAULT 1,
+  guest_by_code INTEGER NOT NULL DEFAULT 1,
+  guest_by_invite INTEGER NOT NULL DEFAULT 1,
+  password_version INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS room_password_verifications (
+  room_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  PRIMARY KEY(room_id, user_id),
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS room_role_capabilities (
   room_id TEXT NOT NULL,
   role TEXT NOT NULL,
