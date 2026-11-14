@@ -68,7 +68,7 @@ Replay emits `delta-replay-meta`, then the original event envelopes, then
 `delta-replay-complete`. The client treats `delta-replay-meta` as its
 connection-established signal, so any new resume path must keep sending it.
 
-Join distinguishes current, contiguous retained delta, and snapshot recovery against the authoritative room sequence. `handleJoin` enqueues the resume stream while the actor owns room ordering. Stream enqueue failure aborts the connection independently of the outbound queue; never send a success terminal after a failed frame. Duplicate immutable writes are acknowledged only when the trusted user and operation match and the original durable sequence is available.
+Join distinguishes current, contiguous retained delta, and snapshot recovery against the authoritative room sequence. `handleJoin` enqueues the resume stream while the actor owns room ordering. Stream enqueue failure aborts the connection independently of the outbound queue; never send a success terminal after a failed frame. Duplicate immutable writes are acknowledged only when the trusted user and operation match and the original durable sequence is available. Scene writes use barrier persistence, so their `ack.accepted` follows commit; a read-only rejection carries the command ID so the client can discard the rejected local write.
 
 ## Limits and Trust
 
