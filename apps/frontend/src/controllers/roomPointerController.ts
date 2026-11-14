@@ -17,6 +17,7 @@ import {
 	type aabbBox,
 } from "@collaborative-whiteboard/shared";
 import { builtinToolRegistry } from "../scene/toolRegistry";
+import { SceneEngine } from "../scene/sceneEngine";
 import { splitGraphemes } from "../scene/graphemes";
 import {
 	getInitialStrokeWidth,
@@ -123,10 +124,13 @@ interface RoomPointerControllerOptions {
 		elementId: string;
 		box: aabbBox;
 		initialText?: string;
+		textLayout?: SceneElementDescriptor["textLayout"];
+		matrix?: AffineMatrix;
 		onChange?: (value: string, reason: "input" | "ime") => void;
 		initialStyle?: Partial<SceneElementStyle>;
 		onStyleChange?: (style: Partial<SceneElementStyle>) => void;
 		onGroupBoundary?: () => void;
+		onBoxChange?: (box: aabbBox) => boolean;
 	}) => Promise<string | null>;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
 	getGroupBoundingBox: (
@@ -228,6 +232,128 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			clearTimeout(pendingCommandUpdateTimer);
 			pendingCommandUpdateTimer = null;
 		}
+	};
+
+	const editText = async (elementId: string, descriptor: SceneElementDescriptor, characters: Array<{ charId: string; grapheme: string }> = [], existing = false, matrix?: AffineMatrix) => {
+		let created = existing;
+		let createdStyle = { ...descriptor.style };
+		let draftStyle = { ...descriptor.style };
+		let currentCharacters = [...characters];
+		let historyGroupId = existing ? uuidv4() : elementId;
+		let lastInputAt = performance.now();
+		const historyGroups = new Set<string>();
+		const applyText = (value: string, reason: "input" | "ime") => {
+			const graphemes = splitGraphemes(value);
+			if (
+				graphemes.length === currentCharacters.length &&
+				graphemes.every((grapheme, index) => grapheme === currentCharacters[index]?.grapheme)
+			) return;
+			if (!created) {
+				const result = pushSceneCreate(elementId, {
+					...descriptor,
+					style: { ...draftStyle },
+				});
+				if (!result?.ok) return;
+				created = true;
+				createdStyle = { ...draftStyle };
+				options.productPreview.value = null;
+				historyGroups.add(elementId);
+			}
+			const now = performance.now();
+			if (now - lastInputAt > 750) historyGroupId = uuidv4();
+			let commonPrefix = 0;
+			while (
+				commonPrefix < currentCharacters.length &&
+				commonPrefix < graphemes.length &&
+				currentCharacters[commonPrefix]!.grapheme === graphemes[commonPrefix]
+			) commonPrefix += 1;
+			const patches: TextPatch[] = [];
+			let nextCharacters: Array<{ charId: string; grapheme: string }>;
+			if (commonPrefix === currentCharacters.length) {
+				nextCharacters = [...currentCharacters];
+				let afterId = nextCharacters[nextCharacters.length - 1]?.charId ?? null;
+				for (const grapheme of graphemes.slice(commonPrefix)) {
+					const charId = uuidv4();
+					patches.push({ type: "insert", charId, afterId, grapheme });
+					nextCharacters.push({ charId, grapheme });
+					afterId = charId;
+				}
+			} else if (commonPrefix === graphemes.length) {
+				for (const character of currentCharacters.slice(commonPrefix)) patches.push({ type: "delete", charId: character.charId });
+				nextCharacters = currentCharacters.slice(0, commonPrefix);
+			} else {
+				for (const character of currentCharacters) patches.push({ type: "delete", charId: character.charId });
+				nextCharacters = [];
+				let afterId: string | null = null;
+				for (const grapheme of graphemes) {
+					const charId = uuidv4();
+					patches.push({ type: "insert", charId, afterId, grapheme });
+					nextCharacters.push({ charId, grapheme });
+					afterId = charId;
+				}
+			}
+			const result = pushSceneTextPatch(elementId, patches, historyGroupId);
+			if (result?.ok) {
+				currentCharacters = nextCharacters;
+				historyGroups.add(historyGroupId);
+				lastInputAt = now;
+				if (reason === "ime") historyGroupId = uuidv4();
+			}
+		};
+		options.productPreview.value = null;
+		options.isDrawing.value = false;
+		const text = await options.requestTextInput({
+			kind: descriptor.elementKind === "sticky" ? "sticky" : "text",
+			elementId,
+			box: descriptor.box!,
+			initialText: characters.map((character) => character.grapheme).join(""),
+			initialStyle: draftStyle,
+			textLayout: descriptor.textLayout,
+			matrix,
+			onChange: applyText,
+			onStyleChange: (style) => {
+				draftStyle = { ...draftStyle, ...style };
+			},
+			onBoxChange: (nextBox) => {
+				if (!created) {
+					descriptor.box = { ...nextBox };
+					return true;
+				}
+				const groupId = uuidv4();
+				const result = pushSceneStyle(elementId, {}, groupId, nextBox);
+				if (!result?.ok) return false;
+				descriptor.box = { ...nextBox };
+				historyGroups.add(groupId);
+				historyGroupId = uuidv4();
+				return true;
+			},
+			onGroupBoundary: () => {
+				historyGroupId = uuidv4();
+				lastInputAt = performance.now();
+			},
+		});
+		if (text === null) {
+			for (const groupId of historyGroups) pushSceneHistoryToggle(elementId, groupId, false);
+		} else {
+			applyText(text, "input");
+			if (created && JSON.stringify(draftStyle) !== JSON.stringify(createdStyle)) {
+				pushSceneStyle(elementId, draftStyle, existing ? uuidv4() : elementId);
+			}
+		}
+		if (!created) descriptor.text = "";
+	};
+	const editSelectedText = async (event: MouseEvent) => {
+		if (options.currentTool.value !== "cursor" || !canvasRef.value) return;
+		const rect = canvasRef.value.getBoundingClientRect();
+		const hit = await options.hitTestScene(event.clientX - rect.left, event.clientY - rect.top);
+		if (!hit.elementId) return;
+		const scene = new SceneEngine();
+		scene.rebuildFromCommands(options.commands.value, options.currentPageId.value);
+		const state = scene.getTextEditorState(hit.elementId);
+		if (!state) return;
+		options.selectedCommandIds.value = new Set();
+		options.selectedSceneBounds.value = null;
+		await editText(hit.elementId, state.descriptor, state.characters, true, state.matrix);
 	};
 
 	const normalizedRoomId = () =>
@@ -391,7 +517,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		});
 	};
 
-	const pushSceneStyle = (elementId: string, style: Partial<SceneElementStyle>, historyGroupId: string) => {
+	const pushSceneStyle = (elementId: string, style: Partial<SceneElementStyle>, historyGroupId: string, textBox?: aabbBox) => {
 		const opId = uuidv4();
 		const lamport = useLamportStore().getNextLamport();
 		return options.pushCommand({
@@ -415,7 +541,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				lamport,
 				historyGroupId,
 				kind: "element.style",
-				payload: { style },
+				payload: { style, ...(textBox ? { textBox, textBoxVersion: 1 as const } : {}) },
 			},
 		});
 	};
@@ -758,6 +884,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				getCommandBoundingBox: options.getCommandBoundingBox,
 				getGroupBoundingBox: options.getGroupBoundingBox,
 				preferredHit,
+				selectedSceneBounds: options.selectedSceneBounds.value,
 			});
 
 			options.activeTransformHandle.value = cursorAction.handle as HandleType;
@@ -930,7 +1057,11 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			return;
 		}
 		if (toolDefinition && toolDefinition.inputMode !== "freehand" && productGestureStart) {
-			const normalized = options.interactionController.normalizeCoordinates(canvasRef.value!, { x, y });
+			const raw = options.interactionController.normalizeCoordinates(canvasRef.value!, { x, y });
+			const canvas = canvasRef.value!;
+			const normalized = e.shiftKey && (options.currentTool.value === "rectangle" || options.currentTool.value === "ellipse")
+				? options.interactionController.constrainSquare(productGestureStart, raw, { width: canvas.width, height: canvas.height })
+				: raw;
 			options.productPreview.value = {
 				tool: options.currentTool.value,
 				start: { ...productGestureStart },
@@ -962,9 +1093,12 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		const toolDefinition = builtinToolRegistry.get(options.currentTool.value);
 		if (options.currentTool.value !== "cursor" && toolDefinition && toolDefinition.inputMode !== "freehand") {
 			const coordinates = options.interactionController.getCoordinates(canvasRef.value, e);
-			const end = canvasRef.value
+			let end = canvasRef.value
 				? options.interactionController.normalizeCoordinates(canvasRef.value, coordinates)
 				: productGestureStart;
+			if (end && productGestureStart && canvasRef.value && e.shiftKey && (options.currentTool.value === "rectangle" || options.currentTool.value === "ellipse")) {
+				end = options.interactionController.constrainSquare(productGestureStart, end, { width: canvasRef.value.width, height: canvasRef.value.height });
+			}
 			if (toolDefinition.inputMode === "eraser" && end) {
 				options.pointerHotState.currentPathPoints.push({ ...end, p: 1, lamport: 0 });
 				options.productPreview.value = {
@@ -996,7 +1130,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 						color: options.currentColor.value,
 						size: options.currentSize.value,
 						strokePattern: options.currentStrokePattern.value,
-						fontFamily: "Aevia Sans, Inter, sans-serif",
+						fontFamily: "Arial, sans-serif",
 						fontSize: 20,
 					});
 					descriptor.box = box;
@@ -1006,100 +1140,11 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 					}
 					if (toolDefinition.inputMode === "text") {
 						descriptor.text = "";
+						const canvasRect = canvasRef.value?.getBoundingClientRect();
+						if (canvasRect?.width && canvasRect.height) descriptor.textLayout = { version: 1, referenceWidth: canvasRect.width, aspectRatio: canvasRect.width / canvasRect.height };
 						const elementId = options.currentDrawingId.value;
-						let created = false;
-						let createdStyle = { ...descriptor.style };
-						let draftStyle = { ...descriptor.style };
-						let currentCharacters: Array<{ charId: string; grapheme: string }> = [];
-						let historyGroupId = elementId;
-						let lastInputAt = performance.now();
-						const historyGroups = new Set<string>();
-						const applyText = (value: string, reason: "input" | "ime") => {
-							const graphemes = splitGraphemes(value);
-							if (
-								graphemes.length === currentCharacters.length &&
-								graphemes.every((grapheme, index) => grapheme === currentCharacters[index]?.grapheme)
-							) return;
-							if (!created) {
-								const result = pushSceneCreate(elementId, {
-									...descriptor,
-									style: { ...draftStyle },
-								});
-								if (!result?.ok) return;
-								created = true;
-								createdStyle = { ...draftStyle };
-								options.productPreview.value = null;
-								historyGroups.add(elementId);
-							}
-							const now = performance.now();
-							if (now - lastInputAt > 750) historyGroupId = uuidv4();
-							let commonPrefix = 0;
-							while (
-								commonPrefix < currentCharacters.length &&
-								commonPrefix < graphemes.length &&
-								currentCharacters[commonPrefix]!.grapheme === graphemes[commonPrefix]
-							) commonPrefix += 1;
-							const patches: TextPatch[] = [];
-							let nextCharacters: Array<{ charId: string; grapheme: string }>;
-							if (commonPrefix === currentCharacters.length) {
-								nextCharacters = [...currentCharacters];
-								let afterId = nextCharacters[nextCharacters.length - 1]?.charId ?? null;
-								for (const grapheme of graphemes.slice(commonPrefix)) {
-									const charId = uuidv4();
-									patches.push({ type: "insert", charId, afterId, grapheme });
-									nextCharacters.push({ charId, grapheme });
-									afterId = charId;
-								}
-							} else if (commonPrefix === graphemes.length) {
-								for (const character of currentCharacters.slice(commonPrefix)) patches.push({ type: "delete", charId: character.charId });
-								nextCharacters = currentCharacters.slice(0, commonPrefix);
-							} else {
-								for (const character of currentCharacters) patches.push({ type: "delete", charId: character.charId });
-								nextCharacters = [];
-								let afterId: string | null = null;
-								for (const grapheme of graphemes) {
-									const charId = uuidv4();
-									patches.push({ type: "insert", charId, afterId, grapheme });
-									nextCharacters.push({ charId, grapheme });
-									afterId = charId;
-								}
-							}
-							const result = pushSceneTextPatch(elementId, patches, historyGroupId);
-							if (result?.ok) {
-								currentCharacters = nextCharacters;
-								historyGroups.add(historyGroupId);
-								lastInputAt = now;
-								if (reason === "ime") historyGroupId = uuidv4();
-							}
-						};
-						options.productPreview.value = null;
-						options.isDrawing.value = false;
-						if (e.target && (e.target as HTMLElement).hasPointerCapture(e.pointerId)) {
-							(e.target as HTMLElement).releasePointerCapture(e.pointerId);
-						}
-						const text = await options.requestTextInput({
-							kind: options.currentTool.value === "sticky" ? "sticky" : "text",
-							elementId,
-							box,
-							initialStyle: draftStyle,
-							onChange: applyText,
-							onStyleChange: (style) => {
-								draftStyle = { ...draftStyle, ...style };
-							},
-							onGroupBoundary: () => {
-								historyGroupId = uuidv4();
-								lastInputAt = performance.now();
-							},
-						});
-						if (text === null) {
-							for (const groupId of historyGroups) pushSceneHistoryToggle(elementId, groupId, false);
-						} else {
-							applyText(text, "input");
-							if (created && JSON.stringify(draftStyle) !== JSON.stringify(createdStyle)) {
-								pushSceneStyle(elementId, draftStyle, elementId);
-							}
-						}
-						if (!created) descriptor.text = "";
+						if (e.target && (e.target as HTMLElement).hasPointerCapture(e.pointerId)) (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+						await editText(elementId, descriptor);
 					}
 					if (toolDefinition.inputMode === "sticker") descriptor.sticker = options.currentSticker.value;
 					if (toolDefinition.inputMode !== "text") {
@@ -1254,6 +1299,7 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 	return {
 		setTool,
 		setColor,
+		editSelectedText,
 		startDrawing,
 		draw,
 		stopDrawing,

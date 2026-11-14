@@ -61,6 +61,7 @@ export interface SceneElementDescriptor {
 	shapeEnd?: { x: number; y: number };
 	box?: AabbBox;
 	text?: string;
+	textLayout?: { version: 1; referenceWidth: number; aspectRatio: number };
 	sticker?: string;
 }
 
@@ -88,6 +89,9 @@ export interface ElementTransformPayload {
 
 export interface ElementStylePayload {
 	style: Partial<SceneElementStyle>;
+	/** Optional layout bounds for text and sticky elements, in page coordinates. */
+	textBox?: AabbBox;
+	textBoxVersion?: 1;
 }
 
 export interface QuantizedInterval {

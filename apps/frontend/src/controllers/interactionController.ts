@@ -55,6 +55,7 @@ interface TransformPreviewInput {
 	startPos: { x: number; y: number };
 	handle: TransformHandle;
 	initialBox: aabbBox;
+	canvasSize?: { width: number; height: number };
 }
 
 interface DirtyRectInput {
@@ -75,6 +76,7 @@ interface ResolveCursorActionInput {
 		currentPageId: number
 	) => aabbBox | null;
 	preferredHit?: { elementId: string; bounds: aabbBox | null } | null;
+	selectedSceneBounds?: aabbBox | null;
 }
 
 interface ResolveCursorActionResult {
@@ -100,6 +102,7 @@ interface BeginCursorInteractionInput {
 		currentPageId: number
 	) => aabbBox | null;
 	preferredHit?: { elementId: string; bounds: aabbBox | null } | null;
+	selectedSceneBounds?: aabbBox | null;
 }
 
 interface BeginCursorInteractionResult {
@@ -175,6 +178,16 @@ interface CursorStopState {
 }
 
 export const createInteractionController = () => {
+	const constrainSquare = (start: { x: number; y: number }, end: { x: number; y: number }, size: { width: number; height: number }) => {
+		const dx = (end.x - start.x) * size.width;
+		const dy = (end.y - start.y) * size.height;
+		const directionX = Math.sign(dx) || 1;
+		const directionY = Math.sign(dy) || 1;
+		const availableX = (directionX > 0 ? 1 - start.x : start.x) * size.width;
+		const availableY = (directionY > 0 ? 1 - start.y : start.y) * size.height;
+		const side = Math.min(Math.max(Math.abs(dx), Math.abs(dy)), availableX, availableY);
+		return { x: start.x + directionX * side / size.width, y: start.y + directionY * side / size.height };
+	};
 	const getCoordinates = (
 		canvas: HTMLCanvasElement | null,
 		event: PointerEvent
@@ -331,6 +344,7 @@ export const createInteractionController = () => {
 		startPos,
 		handle,
 		initialBox,
+		canvasSize,
 	}: TransformPreviewInput): AffineMatrix => {
 		if (handle === "body") {
 			return [1, 0, 0, 1, currentPos.x - startPos.x, currentPos.y - startPos.y];
@@ -338,17 +352,21 @@ export const createInteractionController = () => {
 		if (handle === "rotate") {
 			const centerX = (initialBox.minX + initialBox.maxX) / 2;
 			const centerY = (initialBox.minY + initialBox.maxY) / 2;
-			const angle = Math.atan2(currentPos.y - centerY, currentPos.x - centerX) -
-				Math.atan2(startPos.y - centerY, startPos.x - centerX);
+			const width = canvasSize?.width || 1;
+			const height = canvasSize?.height || 1;
+			const angle = Math.atan2((currentPos.y - centerY) * height, (currentPos.x - centerX) * width) -
+				Math.atan2((startPos.y - centerY) * height, (startPos.x - centerX) * width);
 			const cosine = Math.cos(angle);
 			const sine = Math.sin(angle);
+			const b = sine * width / height;
+			const c = -sine * height / width;
 			return [
 				cosine,
-				sine,
-				-sine,
+				b,
+				c,
 				cosine,
-				centerX - cosine * centerX + sine * centerY,
-				centerY - sine * centerX - cosine * centerY,
+				centerX - cosine * centerX - c * centerY,
+				centerY - b * centerX - cosine * centerY,
 			];
 		}
 
@@ -523,6 +541,7 @@ export const createInteractionController = () => {
 		getCommandBoundingBox,
 		getGroupBoundingBox,
 		preferredHit,
+		selectedSceneBounds,
 	}: ResolveCursorActionInput): ResolveCursorActionResult => {
 		let handle: ResolveCursorActionResult["handle"] = null;
 		let action: ResolveCursorActionResult["action"] = "box-selecting";
@@ -531,7 +550,7 @@ export const createInteractionController = () => {
 		let groupBox =
 			preferredHit && selectedCommandIds.size === 1 && selectedCommandIds.has(preferredHit.elementId)
 				? preferredHit.bounds
-				: getGroupBoundingBox(selectedCommandIds, commands, currentPageId);
+				: selectedSceneBounds ?? getGroupBoundingBox(selectedCommandIds, commands, currentPageId);
 
 		if (groupBox && selectedCommandIds.size > 0) {
 			handle = getTransformHandleAt(normalizedPoint, groupBox, canvasSize);
@@ -553,7 +572,7 @@ export const createInteractionController = () => {
 			}
 		}
 
-		if (action !== "group" || handle === "body") {
+		if (action !== "group") {
 			let hitCmdId: string | null = preferredHit?.elementId ?? null;
 			const buffer = 10 / canvasSize.width;
 
@@ -623,6 +642,7 @@ export const createInteractionController = () => {
 		getCommandBoundingBox,
 		getGroupBoundingBox,
 		preferredHit,
+		selectedSceneBounds,
 	}: BeginCursorInteractionInput): BeginCursorInteractionResult => {
 		const { x, y } = getCoordinates(canvas, event);
 		const dpr = window.devicePixelRatio || 1;
@@ -642,6 +662,7 @@ export const createInteractionController = () => {
 			getCommandBoundingBox,
 			getGroupBoundingBox,
 			preferredHit,
+			selectedSceneBounds,
 		});
 
 		const initialCmdsState = new Map<string, Point[]>();
@@ -807,6 +828,7 @@ export const createInteractionController = () => {
 			startPos: dragStartPos,
 			handle: activeTransformHandle,
 			initialBox: initialGroupBox,
+			canvasSize: { width: canvas.width, height: canvas.height },
 		});
 
 		return {
@@ -841,6 +863,7 @@ export const createInteractionController = () => {
 	});
 
 	return {
+		constrainSquare,
 		getCoordinates,
 		syncPointerPosition,
 		notifyPointerLeave,

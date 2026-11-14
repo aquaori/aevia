@@ -152,7 +152,7 @@ const mergeSelections = (selections: LabSelection[]): LabSelection[] => {
 
 /** Resolve `--only=<selector>` entries. Supported: case:<id[,id]>, file:<path>, test:<substring>, go:<pkg>[#Test]. */
 export const resolveOnlySelectors = (selectors: string[], rootDir: string): LabResolveResult => {
-	const specs = collectSpecFiles(rootDir);
+	let specs: string[] | undefined;
 	const selections: LabSelection[] = [];
 	const unresolved: string[] = [];
 	for (const selector of selectors) {
@@ -179,7 +179,7 @@ export const resolveOnlySelectors = (selectors: string[], rootDir: string): LabR
 			continue;
 		}
 		if (kind === "file") {
-			const resolved = resolveFile(rootDir, value, specs);
+			const resolved = resolveFile(rootDir, value, specs ??= collectSpecFiles(rootDir));
 			if (resolved) selections.push(resolved);
 			else unresolved.push(selector);
 			continue;

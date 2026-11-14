@@ -13,7 +13,7 @@ import type {
 } from "@collaborative-whiteboard/shared";
 import { IDENTITY_MATRIX } from "@collaborative-whiteboard/shared";
 import { drawPrimitive } from "../scene/primitiveRenderer";
-import type { BitmapAtom, GlyphAtom, ShapeAtom } from "../scene/sceneTypes";
+import type { BitmapAtom, ShapeAtom } from "../scene/sceneTypes";
 import type { ProductPreviewState } from "../states/roomInteractionState";
 
 interface TransformAnimState {
@@ -109,7 +109,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	const drawProductPreview = (width: number, height: number) => {
 		const preview = options.productPreview.value;
 		const context = uiCtx.value;
-		if (!preview || !context) return;
+		if (!preview || !context || preview.tool === "text" || preview.tool === "sticky") return;
 		if (preview.tool === "eraser" || preview.tool === "object-eraser") {
 			const points = preview.points.length > 0 ? preview.points : [preview.start, preview.end];
 			context.save();
@@ -156,32 +156,6 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			return;
 		}
 
-		const textBox = box.width > 0.002 || box.height > 0.002
-			? box
-			: {
-				minX: preview.start.x,
-				minY: preview.start.y,
-				maxX: Math.min(1, preview.start.x + (preview.tool === "sticky" ? 0.22 : 0.32)),
-				maxY: Math.min(1, preview.start.y + (preview.tool === "sticky" ? 0.22 : 0.12)),
-				width: preview.tool === "sticky" ? 0.22 : 0.32,
-				height: preview.tool === "sticky" ? 0.22 : 0.12,
-			};
-		const background: ShapeAtom = {
-			ref: -1, atomId: "preview:text-box", elementId: "preview", elementRevision: 0, pageId: options.currentPageId.value,
-			order: { lamport: 0, opId: "preview", sourceIndex: 0, subIndex: 0 }, recipeId: "shape", primitive: "shape",
-			toolId: preview.tool, style: {
-				...style,
-				fillColor: preview.tool === "sticky" ? "#fef3c7" : undefined,
-			}, bounds: textBox, box: textBox, shapeKind: "rounded-rectangle",
-		};
-		drawPrimitive(context, background, IDENTITY_MATRIX, width, height);
-		const label: GlyphAtom = {
-			ref: -1, atomId: "preview:text-label", elementId: "preview", elementRevision: 0, pageId: options.currentPageId.value,
-			order: { lamport: 0, opId: "preview", sourceIndex: 1, subIndex: 0 }, recipeId: "glyph", primitive: "glyph",
-			toolId: preview.tool, style: { ...style, fontSize: 16 }, bounds: textBox,
-			grapheme: preview.tool === "sticky" ? "便签" : "文字", x: textBox.minX + 0.008, y: textBox.minY + 0.008, maxWidth: textBox.width - 0.016,
-		};
-		drawPrimitive(context, label, IDENTITY_MATRIX, width, height);
 	};
 
 	const operationTargetsSelectedElement = (command: Command, selected: ReadonlySet<string>) => {
@@ -197,6 +171,10 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	};
 
 	const ensureTransformPreviewScene = (selected: ReadonlySet<string>) => {
+		const selectionKey = `${options.currentPageId.value}|${Array.from(selected).sort().join(",")}|`;
+		// Keep the preview at the gesture's initial revision until the committed
+		// transform has been handed back to the main canvas.
+		if (transformPreviewSignature.startsWith(selectionKey)) return;
 		const historyGroups = new Set<string>();
 		const relevant = options.commands.value.filter((command) => {
 			if (command.type === "path") return selected.has(command.id);
@@ -208,7 +186,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			const operation = command.sceneOperation;
 			if (operation?.kind === "history.toggle" && historyGroups.has(operation.payload.targetHistoryGroupId)) relevant.push(command);
 		}
-		const signature = `${options.currentPageId.value}|${Array.from(selected).sort().join(",")}|${relevant.map((command) => `${command.id}:${command.isDeleted ? 1 : 0}`).join(",")}`;
+		const signature = `${selectionKey}${relevant.map((command) => `${command.id}:${command.isDeleted ? 1 : 0}`).join(",")}`;
 		if (signature === transformPreviewSignature) return;
 		transformPreviewSignature = signature;
 		transformPreviewEngine.rebuildFromCommands(relevant, options.currentPageId.value);
@@ -351,6 +329,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 			}
 		}
 
+		if (options.transformingCmdIds.value.size === 0) transformPreviewSignature = "";
 		if (options.transformingCmdIds.value.size > 0) {
 			shouldAnimate = true;
 			ensureTransformPreviewScene(options.transformingCmdIds.value);

@@ -875,7 +875,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		});
 		commandStore.updateLastSortedPoints([]);
 		options.setInitSceneOperations?.(
-			pageChangeStreamState.commands,
+			[...options.commands.value, ...pageChangeStreamState.commands],
 			pageChangeStreamState.pageId
 		);
 		options.finishInitRenderStream?.();
@@ -988,7 +988,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			commands: pageChangeStreamState.commands,
 		});
 		options.loadedPageIds.value = pageChangeStreamState.loadedPageIds;
-		options.setInitSceneOperations?.(pageChangeStreamState.commands, pageChangeStreamState.pageId);
+		options.setInitSceneOperations?.([...options.commands.value, ...pageChangeStreamState.commands], pageChangeStreamState.pageId);
 		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
 		useLamportStore().syncLamport(pageChangeStreamState.lastLamport);
 		pageChangeStreamState.commandsReady = true;

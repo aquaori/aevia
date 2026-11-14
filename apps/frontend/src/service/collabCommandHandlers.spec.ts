@@ -380,6 +380,20 @@ describe("collab command handlers", () => {
 		expect(fixture.options.clearActivePageChangeRequest).toHaveBeenCalledWith(7);
 	});
 
+	it("replays cached scene history when returning to a loaded page", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.getActivePageChangeTargetId.mockReturnValue(1);
+		const cached = createIncomingCommand({ id: "cached-scene-operation", type: "scene-op", pageId: 1 });
+		fixture.commands.value = [cached];
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 1, mode: "flat-only", loadedPageIds: [0, 1], loadPageIds: [], unloadPageIds: [], snapshotVersion: 2,
+			chunkSummary: { totalRenderChunks: 0, totalCommandChunks: 0 },
+		}));
+		fixture.handlers.handlePageChangeCommandsDone(message("page-change-commands-done", { requestId: 7, snapshotVersion: 2, totalChunks: 0 }));
+		expect(fixture.options.setInitSceneOperations).toHaveBeenLastCalledWith([cached], 1);
+	});
+
 	it("ignores page-change frames for a stale or missing request id", () => {
 		const fixture = createFixture();
 		fixture.getActivePageChangeRequestId.mockReturnValue(7);

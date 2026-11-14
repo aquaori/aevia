@@ -73,7 +73,8 @@
       "id": "frontend:apps/frontend/src/controllers/interactionController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/interactionController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/interactionController.unit.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomCommandController.ts",
@@ -188,7 +189,8 @@
       "id": "frontend:apps/frontend/src/scene/primitiveRenderer.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/primitiveRenderer.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/renderOrderIndex.ts",

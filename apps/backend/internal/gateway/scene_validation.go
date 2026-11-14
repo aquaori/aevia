@@ -120,6 +120,12 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 		if (elementKind == "text" || elementKind == "sticky") && len(stringValue(descriptor["text"])) > 10000 {
 			return "INVALID_SCENE_OPERATION", "Text content is too long.", false
 		}
+		if layout := descriptor["textLayout"]; layout != nil {
+			value, ok := layout.(map[string]any)
+			if !ok || (elementKind != "text" && elementKind != "sticky") || intValue(value["version"]) != 1 || !validFiniteRange(value["referenceWidth"], 1, 100000) || !validFiniteRange(value["aspectRatio"], 0.01, 100) {
+				return "INVALID_SCENE_OPERATION", "Text layout is invalid.", false
+			}
+		}
 		if box := descriptor["box"]; box != nil && !validBox(box) {
 			return "INVALID_SCENE_OPERATION", "Element bounds are invalid.", false
 		}
@@ -155,7 +161,8 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 		}
 	case "element.style":
 		style, ok := payload["style"].(map[string]any)
-		if !ok || !validSceneStylePatch(style) {
+		textBox := payload["textBox"]
+		if !ok || (len(style) == 0 && textBox == nil) || (len(style) > 0 && !validSceneStylePatch(style)) || (textBox != nil && (!validBox(textBox) || intValue(payload["textBoxVersion"]) != 1)) || (textBox == nil && payload["textBoxVersion"] != nil) {
 			return "INVALID_SCENE_OPERATION", "Element style patch is invalid.", false
 		}
 	case "element.erase":

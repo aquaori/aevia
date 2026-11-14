@@ -149,6 +149,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	let lastRoomSeq = 0;
 	let snapshotPending = false;
 	let sceneAppendBinary = false;
+	let sceneTextBoxV1 = false;
 	const appliedSequences = new Set<number>();
 	const pendingSceneOperations = new Map<string, unknown>();
 	let initLocalCommands: Command[] = [];
@@ -570,6 +571,11 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		}
 
 		let outgoing = data as OutgoingPayload;
+		if (type === "push-cmd" && outgoing?.cmd?.sceneOperation?.kind === "element.style" &&
+			outgoing.cmd.sceneOperation.payload.textBox && !sceneTextBoxV1) {
+			toast.error("当前服务器不支持调整已创建的文本框，请更新服务器后重试。");
+			return false;
+		}
 		if (outgoing && typeof outgoing === "object") {
 			outgoing = { ...outgoing };
 		}
@@ -691,6 +697,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 						const msg = JSON.parse(event.data);
                         if (msg.type === "init-meta" || msg.type === "delta-replay-meta") {
                             sceneAppendBinary = import.meta.env.VITE_SCENE_APPEND_BINARY !== "0" && Array.isArray(msg.data?.capabilities) && msg.data.capabilities.includes("scene-append-v2-binary");
+							sceneTextBoxV1 = Array.isArray(msg.data?.capabilities) && msg.data.capabilities.includes("scene-text-box-v1");
                         }
 
 						if (labEnabled()) {
@@ -800,6 +807,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			socket.value.onclose = () => {
 				pendingRenderBinaryChunk = null;
                 sceneAppendBinary = false;
+				sceneTextBoxV1 = false;
 				resetCollabPressurePolicy();
 				clearSessionRenewTimer();
 				socket.value = null;
