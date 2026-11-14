@@ -14,17 +14,17 @@ type mutationOptions struct {
 	UserID  string
 }
 
-func (a *Actor) ensureWritable(client ClientInfo, opType string) bool {
+func (a *Actor) ensureWritable(client ClientInfo, opType, cmdID string) bool {
 	if a.state.ReadOnly || a.store.IsDegraded() {
 		a.state.ReadOnly = true
-		a.reject(client, opType, "DEGRADED_READ_ONLY", "Database is unavailable; room is read-only.", "")
+		a.reject(client, opType, "DEGRADED_READ_ONLY", "Database is unavailable; room is read-only.", cmdID)
 		return false
 	}
 	return true
 }
 
 func (a *Actor) persistCommand(client ClientInfo, opType string, cmd domain.Command, options mutationOptions) bool {
-	if !a.ensureWritable(client, opType) {
+	if !a.ensureWritable(client, opType, cmd.ID()) {
 		return false
 	}
 	roomSeq := a.state.RoomSeq + 1
@@ -41,7 +41,7 @@ func (a *Actor) persistCommand(client ClientInfo, opType string, cmd domain.Comm
 }
 
 func (a *Actor) persistDelete(client ClientInfo, opType, cmdID string, options mutationOptions) bool {
-	if !a.ensureWritable(client, opType) {
+	if !a.ensureWritable(client, opType, cmdID) {
 		return false
 	}
 	if _, ok := a.state.Commands[cmdID]; !ok {
@@ -61,7 +61,7 @@ func (a *Actor) persistDelete(client ClientInfo, opType, cmdID string, options m
 }
 
 func (a *Actor) persistClear(client ClientInfo, pageID *int, options mutationOptions) (uint64, bool) {
-	if !a.ensureWritable(client, "push-cmd") {
+	if !a.ensureWritable(client, "push-cmd", "") {
 		return 0, false
 	}
 	roomSeq := a.state.RoomSeq + 1
@@ -77,7 +77,7 @@ func (a *Actor) persistClear(client ClientInfo, pageID *int, options mutationOpt
 }
 
 func (a *Actor) persistPageAdd(client ClientInfo, options mutationOptions) (uint64, bool) {
-	if !a.ensureWritable(client, "cmd-page-add") {
+	if !a.ensureWritable(client, "cmd-page-add", "") {
 		return 0, false
 	}
 	roomSeq := a.state.RoomSeq + 1
