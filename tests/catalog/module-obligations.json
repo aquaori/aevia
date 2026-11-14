@@ -45,6 +45,12 @@
       "state": "uncovered"
     },
     {
+      "id": "frontend:apps/frontend/src/components/RoomSettings.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomSettings.vue",
+      "state": "uncovered"
+    },
+    {
       "id": "frontend:apps/frontend/src/components/RoomShortcutsDialog.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomShortcutsDialog.vue",
@@ -637,6 +643,13 @@
       "id": "go:apps/backend/internal/gateway/room_handlers.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/room_handlers.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/room_management.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/room_management.go",
       "state": "covered",
       "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
