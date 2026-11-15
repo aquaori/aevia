@@ -144,6 +144,17 @@ describe("SceneEngine", () => {
 		expect(engine.getElementBounds("element-a")!.minX).toBeCloseTo(moved!.minX);
 	});
 
+	it("replays a large history group in steps and reaches the same final state", () => {
+		const engine = new SceneEngine();
+		for (let i = 0; i < 40; i += 1) {
+			engine.applyOperation({ ...createOperation, opId: `create-${i}`, elementId: `element-${i}`, historyGroupId: "group", lamport: i + 1 });
+		}
+		const steps = engine.applyOperationSteps({ ...base("undo-group", 100), kind: "history.toggle", payload: { targetHistoryGroupId: "group", enabled: false } });
+		expect(steps.next().done).toBe(false);
+		while (!steps.next().done) { /* finish transaction */ }
+		expect(engine.getStats().visibleAtoms).toBe(0);
+	});
+
 	it("applies the latest history toggle even when operations arrive out of order", () => {
 		const engine = new SceneEngine();
 		engine.applyOperation(createOperation);

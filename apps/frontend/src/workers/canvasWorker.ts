@@ -82,6 +82,7 @@ let exportedRenderFrame: RenderIRFrame | null = null;
 let exportedRenderEpoch = -1;
 let presentedRevision: number | null = null;
 let processedDispatchSeq = 0;
+let projectionGeneration = 0;
 let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
 const checkSceneDependencies = () => {
 	if (!sceneEngine.hasPendingDependencies() || dependencyTimer) return;
@@ -498,29 +499,24 @@ const applyPendingInitSceneOperations = () => {
 	liveSceneCommandsDuringInit.clear();
 	let needsFullRender = false;
 	let index = 0;
+	let operationSteps: Generator<void, string[]> | null = null;
 	const runSlice = () => {
 		const deadline = performance.now() + 6;
 		while (index < commands.length) {
-			const command = commands[index++]!;
-			const operation = command.sceneOperation!;
-			if (operation.kind === "element.create") {
-				const hydratedThrough = operation.payload.points?.length ?? 0;
-				if (
-					operation.payload.descriptor.elementKind !== "path" ||
-					!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)
-				) {
-					needsFullRender = true;
-				}
-			} else if (operation.kind === "element.append") {
-				const hydratedThrough = operation.payload.sourceStart + operation.payload.points.length;
-				if (!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) {
-					needsFullRender = true;
-				}
-			} else {
-				needsFullRender = true;
+			if (!operationSteps) {
+				const command = commands[index]!;
+				const operation = command.sceneOperation!;
+				if (operation.kind === "element.create") {
+					const hydratedThrough = operation.payload.points?.length ?? 0;
+					if (operation.payload.descriptor.elementKind !== "path" || !sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) needsFullRender = true;
+				} else if (operation.kind === "element.append") {
+					const hydratedThrough = operation.payload.sourceStart + operation.payload.points.length;
+					if (!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) needsFullRender = true;
+				} else needsFullRender = true;
+				sceneCommands.set(command.id, cloneCommandMetadata(command));
+				operationSteps = sceneEngine.applyOperationSteps(operation);
 			}
-			sceneCommands.set(command.id, cloneCommandMetadata(command));
-			sceneEngine.applyOperation(operation);
+			if (operationSteps.next().done) { operationSteps = null; index += 1; }
 			if (performance.now() >= deadline) break;
 		}
 		if (index < commands.length) {
@@ -580,8 +576,8 @@ const flushSceneRender = () => {
 	pendingSceneBaseRevision = null;
 };
 
-const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
-	if (operation.kind === "element.transform" || operation.kind === "page.clear" || operation.kind === "history.toggle") flushSceneRender();
+function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<void, boolean> {
+	if (operation.kind === "element.transform" || operation.kind === "page.clear" || sceneEngine.operationMayRebuild(operation)) flushSceneRender();
 	const previousRevision = sceneEngine.getSceneRevision();
 	const historyImpact = operation.kind === "history.toggle"
 		? sceneEngine.getHistoryImpact(operation.payload.targetHistoryGroupId)
@@ -590,7 +586,7 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 	const appendOnly = sceneEngine.canAppendWithoutRebuild(operation);
 	const oldBounds = appendOnly ? null : elementBounds(ids);
 	const firstNewRef = sceneEngine.atomCount;
-	sceneEngine.applyOperation(operation);
+	yield* sceneEngine.applyOperationSteps(operation);
 	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
 	checkSceneDependencies();
 	if (!mainCtx || operation.pageId !== currentPageId) return false;
@@ -625,7 +621,7 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 		if (pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
 	}
 	return true;
-};
+}
 
 const isIntersect = (a: Rect, b: Rect): boolean =>
 	!(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
@@ -700,10 +696,26 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "flat-points") {
+		const generation = ++projectionGeneration;
 		const projection = new SceneEngine();
-		projection.rebuildFromCommands(data.commands as Command[], data.pageId);
-		const points = projection.exportFlatPoints(new Set(data.transformingCmdIds ?? []));
-		self.postMessage({ type: "flat-points-result", points, requestId: data.requestId });
+		const steps = projection.rebuildFromCommandsSteps(data.commands as Command[], data.pageId);
+		let exportSteps: Generator<void, FlatPoint[]> | null = null;
+		const runProjectionSlice = () => {
+			if (generation !== projectionGeneration) return;
+			const deadline = performance.now() + 6;
+			while (performance.now() < deadline) {
+				if (!exportSteps) {
+					if (!steps.next().done) continue;
+					exportSteps = projection.exportFlatPointsSteps(new Set(data.transformingCmdIds ?? []));
+				}
+				const result = exportSteps.next();
+				if (!result.done) continue;
+				self.postMessage({ type: "flat-points-result", points: result.value, requestId: data.requestId });
+				return;
+			}
+			setTimeout(runProjectionSlice, 0);
+		};
+		runProjectionSlice();
 		return;
 	}
 
@@ -866,21 +878,36 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "update-command-state") {
-		if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 		const cmd = data.cmd as Command;
 		if (cmd.type === "scene-op" && cmd.sceneOperation) {
 			if (!initRenderFinished) {
 				liveSceneCommandsDuringInit.set(cmd.id, cmd);
+				if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 				return;
 			}
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
-			const rendered = renderSceneOperation(cmd.sceneOperation);
-			if (cmd.sceneOperation.kind === "element.transform" && rendered) {
-				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId, epoch: data.epoch });
-			} else if (rendered && labEnabled()) {
-				flushSceneRender();
-				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
-			}
+			const operation = cmd.sceneOperation;
+			const steps = renderSceneOperation(operation);
+			const runOperationSlice = () => {
+				const deadline = performance.now() + 6;
+				while (performance.now() < deadline) {
+					const result = steps.next();
+					if (!result.done) continue;
+					if (operation.kind === "element.transform" && result.value) {
+						self.postMessage({ type: "scene-operation-rendered", opId: operation.opId, epoch: data.epoch });
+					} else if (result.value && labEnabled()) {
+						flushSceneRender();
+						self.postMessage({ type: "lab:operation-rendered", opId: operation.opId });
+					}
+					if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
+					sceneTaskInProgress = false;
+					drainDeferredMessages();
+					return;
+				}
+				sceneTaskInProgress = true;
+				setTimeout(runOperationSlice, 0);
+			};
+			runOperationSlice();
 			return;
 		}
 		const existing = sceneCommands.get(cmd.id);
@@ -897,6 +924,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 		}
 		sceneEngine.setLegacyCommandState(cmd);
+		if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 		return;
 	}
 
@@ -1004,6 +1032,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "dispose") {
+		projectionGeneration += 1;
 		exportedRenderFrame = null;
 		exportedRenderEpoch = -1;
 		activeStrokeIds.clear();
@@ -1050,6 +1079,14 @@ self.onmessage = (event: MessageEvent) => {
 		self.postMessage({ type: "merge-dirty-rects-result", rects: mergeRects(data.rects as Rect[]), epoch: data.epoch });
 		return;
 	}
-	if (sceneTaskInProgress || drainingMessages) deferredMessages.push(event);
-	else handleWorkerMessage(event);
+	if (sceneTaskInProgress || drainingMessages) {
+		const previous = deferredMessages.length > deferredMessageHead ? deferredMessages[deferredMessages.length - 1] : undefined;
+		const currentData = event.data.data;
+		const previousData = previous?.data.data;
+		if (event.data.type === "render-dirty" && previous?.data.type === "render-dirty" &&
+			currentData.pageId === previousData.pageId &&
+			JSON.stringify(currentData.transformingCmdIds) === JSON.stringify(previousData.transformingCmdIds)) {
+			previousData.rect = mergeBounds(previousData.rect as Rect, currentData.rect as Rect);
+		} else deferredMessages.push(event);
+	} else handleWorkerMessage(event);
 };

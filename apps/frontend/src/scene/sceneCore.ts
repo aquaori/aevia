@@ -148,6 +148,46 @@ const pointOrder = (elementId: string, point: Point, sourceIndex: number): Rende
 	subIndex: 0,
 });
 
+// Sort bounded runs and merge them incrementally so a large background scene
+// cannot monopolize the worker for the entire sort.
+function* sortInSteps<T>(values: T[], compare: (left: T, right: T) => number): Generator<void> {
+	let sorted = true;
+	for (let i = 1; i < values.length; i += 1) {
+		if (compare(values[i - 1]!, values[i]!) > 0) { sorted = false; break; }
+		if (i % 2048 === 0) yield;
+	}
+	if (sorted) return;
+	const runSize = 2048;
+	for (let start = 0; start < values.length; start += runSize) {
+		const run = values.slice(start, start + runSize).sort(compare);
+		for (let i = 0; i < run.length; i += 1) values[start + i] = run[i]!;
+		yield;
+	}
+	let source = values;
+	let destination = new Array<T>(values.length);
+	let work = 0;
+	for (let width = runSize; width < values.length; width *= 2) {
+		for (let start = 0; start < values.length; start += width * 2) {
+			const middle = Math.min(start + width, values.length);
+			const end = Math.min(start + width * 2, values.length);
+			let left = start;
+			let right = middle;
+			for (let index = start; index < end; index += 1) {
+				if (right >= end || (left < middle && compare(source[left]!, source[right]!) <= 0)) destination[index] = source[left++]!;
+				else destination[index] = source[right++]!;
+				if (++work % 2048 === 0) yield;
+			}
+		}
+		[source, destination] = [destination, source];
+	}
+	if (source !== values) {
+		for (let i = 0; i < values.length; i += 1) {
+			values[i] = source[i]!;
+			if (++work % 2048 === 0) yield;
+		}
+	}
+}
+
 const operationTargets = (operation: SceneOperationEnvelopeV2) => {
 	switch (operation.kind) {
 		case "element.transform":
@@ -200,6 +240,7 @@ export class SceneCore implements SceneCorePort {
 	protected visibleAtomCount = 0;
 	protected dirtyFullMode = false;
 	private bulkLoading = false;
+	private deferCompaction = false;
 
 	reset(pageId = this.pageId) {
 		this.renderFullRequired = true;
@@ -232,6 +273,7 @@ export class SceneCore implements SceneCorePort {
 		this.visibleAtomCount = 0;
 		this.dirtyFullMode = false;
 		this.bulkLoading = false;
+		this.deferCompaction = false;
 	}
 
 	beginBulkLoad() {
@@ -332,16 +374,24 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	rebuildFromCommands(commands: Command[], pageId: number) {
+		const steps = this.rebuildFromCommandsSteps(commands, pageId);
+		while (!steps.next().done) { /* synchronous caller */ }
+	}
+
+	*rebuildFromCommandsSteps(commands: Command[], pageId: number): Generator<void> {
 		this.reset(pageId);
+		let work = 0;
 		const points: FlatPoint[] = [];
 		const sceneOperations: SceneOperationEnvelopeV2[] = [];
 		for (const command of commands) {
+			if (++work % 128 === 0) yield;
 			if (command.type === "scene-op" && command.sceneOperation) {
 				sceneOperations.push(command.sceneOperation);
 				continue;
 			}
 			if (command.type !== "path" || command.pageId !== pageId || !command.points) continue;
-			command.points.forEach((point, pointIndex) => {
+			for (let pointIndex = 0; pointIndex < command.points.length; pointIndex += 1) {
+				const point = command.points[pointIndex]!;
 				points.push({
 					...point,
 					cmdId: command.id,
@@ -354,17 +404,32 @@ export class SceneCore implements SceneCorePort {
 					pointIndex,
 					strokePattern: command.strokePattern,
 				});
-			});
+				if (++work % 128 === 0) yield;
+			}
 		}
-		points.sort((left, right) => compareRenderOrder(pointOrder(left.cmdId, left, left.pointIndex ?? 0), pointOrder(right.cmdId, right, right.pointIndex ?? 0)));
-		for (const point of points) this.ingestFlatPoint(point);
+		const comparePoints = (left: FlatPoint, right: FlatPoint) => compareRenderOrder(pointOrder(left.cmdId, left, left.pointIndex ?? 0), pointOrder(right.cmdId, right, right.pointIndex ?? 0));
+		yield* sortInSteps(points, comparePoints);
+		for (const point of points) {
+			this.ingestFlatPoint(point);
+			if (++work % 128 === 0) yield;
+		}
 		this.finishAllOpenStrokes();
-		for (const operation of sceneOperations.sort((left, right) => compareRenderOrder(sceneOperationOrderKey(left), sceneOperationOrderKey(right)))) {
-			this.applyOperation(operation);
+		const compareOperations = (left: SceneOperationEnvelopeV2, right: SceneOperationEnvelopeV2) => compareRenderOrder(sceneOperationOrderKey(left), sceneOperationOrderKey(right));
+		yield* sortInSteps(sceneOperations, compareOperations);
+		for (const operation of sceneOperations) {
+			yield* this.applyOperationSteps(operation);
+			if (++work % 128 === 0) yield;
 		}
 	}
 
 	applyOperation(operation: SceneOperationEnvelopeV2) {
+		const steps = this.applyOperationSteps(operation);
+		let result = steps.next();
+		while (!result.done) result = steps.next();
+		return result.value;
+	}
+
+	*applyOperationSteps(operation: SceneOperationEnvelopeV2): Generator<void, string[]> {
 		if (operation.kind === "element.create" && operation.payload.descriptor.asset && !resolveStickerAsset(operation.payload.descriptor.asset.key, operation.payload.descriptor.asset.version)) {
 			this.needsResync = true;
 			return [] as string[];
@@ -386,15 +451,15 @@ export class SceneCore implements SceneCorePort {
 			const latest = this.latestHistoryToggle.get(groupId);
 			if (!latest || compareRenderOrder(sceneOperationOrderKey(latest), sceneOperationOrderKey(operation)) < 0) {
 				this.latestHistoryToggle.set(groupId, operation);
-				this.applyHistoryToggle(operation);
+				yield* this.applyHistoryToggleSteps(operation);
 			}
 			return operationTargets(operation);
 		}
 		if (!tail) {
 			if (operation.kind === "page.clear") {
-				this.rebuildV2Elements();
+				yield* this.rebuildV2ElementsSteps();
 			} else {
-				this.rebuildElements(new Set(operationTargets(operation)));
+				yield* this.rebuildElementsSteps(new Set(operationTargets(operation)));
 			}
 			return operationTargets(operation);
 		}
@@ -436,6 +501,11 @@ export class SceneCore implements SceneCorePort {
 		return this.elements.get(elementId)?.points.map((point) => ({ ...point })) ?? [];
 	}
 
+	operationMayRebuild(operation: SceneOperationEnvelopeV2) {
+		const last = this.operations[this.operations.length - 1];
+		return operation.kind === "history.toggle" || (last !== undefined && compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(last)) < 0);
+	}
+
 	canAppendWithoutRebuild(operation: SceneOperationEnvelopeV2) {
 		if (operation.kind !== "element.append" || operation.payload.isComplete || this.operationIds.has(operation.opId)) return false;
 		const element = this.elements.get(operation.elementId);
@@ -454,10 +524,19 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	exportFlatPoints(excludedElementIds: ReadonlySet<string> = new Set()) {
+		const steps = this.exportFlatPointsSteps(excludedElementIds);
+		let result = steps.next();
+		while (!result.done) result = steps.next();
+		return result.value;
+	}
+
+	*exportFlatPointsSteps(excludedElementIds: ReadonlySet<string> = new Set()): Generator<void, FlatPoint[]> {
 		const points: FlatPoint[] = [];
+		let work = 0;
 		for (const element of this.elements.values()) {
 			if (element.pageId !== this.pageId || excludedElementIds.has(element.id) || element.descriptor.elementKind !== "path") continue;
-			element.points.forEach((point, pointIndex) => {
+			for (let pointIndex = 0; pointIndex < element.points.length; pointIndex += 1) {
+				const point = element.points[pointIndex]!;
 				const transformed = transformPoint(element.matrix, point.x, point.y);
 				points.push({
 					...point,
@@ -473,9 +552,10 @@ export class SceneCore implements SceneCorePort {
 					pointIndex,
 					strokePattern: element.descriptor.style.strokePattern,
 				});
-			});
+				if (++work % 128 === 0) yield;
+			}
 		}
-		points.sort((left, right) => compareRenderOrder(pointOrder(left.cmdId, left, left.pointIndex ?? 0), pointOrder(right.cmdId, right, right.pointIndex ?? 0)));
+		yield* sortInSteps(points, (left, right) => compareRenderOrder(pointOrder(left.cmdId, left, left.pointIndex ?? 0), pointOrder(right.cmdId, right, right.pointIndex ?? 0)));
 		return points;
 	}
 
@@ -839,19 +919,22 @@ export class SceneCore implements SceneCorePort {
 		return low;
 	}
 
-	private applyHistoryToggle(operation: Extract<SceneOperationEnvelopeV2, { kind: "history.toggle" }>) {
+	private *applyHistoryToggleSteps(operation: Extract<SceneOperationEnvelopeV2, { kind: "history.toggle" }>): Generator<void> {
 		this.historyEnabled.set(operation.payload.targetHistoryGroupId, operation.payload.enabled);
 		const groupOperations = this.operationsByHistoryGroup.get(operation.payload.targetHistoryGroupId) ?? [];
 		if (groupOperations.some((candidate) => candidate.kind === "page.clear")) {
-			this.rebuildV2Elements();
+			yield* this.rebuildV2ElementsSteps();
 			return;
 		}
 		const affected = new Set<string>();
 		for (const candidate of groupOperations) for (const elementId of operationTargets(candidate)) affected.add(elementId);
-		this.rebuildElements(affected);
+		yield* this.rebuildElementsSteps(affected);
 	}
 
-	private rebuildElements(elementIds: ReadonlySet<string>) {
+	private *rebuildElementsSteps(elementIds: ReadonlySet<string>): Generator<void> {
+		let work = 0;
+		const wasDeferred = this.deferCompaction;
+		this.deferCompaction = true;
 		for (const elementId of elementIds) {
 			this.pendingAppends.delete(elementId);
 			this.pendingTextDeletes.delete(elementId);
@@ -876,9 +959,12 @@ export class SceneCore implements SceneCorePort {
 			for (const candidate of this.operationsByElement.get(elementId) ?? []) {
 				if (candidate.kind === "history.toggle" || !this.isOperationEnabled(candidate)) continue;
 				this.applyOperationToElement(candidate, elementId);
+				if (++work % 32 === 0) yield;
 			}
+			if (++work % 32 === 0) yield;
 		}
-		this.maybeCompactIndexes();
+		this.deferCompaction = wasDeferred;
+		if (this.shouldCompactIndexes()) yield* this.compactIndexesSteps();
 	}
 
 	private applyOperationToElement(operation: SceneOperationEnvelopeV2, elementId: string) {
@@ -1190,10 +1276,14 @@ export class SceneCore implements SceneCorePort {
 		return ordered;
 	}
 
-	private maybeCompactIndexes() {
-		if (this.bulkLoading || this.staleAtomCount <= 4096) return;
+	private shouldCompactIndexes() {
+		if (this.bulkLoading || this.deferCompaction || this.staleAtomCount <= 4096) return false;
 		const currentAtoms = this.atoms.length - this.staleAtomCount;
-		if (this.atoms.length > currentAtoms * 1.25) this.compactIndexes();
+		return this.atoms.length > currentAtoms * 1.25;
+	}
+
+	private maybeCompactIndexes() {
+		if (this.shouldCompactIndexes()) this.compactIndexes();
 	}
 
 	private applyElementMatrix(elementId: string, delta: AffineMatrix) {
@@ -1251,12 +1341,16 @@ export class SceneCore implements SceneCorePort {
 		this.pageClearBefore.set(pageId, before);
 	}
 
-	private rebuildV2Elements() {
+	private *rebuildV2ElementsSteps(): Generator<void> {
+		let work = 0;
+		const wasBulkLoading = this.bulkLoading;
+		this.bulkLoading = true;
 		this.pendingAppends.clear();
 		this.pendingTextDeletes.clear();
 		this.pendingTextOperations.clear();
 		this.hydratedThrough.clear();
 		for (const [elementId] of this.elements) {
+			if (++work % 128 === 0) yield;
 			if (!this.legacyElementIds.has(elementId)) {
 				this.staleAtomCount += this.elements.get(elementId)!.atomRefs.length;
 				this.elements.delete(elementId);
@@ -1273,11 +1367,14 @@ export class SceneCore implements SceneCorePort {
 		this.pageClearBefore.clear();
 		for (const [groupId, operation] of this.latestHistoryToggle) {
 			this.historyEnabled.set(groupId, operation.payload.enabled);
+			if (++work % 128 === 0) yield;
 		}
 		for (const operation of this.operations) {
 			if (operation.kind !== "history.toggle") this.applyOperationIncremental(operation);
+			if (++work % 128 === 0) yield;
 		}
-		this.compactIndexes();
+		this.bulkLoading = wasBulkLoading;
+		yield* this.compactIndexesSteps();
 	}
 
 	private rebuildLegacyElement(command: Command) {
@@ -1299,6 +1396,12 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private compactIndexes() {
+		const steps = this.compactIndexesSteps();
+		while (!steps.next().done) { /* synchronous caller */ }
+	}
+
+	private *compactIndexesSteps(): Generator<void> {
+		let work = 0;
 		const activeAtoms: RenderAtom[] = [];
 		for (const element of this.elements.values()) {
 			const nextRefs: number[] = [];
@@ -1308,11 +1411,15 @@ export class SceneCore implements SceneCorePort {
 				const ref = activeAtoms.length;
 				activeAtoms.push({ ...atom, ref });
 				nextRefs.push(ref);
+				if (++work % 128 === 0) yield;
 			}
 			element.atomRefs = nextRefs;
 		}
 		this.atoms.length = 0;
-		for (const atom of activeAtoms) this.atoms.push(atom);
+		for (const atom of activeAtoms) {
+			this.atoms.push(atom);
+			if (++work % 128 === 0) yield;
+		}
 		this.staleAtomCount = 0;
 		this.order.clear();
 		this.spatial.clear();
@@ -1322,6 +1429,7 @@ export class SceneCore implements SceneCorePort {
 			this.order.insert(atom.ref);
 			this.spatial.addAtom(atom.elementId, atom.ref, transformBounds(element.matrix, atom.bounds));
 			if (this.isElementBaseVisible(element)) this.visibleAtomCount += 1;
+			if (++work % 128 === 0) yield;
 		}
 	}
 
