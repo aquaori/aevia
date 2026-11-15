@@ -117,6 +117,7 @@ interface RoomCollabTransportOptions {
 	notifyRemoteTextPatch?: (elementId: string) => void;
 	persistSessionAuth?: (payload: { sessionToken: string; expiresAt: number | null }) => void;
 	onSessionExpired?: () => void;
+	recoverRenderer?: () => Promise<boolean>;
 }
 
 export const createRoomCollabTransport = (options: RoomCollabTransportOptions) => {
@@ -151,6 +152,8 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	let snapshotPending = false;
 	let snapshotGeneration = 0;
 	let renderWorkerFailed = false;
+	let rendererRecoveryGeneration = 0;
+	let rendererRecoveryInFlight = false;
 	let sceneAppendBinary = false;
 	let sceneTextBoxV1 = false;
 	const appliedSequences = new Set<number>();
@@ -554,17 +557,45 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	};
 
 	const handleRenderWorkerFailure = () => {
+		if (renderWorkerFailed) return;
 		renderWorkerFailed = true;
 		lastRoomSeq = 0;
 		appliedSequences.clear();
 		snapshotGeneration += 1;
 		isIntentionalClose.value = true;
-		markReconnectFailed("画布渲染进程异常，请刷新页面重新加载；尚未确认的操作可能未保存。");
-		socket.value?.close();
+		markReconnectFailed("画布渲染进程异常，正在尝试恢复连接。");
+		if (socket.value) {
+			socket.value.onclose = null;
+			socket.value.close();
+			socket.value = null;
+		}
+		void recoverRenderer();
+	};
+
+	const recoverRenderer = async () => {
+		if (rendererRecoveryInFlight) return;
+		if (!options.recoverRenderer) {
+			updateReconnectFailureMessage("画布渲染进程异常，请刷新页面重新加载；尚未确认的操作可能未保存。");
+			return;
+		}
+		rendererRecoveryInFlight = true;
+		const generation = ++rendererRecoveryGeneration;
+		let recovered: boolean;
+		try { recovered = await options.recoverRenderer(); } catch { recovered = false; }
+		rendererRecoveryInFlight = false;
+		if (generation !== rendererRecoveryGeneration) return;
+		if (!recovered) {
+			updateReconnectFailureMessage("画布恢复失败，请重试或刷新页面；尚未确认的操作可能未保存。");
+			return;
+		}
+		renderWorkerFailed = false;
+		isIntentionalClose.value = false;
+		clearReconnectState();
+		doReconnect();
 	};
 
 	const retryReconnect = () => {
-		if (renderWorkerFailed) { window.location.reload(); return; }
+		if (renderWorkerFailed) { void recoverRenderer(); return; }
 		isIntentionalClose.value = false;
 		clearReconnectState();
 		if (typeof navigator !== "undefined") {
@@ -667,6 +698,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	};
 
 	const disconnect = () => {
+		rendererRecoveryGeneration += 1;
 		isIntentionalClose.value = true;
 		clearReconnectTimer();
 		clearSessionRenewTimer();

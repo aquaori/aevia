@@ -31,6 +31,7 @@ export const createRoomLifecycleController = (options: RoomLifecycleControllerOp
 	const session = useRoomSession();
 	let pointerLeaveHandler: (() => void) | null = null;
 	let stopSelectionWatch: (() => void) | null = null;
+	let stopCanvasWatch: (() => void) | null = null;
 
 	const mount = () => {
 		if (canvasRef.value && uiCanvasRef.value) {
@@ -51,7 +52,12 @@ export const createRoomLifecycleController = (options: RoomLifecycleControllerOp
 				userName: options.username.value,
 			});
 		};
-		canvasRef.value?.addEventListener("pointerleave", pointerLeaveHandler);
+		stopCanvasWatch = watch(canvasRef, (next, previous) => {
+			if (pointerLeaveHandler) {
+				previous?.removeEventListener("pointerleave", pointerLeaveHandler);
+				next?.addEventListener("pointerleave", pointerLeaveHandler);
+			}
+		}, { immediate: true });
 		document.addEventListener("fullscreenchange", options.roomHeaderController.syncFullscreenState);
 
 		stopSelectionWatch = watch(
@@ -66,6 +72,8 @@ export const createRoomLifecycleController = (options: RoomLifecycleControllerOp
 	const unmount = () => {
 		stopSelectionWatch?.();
 		stopSelectionWatch = null;
+		stopCanvasWatch?.();
+		stopCanvasWatch = null;
 		if (pointerLeaveHandler) {
 			canvasRef.value?.removeEventListener("pointerleave", pointerLeaveHandler);
 			pointerLeaveHandler = null;

@@ -18,17 +18,18 @@ class FakeSocket {
 	static instances: FakeSocket[] = [];
 	readyState = FakeSocket.OPEN;
 	binaryType = "";
+	sent: string[] = [];
 	onopen: (() => void) | null = null;
 	onclose: (() => void) | null = null;
 	onerror: ((error: unknown) => void) | null = null;
 	onmessage: ((event: { data: string }) => void) | null = null;
 	constructor(public url: string) { FakeSocket.instances.push(this); }
-	send() {}
+	send(data: string) { this.sent.push(data); }
 	close() { this.readyState = 3; this.onclose?.(); }
 	receive(type: string, data: object) { this.onmessage?.({ data: JSON.stringify({ type, data }) }); }
 }
 
-const makeTransport = (confirmInitScene: () => Promise<boolean>) => createRoomCollabTransport({
+const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer?: () => Promise<boolean>) => createRoomCollabTransport({
 	token: ref("token"), sessionExpiresAt: ref(Date.now() + 3600000), userId: ref("user"), roomId: ref("room"),
 	username: ref("user"), roomName: ref("room"), onlineCount: ref(1), totalPages: ref(1), loadedPageIds: ref([0]),
 	currentPageId: ref(0), currentTool: ref("pen"), reconnectFailed: ref(false), reconnectFailureMessage: ref(""),
@@ -36,11 +37,49 @@ const makeTransport = (confirmInitScene: () => Promise<boolean>) => createRoomCo
 	memberList: ref([]), remoteCursors: ref(new Map()), remoteSelectionRects: ref(new Map()),
 	renderCanvas: vi.fn(), goToPage: vi.fn(), applyRemotePageChange: vi.fn(), setTool: vi.fn(),
 	insertCommand: vi.fn(), removeCommand: vi.fn(() => null), replaceLoadedPageWindow: vi.fn(),
-	applyLoadedPageDelta: vi.fn(), clearClearedCommands: vi.fn(() => false), confirmInitScene,
+	applyLoadedPageDelta: vi.fn(), clearClearedCommands: vi.fn(() => false), confirmInitScene, recoverRenderer,
 });
 
 describe("snapshot recovery cursor", () => {
 	afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeSocket.instances = []; });
+
+	it("reconnects from a full snapshot and retries unconfirmed operations after renderer recovery", async () => {
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const recover = vi.fn(async () => true);
+		const transport = makeTransport(() => Promise.resolve(true), recover);
+		await transport.connect();
+		const first = FakeSocket.instances[0]!;
+		first.receive("init-meta", { snapshotVersion: 42 });
+		dispatcherState.onSnapshot(42);
+		await Promise.resolve();
+		transport.send("push-cmd", { cmd: {
+			id: "op-1", type: "scene-op", pageId: 0, schemaVersion: 2,
+			sceneOperation: { schemaVersion: 2, opId: "op-1", elementId: "stroke", actorId: "user", roomId: "room", pageId: 0, lamport: 1, historyGroupId: "op-1", kind: "element.delete", payload: { elementIds: ["stroke"] } },
+		} });
+		transport.handleRenderWorkerFailure();
+		await vi.waitFor(() => expect(FakeSocket.instances).toHaveLength(2));
+		const second = FakeSocket.instances[1]!;
+		expect(recover).toHaveBeenCalledOnce();
+		expect(second.url).not.toContain("lastRoomSeq");
+		second.receive("init-meta", { snapshotVersion: 43 });
+		dispatcherState.onSnapshot(43);
+		await Promise.resolve();
+		expect(second.sent.some((message) => message.includes('"op-1"'))).toBe(true);
+		transport.disconnect();
+	});
+
+	it("does not reconnect after leaving during renderer recovery", async () => {
+		vi.stubGlobal("WebSocket", FakeSocket);
+		let finish!: (result: boolean) => void;
+		const transport = makeTransport(() => Promise.resolve(true), () => new Promise((resolve) => { finish = resolve; }));
+		await transport.connect();
+		transport.handleRenderWorkerFailure();
+		transport.disconnect();
+		finish(true);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(FakeSocket.instances).toHaveLength(1);
+	});
 
 	it("does not resume from a snapshot until the worker has confirmed it", async () => {
 		vi.useFakeTimers();

@@ -6,6 +6,7 @@
 		computed,
 		toRaw,
 		watch,
+		nextTick,
 		type Ref,
 	} from "vue";
 	import { useRouter } from "vue-router";
@@ -72,6 +73,8 @@
 	// 路由钩子，获取URL中的token参数
 	const router = useRouter();
 	const userStore = useUserStore();
+	const mainCanvasGeneration = ref(0);
+	let roomDisposed = false;
 
 	// --- 断线重连状态 (Reconnection State) ---
 	const {
@@ -349,6 +352,15 @@
 
 
 	const roomCollabTransport = createRoomCollabTransport({
+		recoverRenderer: async () => {
+			workerBridge.dispose();
+			ctx.value = null;
+			mainCanvasGeneration.value += 1;
+			await nextTick();
+			if (roomDisposed || !canvasRef.value || !workerBridge.init()) return false;
+			canvasRuntime.resize();
+			return workerBridge.isOffscreenEnabled() || !!ctx.value;
+		},
 		token,
 		userId,
 		roomId,
@@ -632,6 +644,7 @@
 		canRedo,
 		initialize: workerBridge.init,
 		dispose: () => {
+			roomDisposed = true;
 			canvasRuntime.dispose();
 			workerBridge.dispose();
 		},
@@ -804,6 +817,7 @@
 			<!-- Main Drawing Canvas (Bottom Layer) -->
 			<canvas
 				ref="canvasRef"
+				:key="mainCanvasGeneration"
 				@dblclick="roomPointerControllerRef?.editSelectedText($event)"
 				@pointerdown="startDrawing"
 				@pointermove="draw"
