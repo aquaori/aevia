@@ -105,7 +105,7 @@ describe("feature obligation catalog", () => {
 			return result;
 		}, {} as Record<string, Set<string>>);
 
-		expect(counts.http?.size).toBe(39);
+		expect(counts.http?.size).toBe(40);
 		expect(counts.ws?.size).toBe(15);
 		expect(counts.scene?.size).toBe(9);
 		expect(counts.frontend?.size).toBe(17);

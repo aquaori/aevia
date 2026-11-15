@@ -237,7 +237,7 @@
 				await axios.post(apiUrl("/v2/rooms"), { roomId: roomId.value, roomName: roomName.value, password: password.value }, { headers: accountStore.headers() });
 			}
 			localStorage.setItem("wb_username", username.value);
-			const response = await axios.post(apiUrl("/join-room"), {
+			const response = await axios.post(apiUrl(`/v2/rooms/${encodeURIComponent(roomId.value)}/admission`), {
 				roomId: roomId.value, userName: username.value, password: password.value,
 			}, { headers: accountStore.token ? accountStore.headers() : {} });
 			applySessionAuth(response.data.data);

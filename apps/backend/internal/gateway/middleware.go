@@ -3,6 +3,7 @@ package gateway
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
@@ -55,7 +56,7 @@ func (s *Server) limitHTTPRate(next http.Handler) http.Handler {
 		// throttle legitimate users too: a whole classroom behind one NAT shares
 		// a single client IP, and rooms without a password would be limited for
 		// no security benefit.
-		if (r.URL.Path == "/join-room" || r.URL.Path == "/v2/auth/login") && s.authLimiter.Exhausted(ip) {
+		if (r.URL.Path == "/join-room" || strings.HasSuffix(r.URL.Path, "/admission") || r.URL.Path == "/v2/auth/login") && s.authLimiter.Exhausted(ip) {
 			slog.Warn("join rejected after repeated password failures", "ip", ip)
 			fail(w, http.StatusTooManyRequests, "Too many failed attempts, please retry later")
 			return

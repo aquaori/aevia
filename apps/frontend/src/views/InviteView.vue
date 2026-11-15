@@ -58,7 +58,7 @@
 
 		try {
 			await axios
-				.post(apiUrl("/join-room"), {
+				.post(apiUrl(`/v2/rooms/${encodeURIComponent(roomId.value)}/admission`), {
 					roomId: roomId.value,
 					userName: username.value,
 					password: password.value,

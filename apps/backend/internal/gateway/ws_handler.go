@@ -28,9 +28,14 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := wsProtocolToken(r)
-	claims, err := s.verifySessionToken(token)
-	if err != nil {
+	claims, err := s.tokens.Verify(token, "ws-ticket")
+	if err != nil || claims.Iat < s.sessionEpoch || claims.TicketID == "" {
 		fail(w, http.StatusUnauthorized, "Invalid token")
+		return
+	}
+	consumed, err := s.store.ConsumeWebsocketTicket(r.Context(), claims.TicketID)
+	if err != nil || !consumed {
+		fail(w, http.StatusUnauthorized, "Invalid or used ticket")
 		return
 	}
 	roomData, exists, err := s.store.GetRoom(r.Context(), claims.RoomID)

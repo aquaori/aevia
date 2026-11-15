@@ -81,7 +81,7 @@ func (s *Store) DeleteRoom(ctx context.Context, roomID string) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, table := range []string{"commands", "room_members", "room_role_capabilities", "room_password_verifications", "room_invites", "room_transfers", "room_policies", "guest_sessions"} {
+	for _, table := range []string{"commands", "room_members", "room_role_capabilities", "room_password_verifications", "room_invites", "room_transfers", "room_policies", "guest_sessions", "room_member_audit"} {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE room_id=?`, roomID); err != nil {
 			return err
 		}

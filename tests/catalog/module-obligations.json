@@ -702,6 +702,13 @@
       "owner": "apps/backend/internal/gateway/account_handlers_test.go"
     },
     {
+      "id": "go:apps/backend/internal/gateway/websocket_ticket.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/websocket_ticket.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/account_handlers_test.go"
+    },
+    {
       "id": "go:apps/backend/internal/gateway/ws_handler.go",
       "kind": "go",
       "path": "apps/backend/internal/gateway/ws_handler.go",
@@ -874,84 +881,98 @@
       "kind": "go",
       "path": "apps/backend/internal/storage/accounts.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/checkpoint.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/checkpoint.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/commands.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/commands.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/invites.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/invites.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/membership.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/membership.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/migrations.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/migrations.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/read_snapshot.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/read_snapshot.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/rooms.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/rooms.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/server_state.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/server_state.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/store.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/store.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/transfers.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/transfers.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
+    },
+    {
+      "id": "go:apps/backend/internal/storage/websocket_tickets.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/websocket_tickets.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/write_ops.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/write_ops.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     },
     {
       "id": "go:apps/backend/internal/storage/writer.go",
       "kind": "go",
       "path": "apps/backend/internal/storage/writer.go",
       "state": "covered",
-      "owner": "apps/backend/internal/storage/store_test.go"
+      "owner": "apps/backend/internal/storage/read_snapshot_test.go"
     }
   ]
 }

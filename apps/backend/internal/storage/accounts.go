@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"time"
 )
@@ -67,6 +68,23 @@ func (s *Store) AccountByToken(ctx context.Context, token string) (Account, erro
 	var account Account
 	err := s.db.QueryRowContext(ctx, `SELECT u.user_id,u.username,COALESCE(p.nickname,u.username) FROM auth_sessions a JOIN users u ON u.user_id=a.user_id LEFT JOIN user_profiles p ON p.user_id=u.user_id WHERE a.refresh_token_hash=? AND a.revoked_at IS NULL AND a.expires_at>? AND u.disabled=0`, tokenHash(token), time.Now().Unix()).Scan(&account.ID, &account.Username, &account.Nickname)
 	return account, err
+}
+
+func (s *Store) RefreshAccountSession(ctx context.Context, token string) (string, error) {
+	next, err := RandomID()
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	result, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET refresh_token_hash=?, expires_at=? WHERE refresh_token_hash=? AND revoked_at IS NULL AND expires_at>?`, tokenHash(next), now.Add(30*24*time.Hour).Unix(), tokenHash(token), now.Unix())
+	if err != nil {
+		return "", err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count != 1 {
+		return "", sql.ErrNoRows
+	}
+	return next, nil
 }
 
 func (s *Store) LogoutAccount(ctx context.Context, token string) error {

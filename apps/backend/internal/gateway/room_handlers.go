@@ -70,7 +70,14 @@ func (s *Server) generateRoomID(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) joinRoom(w http.ResponseWriter, r *http.Request) {
 	var req joinRoomRequest
-	if decodeJSON(r, &req) != nil || req.RoomID == "" {
+	if decodeJSON(r, &req) != nil {
+		fail(w, http.StatusBadRequest, "Room ID is required")
+		return
+	}
+	if roomID := r.PathValue("roomId"); roomID != "" {
+		req.RoomID = roomID
+	}
+	if req.RoomID == "" {
 		fail(w, http.StatusBadRequest, "Room ID is required")
 		return
 	}

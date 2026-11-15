@@ -98,22 +98,31 @@ func (s *Store) UpdateRoomPolicy(ctx context.Context, roomID, name, password str
 	return tx.Commit()
 }
 
-func (s *Store) UpdateMember(ctx context.Context, roomID, userID, action string) error {
-	switch action {
-	case "editor", "viewer":
-		_, err := s.db.ExecContext(ctx, `UPDATE room_members SET role=? WHERE room_id=? AND user_id=? AND role<>'owner'`, action, roomID, userID)
-		return err
-	case "kick", "leave":
-		_, err := s.db.ExecContext(ctx, `DELETE FROM room_members WHERE room_id=? AND user_id=? AND role<>'owner'`, roomID, userID)
-		return err
-	case "ban":
-		_, err := s.db.ExecContext(ctx, `UPDATE room_members SET banned_at=? WHERE room_id=? AND user_id=? AND role<>'owner'`, time.Now().Unix(), roomID, userID)
-		return err
-	case "unban":
-		_, err := s.db.ExecContext(ctx, `DELETE FROM room_members WHERE room_id=? AND user_id=? AND banned_at IS NOT NULL`, roomID, userID)
+func (s *Store) UpdateMember(ctx context.Context, roomID, actorID, userID, action string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	return errors.New("invalid member action")
+	defer tx.Rollback()
+	switch action {
+	case "editor", "viewer":
+		_, err = tx.ExecContext(ctx, `UPDATE room_members SET role=? WHERE room_id=? AND user_id=? AND role<>'owner'`, action, roomID, userID)
+	case "kick", "leave":
+		_, err = tx.ExecContext(ctx, `DELETE FROM room_members WHERE room_id=? AND user_id=? AND role<>'owner'`, roomID, userID)
+	case "ban":
+		_, err = tx.ExecContext(ctx, `UPDATE room_members SET banned_at=? WHERE room_id=? AND user_id=? AND role<>'owner'`, time.Now().Unix(), roomID, userID)
+	case "unban":
+		_, err = tx.ExecContext(ctx, `DELETE FROM room_members WHERE room_id=? AND user_id=? AND banned_at IS NOT NULL`, roomID, userID)
+	default:
+		return errors.New("invalid member action")
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO room_member_audit(room_id,actor_id,target_id,action,created_at) VALUES(?,?,?,?,?)`, roomID, actorID, userID, action, time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateGuest(ctx context.Context, roomID, userID, role string) error {
@@ -128,13 +137,48 @@ func (s *Store) GuestRole(ctx context.Context, roomID, userID string) (string, b
 	return role, kicked, err
 }
 
-func (s *Store) UpdateGuest(ctx context.Context, roomID, userID, action string) error {
-	if action == "kick" {
-		_, err := s.db.ExecContext(ctx, `UPDATE guest_sessions SET kicked=1 WHERE room_id=? AND user_id=?`, roomID, userID)
+func (s *Store) UpdateGuest(ctx context.Context, roomID, actorID, userID, action string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE guest_sessions SET role=? WHERE room_id=? AND user_id=?`, action, roomID, userID)
-	return err
+	defer tx.Rollback()
+	if action == "kick" {
+		_, err = tx.ExecContext(ctx, `UPDATE guest_sessions SET kicked=1 WHERE room_id=? AND user_id=?`, roomID, userID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE guest_sessions SET role=? WHERE room_id=? AND user_id=?`, action, roomID, userID)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO room_member_audit(room_id,actor_id,target_id,action,created_at) VALUES(?,?,?,?,?)`, roomID, actorID, userID, "guest."+action, time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type MemberAuditEntry struct {
+	ActorID   string `json:"actorId"`
+	TargetID  string `json:"targetId"`
+	Action    string `json:"action"`
+	CreatedAt int64  `json:"createdAt"`
+}
+
+func (s *Store) MemberAudit(ctx context.Context, roomID string) ([]MemberAuditEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT actor_id,target_id,action,created_at FROM room_member_audit WHERE room_id=? ORDER BY id DESC LIMIT 100`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := []MemberAuditEntry{}
+	for rows.Next() {
+		var entry MemberAuditEntry
+		if err := rows.Scan(&entry.ActorID, &entry.TargetID, &entry.Action, &entry.CreatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
 }
 
 type AccountRoom struct {

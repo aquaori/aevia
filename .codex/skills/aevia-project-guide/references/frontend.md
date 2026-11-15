@@ -40,7 +40,7 @@ Important: do not bypass `commandStore` for command ordering/folding behavior.
 - `service/collabPresenceHandlers.ts`: cursors/member updates.
 - `service/localCommandService.ts`: local command creation/history/transport emission.
 - `service/realtimeBinary.ts`: cursor/legacy realtime frames and negotiated V2 append encoding.
-- `service/sessionApi.ts`: HTTP session calls.
+- `service/sessionApi.ts`: HTTP session calls, including a fresh single-use WebSocket ticket for every connection attempt.
 - `service/pageOverviewService.ts`: page overview API.
 
 ## Rendering

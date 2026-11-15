@@ -6,6 +6,7 @@ interface ApiResponse {
 	code?: number;
 	message?: string;
 	data?: {
+		ticket?: string;
 		sessionToken?: string;
 		token?: string;
 		userId?: string;
@@ -83,7 +84,7 @@ export const joinRoom = async (
 	userName: string
 ): Promise<RoomUser> => {
 	const data = await requestJson(
-		`${config.apiUrl}/join-room`,
+		`${config.apiUrl}/v2/rooms/${encodeURIComponent(roomId)}/admission`,
 		{ roomId, userName, password: "" },
 		"join-room failed"
 	);
@@ -113,9 +114,12 @@ export class ProtocolClient {
 		private user: RoomUser
 	) {}
 
-	connect() {
+	async connect() {
+		const response = await requestJson(`${this.config.apiUrl}/v2/rooms/${encodeURIComponent(this.user.roomId)}/ws-ticket`, {}, "ws-ticket failed", this.user.token);
+		const ticket = response.data?.ticket;
+		if (!ticket) throw new Error("ws-ticket missing");
 		return new Promise<void>((resolve, reject) => {
-			const ws = new WebSocket(this.config.wsUrl, [this.user.token]);
+			const ws = new WebSocket(this.config.wsUrl, [ticket]);
 			this.ws = ws;
 			const timer = setTimeout(() => {
 				reject(new Error("websocket init timeout"));

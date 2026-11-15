@@ -88,7 +88,7 @@
 		catch { toast.error("操作失败，请重试"); }
 	};
 	const enterWithAccount = async () => {
-		const join = (password: string) => axios.post(apiUrl("/join-room"), { roomId: roomId.value, password }, { headers: accountStore.headers() });
+		const join = (password: string) => axios.post(apiUrl(`/v2/rooms/${encodeURIComponent(roomId.value)}/admission`), { roomId: roomId.value, password }, { headers: accountStore.headers() });
 		try {
 			let response;
 			try { response = await join(""); }

@@ -38,6 +38,18 @@ func (s *Server) roomMembers(w http.ResponseWriter, r *http.Request) {
 	ok(w, members)
 }
 
+func (s *Server) memberAudit(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.roomAccount(w, r, true); !ok {
+		return
+	}
+	entries, err := s.store.MemberAudit(r.Context(), r.PathValue("roomId"))
+	if err != nil {
+		fail(w, 500, "无法获取成员操作记录")
+		return
+	}
+	ok(w, entries)
+}
+
 func (s *Server) getRoomSettings(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.roomAccount(w, r, true); !ok {
 		return
@@ -97,7 +109,7 @@ func (s *Server) leaveRoom(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "房主需要先转让房间")
 		return
 	}
-	if err := s.store.UpdateMember(r.Context(), r.PathValue("roomId"), account.ID, "leave"); err != nil {
+	if err := s.store.UpdateMember(r.Context(), r.PathValue("roomId"), account.ID, account.ID, "leave"); err != nil {
 		fail(w, 500, "退出失败")
 		return
 	}
@@ -108,7 +120,8 @@ func (s *Server) leaveRoom(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) changeMember(w http.ResponseWriter, r *http.Request, action string) {
-	if _, ok := s.roomAccount(w, r, true); !ok {
+	account, ok := s.roomAccount(w, r, true)
+	if !ok {
 		return
 	}
 	userID := r.PathValue("userId")
@@ -117,7 +130,7 @@ func (s *Server) changeMember(w http.ResponseWriter, r *http.Request, action str
 		fail(w, 400, "无法修改此成员")
 		return
 	}
-	if err = s.store.UpdateMember(r.Context(), r.PathValue("roomId"), userID, action); err != nil {
+	if err = s.store.UpdateMember(r.Context(), r.PathValue("roomId"), account.ID, userID, action); err != nil {
 		fail(w, 500, "成员操作失败")
 		return
 	}
@@ -133,7 +146,8 @@ func (s *Server) changeMember(w http.ResponseWriter, r *http.Request, action str
 }
 
 func (s *Server) changeGuest(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.roomAccount(w, r, true); !ok {
+	account, ok := s.roomAccount(w, r, true)
+	if !ok {
 		return
 	}
 	var req struct {
@@ -148,7 +162,7 @@ func (s *Server) changeGuest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "游客不存在")
 		return
 	}
-	if err := s.store.UpdateGuest(r.Context(), roomID, userID, req.Action); err != nil {
+	if err := s.store.UpdateGuest(r.Context(), roomID, account.ID, userID, req.Action); err != nil {
 		fail(w, 500, "操作失败")
 		return
 	}

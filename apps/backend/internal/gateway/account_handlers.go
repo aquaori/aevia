@@ -88,6 +88,20 @@ func (s *Server) accountProfile(w http.ResponseWriter, r *http.Request) {
 	ok(w, account)
 }
 
+func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
+	account, err := s.accountFromRequest(r)
+	if err != nil {
+		fail(w, 401, "请先登录")
+		return
+	}
+	token, err := s.store.RefreshAccountSession(r.Context(), bearerToken(r))
+	if err != nil {
+		fail(w, 401, "会话已失效")
+		return
+	}
+	ok(w, map[string]any{"account": account, "token": token})
+}
+
 func (s *Server) updateAccountProfile(w http.ResponseWriter, r *http.Request) {
 	account, err := s.accountFromRequest(r)
 	if err != nil {

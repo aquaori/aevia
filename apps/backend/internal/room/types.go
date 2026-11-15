@@ -17,13 +17,14 @@ type ClientInfo struct {
 }
 
 type Outbound struct {
-	JSON   any
-	Text   []byte
-	Binary []byte
-	Close  bool
-	Bytes  int
-	Frozen bool
-	Stream *InitStream
+	JSON        any
+	Text        []byte
+	Binary      []byte
+	Close       bool
+	Bytes       int
+	Frozen      bool
+	Stream      *InitStream
+	StreamReady <-chan *InitStream
 }
 
 type Envelope struct {

@@ -1,14 +1,50 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/auth"
 	"github.com/coder/websocket"
 )
+
+func TestWebsocketTicket(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "ticketowner", "password": "password123"}, "")
+	account := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777009"}, account)
+	status, joined := do(t, server, "POST", "/v2/rooms/777009/admission", map[string]any{}, account)
+	if status != 200 {
+		t.Fatalf("admission: %d %+v", status, joined)
+	}
+	grant := joined.Data["token"].(string)
+	if status, _ = do(t, server, "POST", "/v2/rooms/other/ws-ticket", nil, grant); status != 403 {
+		t.Fatalf("wrong room: %d", status)
+	}
+	status, issued := do(t, server, "POST", "/v2/rooms/777009/ws-ticket", nil, grant)
+	if status != 200 {
+		t.Fatalf("issue ticket: %d %+v", status, issued)
+	}
+	ticket := issued.Data["ticket"].(string)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := strings.Replace(server.URL, "http", "ws", 1) + "/ws"
+	conn, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{Subprotocols: []string{ticket}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+	if _, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{Subprotocols: []string{ticket}}); err == nil {
+		t.Fatal("ticket reused")
+	}
+	if _, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{Subprotocols: []string{grant}}); err == nil {
+		t.Fatal("room grant accepted as ticket")
+	}
+}
 
 func TestAccountSessionFlow(t *testing.T) {
 	server := newTestServer(t)
@@ -18,6 +54,14 @@ func TestAccountSessionFlow(t *testing.T) {
 		t.Fatalf("register: %d %+v", status, registered)
 	}
 	first := registered.Data["token"].(string)
+	status, refreshed := do(t, server, "POST", "/v2/auth/refresh", nil, first)
+	if status != http.StatusOK {
+		t.Fatalf("refresh: %d %+v", status, refreshed)
+	}
+	if status, _ = do(t, server, "POST", "/v2/auth/refresh", nil, first); status != http.StatusUnauthorized {
+		t.Fatalf("old token refreshed: %d", status)
+	}
+	first = refreshed.Data["token"].(string)
 	status, loggedIn := do(t, server, "POST", "/v2/auth/login", credentials, "")
 	if status != http.StatusOK {
 		t.Fatalf("login: %d %+v", status, loggedIn)

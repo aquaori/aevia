@@ -17,7 +17,7 @@ import {
 	hasRealtimeBinaryMagic,
 } from "./realtimeBinary";
 import { applyServerPressurePolicy, resetCollabPressurePolicy } from "./collabPressurePolicy";
-import { renewRoomSession as renewRoomSessionRequest } from "./sessionApi";
+import { renewRoomSession as renewRoomSessionRequest, requestWebsocketTicket } from "./sessionApi";
 import { wsBaseUrl } from "../config/endpoints";
 import { labEnabled, labMark } from "../instrumentation/labMarks";
 import {
@@ -675,7 +675,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		socket.value?.close();
 	};
 
+	let connectionPending = false;
 	const connect = async () => {
+		if (connectionPending) return;
+		connectionPending = true;
 		try {
 			if (isIntentionalClose.value || hasActiveSocketConnection()) return;
 			bindBrowserConnectivityListeners();
@@ -701,10 +704,15 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			const tokenStr = Array.isArray(options.token.value)
 				? (options.token.value[0] ?? "")
 				: options.token.value || "";
+			// The room metadata arrives only after connecting, so use the room ID
+			// in the signed grant for the initial ticket request.
+			const roomId = options.roomId.value || JSON.parse(atob(tokenStr.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"))).roomId;
+			const ticket = await requestWebsocketTicket(roomId, tokenStr);
+			if (isIntentionalClose.value) return;
 			const wsUrl = `${wsBaseUrl}?pageId=${statePageToProtocol(options.currentPageId.value)}${
 				enableDeltaReplay && lastRoomSeq > 0 ? `&lastRoomSeq=${lastRoomSeq}` : ""
 			}`;
-			const connection = new WebSocket(wsUrl, [tokenStr]);
+			const connection = new WebSocket(wsUrl, [ticket]);
 			socket.value = connection;
 			connection.binaryType = "arraybuffer";
 
@@ -873,6 +881,8 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			}
 			socket.value = null;
 			scheduleReconnect();
+		} finally {
+			connectionPending = false;
 		}
 	};
 

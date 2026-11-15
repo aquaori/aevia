@@ -8,12 +8,43 @@ import (
 	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/config"
+	"collaborative-whiteboard/apps/backend/internal/domain"
 	"collaborative-whiteboard/apps/backend/internal/storage"
 )
 
 // actorIdleTimeout is how long a room with no connected clients is kept warm
 // before its actor is evicted and its state released.
 const actorIdleTimeout = 10 * time.Minute
+
+// Bound concurrent snapshot readers so joins cannot exhaust the SQLite pool.
+var snapshotSlots = make(chan struct{}, 4)
+
+func (a *Actor) pinSnapshot() (*storage.ReadSnapshot, context.Context, context.CancelFunc, error) {
+	select {
+	case snapshotSlots <- struct{}{}:
+	default:
+		return nil, nil, nil, ErrActorBusy
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	snapshot, seq, err := a.store.BeginReadSnapshot(ctx, a.roomID)
+	if err == nil && seq != a.state.RoomSeq {
+		err = errors.New("snapshot sequence mismatch")
+	}
+	if err != nil {
+		if snapshot != nil {
+			snapshot.Close()
+		}
+		cancel()
+		<-snapshotSlots
+		return nil, nil, nil, err
+	}
+	return snapshot, ctx, cancel, nil
+}
+
+func readSnapshot(snapshot *storage.ReadSnapshot, ctx context.Context, cancel context.CancelFunc) ([]domain.Command, error) {
+	defer func() { snapshot.Close(); cancel() }()
+	return snapshot.Commands(ctx)
+}
 
 // ErrActorStopped is returned when an operation targets a room actor whose loop
 // has already exited (idle eviction or shutdown). Callers should treat it as a
@@ -380,22 +411,65 @@ func (a *Actor) handleJoin(msg joinMessage) {
 	members := a.state.OnlineMembers()
 	result := JoinResult{Room: a.state.Room, Deltas: deltas, Resume: resume, ResumeSeq: msg.LastRoomSeq, Online: online, Members: members}
 	if client.Done != nil {
-		// Materialize a stable snapshot while the actor owns the state, then
-		// serialize and send it off the actor. Live events queue until the stream
-		// completes, preserving render metadata/binary frame ordering.
+		// Pin a durable read view at the actor sequence; build and send outside
+		// the actor while later events wait in the bounded per-client queue.
+		var snapshot *storage.ReadSnapshot
+		var snapshotCtx context.Context
+		var cancel context.CancelFunc
 		if resume == "snapshot" {
-			result.Init = a.builder.Init(a.state, client.PageID)
+			var err error
+			snapshot, snapshotCtx, cancel, err = a.pinSnapshot()
+			if err != nil {
+				if client.Abort != nil {
+					client.Abort()
+				}
+				result.InitStreamed = true
+				msg.Reply <- result
+				delete(a.state.Clients, client.ID)
+				return
+			}
 		}
 		out := client.Send
 		live := make(chan Outbound, cap(out))
 		client.Send = live
 		a.state.Clients[client.ID] = client
 		streamResult := result
+		snapshotSeq := a.state.RoomSeq
 		go func() {
+			if snapshot != nil {
+				commands, err := readSnapshot(snapshot, snapshotCtx, cancel)
+				if err != nil {
+					<-snapshotSlots
+					if client.Abort != nil {
+						client.Abort()
+					}
+					return
+				}
+				room := streamResult.Room
+				room.DurableSeq = snapshotSeq
+				state := NewState(room, commands)
+				streamResult.Init = a.builder.Init(state, client.PageID)
+				<-snapshotSlots
+			}
 			sendInitStream(out, streamResult.Room.Name, client, streamResult, true)
 			for {
 				select {
 				case event := <-live:
+					if event.StreamReady != nil {
+						select {
+						case stream := <-event.StreamReady:
+							if stream == nil {
+								if client.Abort != nil {
+									client.Abort()
+								}
+								return
+							}
+							sendPageChangeStreamWait(out, client.Abort, client.Done, *stream, true)
+						case <-client.Done:
+							return
+						}
+						continue
+					}
 					if event.Stream != nil {
 						sendPageChangeStreamWait(out, client.Abort, client.Done, *event.Stream, true)
 						continue
@@ -457,17 +531,46 @@ func (a *Actor) handlePageChange(msg pageChangeMessage) {
 	if !ok {
 		return
 	}
-	stream := a.builder.PageChange(a.state, msg.Request)
 	client.PageID = normalizePageID(valueOr(msg.Request.PageID, client.PageID), a.state.Room.TotalPage)
 	if msg.Request.NextPageID != nil {
 		client.PageID = normalizePageID(*msg.Request.NextPageID, a.state.Room.TotalPage)
 	}
 	a.state.Clients[msg.ClientID] = client
 	if client.Done != nil {
-		if !sendOutbound(client.Send, Outbound{Stream: &stream, Frozen: true}) && client.Abort != nil {
-			client.Abort()
+		snapshot, ctx, cancel, err := a.pinSnapshot()
+		if err != nil {
+			if client.Abort != nil {
+				client.Abort()
+			}
+			return
 		}
+		ready := make(chan *InitStream, 1)
+		if !sendOutbound(client.Send, Outbound{StreamReady: ready, Frozen: true}) {
+			snapshot.Close()
+			cancel()
+			<-snapshotSlots
+			if client.Abort != nil {
+				client.Abort()
+			}
+			return
+		}
+		room := a.state.Room
+		room.DurableSeq = a.state.RoomSeq
+		request := msg.Request
+		go func() {
+			commands, err := readSnapshot(snapshot, ctx, cancel)
+			if err != nil {
+				<-snapshotSlots
+				ready <- nil
+				return
+			}
+			state := NewState(room, commands)
+			stream := a.builder.PageChange(state, request)
+			<-snapshotSlots
+			ready <- &stream
+		}()
 	} else {
+		stream := a.builder.PageChange(a.state, msg.Request)
 		sendPageChangeStream(client.Send, client.Abort, stream)
 	}
 }
