@@ -72,7 +72,7 @@ Main-thread/fallback and scheduling:
 
 Worker and fallback paths both use `SceneEngine`; do not add a second tool-specific renderer or command scan. Dirty-rect changes should usually inspect `sceneEngine.ts`, `spatialGridIndex.ts`, `dirtyRegionSet.ts`, `dirtyRenderQueue.ts`, `canvasWorker.ts`, and `canvas.ts` together.
 
-The render worker bridge forwards queued legacy stroke increments in a microtask rather than depending on animation frames, settles pending queries when the worker fails or is disposed, and ignores replies from a replaced worker.
+The render worker bridge forwards queued legacy stroke increments in a microtask rather than depending on animation frames, settles pending queries when the worker fails, is disposed, or its scene is replaced, and rejects old scene-epoch replies. If worker creation or canvas transfer fails before transfer succeeds, the session uses the main-thread Canvas context. Recovery after a worker fails with an already transferred canvas remains a separate lifecycle problem.
 
 New drawing writes are immutable `element.create`/`element.append` scene operations. Stroke rendering compiles midpoint-based quadratic atoms once as points enter the scene, and `isComplete` commits the stable tail atom. `cmd-start/update/stop` remains only in V1 read/rejection compatibility code and must not be used for a new write path.
 

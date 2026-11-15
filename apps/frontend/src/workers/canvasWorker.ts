@@ -39,6 +39,7 @@ interface IncrementBatchItem {
 }
 
 interface InitRenderBinaryChunkData {
+	epoch: number;
 	snapshotVersion: number;
 	chunkIndex: number;
 	isLastChunk: boolean;
@@ -703,6 +704,7 @@ self.onmessage = (event: MessageEvent) => {
 		});
 		self.postMessage({
 			type: "init-render-points-decoded",
+			epoch: chunk.epoch,
 			points,
 			snapshotVersion: (data as InitRenderBinaryChunkData).snapshotVersion,
 			chunkIndex: (data as InitRenderBinaryChunkData).chunkIndex,
@@ -787,7 +789,7 @@ self.onmessage = (event: MessageEvent) => {
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 			renderSceneOperation(cmd.sceneOperation);
 			if (cmd.sceneOperation.kind === "element.transform") {
-				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId });
+				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId, epoch: data.epoch });
 			} else if (labEnabled()) {
 				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
 			}
@@ -887,7 +889,7 @@ self.onmessage = (event: MessageEvent) => {
 
 	if (type === "merge-dirty-rects") {
 		const merged = mergeRects(data.rects as Rect[]);
-		self.postMessage({ type: "merge-dirty-rects-result", rects: merged });
+		self.postMessage({ type: "merge-dirty-rects-result", rects: merged, epoch: data.epoch });
 		return;
 	}
 

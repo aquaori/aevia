@@ -61,6 +61,56 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("reports that the main-thread renderer is needed when worker creation fails", () => {
+		vi.stubGlobal("Worker", class { constructor() { throw new Error("worker unavailable"); } });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try { expect(bridge.init()).toBe(false); }
+		finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("allows main-thread fallback when canvas transfer is unavailable", () => {
+		vi.stubGlobal("Worker", class { postMessage() {} terminate() {} });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			const canvas = { transferControlToOffscreen: () => { throw new Error("transfer unavailable"); } } as unknown as HTMLCanvasElement;
+			expect(bridge.bindMainCanvas(canvas, { width: 100, height: 100, dpr: 1 })).toBe(false);
+			expect(bridge.isOffscreenEnabled()).toBe(false);
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("discards old page replies when a new snapshot begins", async () => {
+		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId?: string } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { worker = this; }
+			postMessage(message: { type: string; data?: { requestId?: string } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const onMainPoints = vi.fn();
+		const bridge = createRenderWorkerBridge({ onMainPoints });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const pending = bridge.requestSceneHit(10, 20);
+			const requestId = worker!.sent.at(-1)!.data!.requestId;
+			bridge.beginInitRenderStream(1);
+			expect(await pending).toEqual({ elementId: null, bounds: null });
+			worker!.onmessage?.({ data: { type: "scene-hit-result", requestId, elementId: "old", bounds: null } });
+			worker!.onmessage?.({ data: { type: "flat-points-result", requestId: "old", points: [{ x: 0 }] } });
+			let painted = false;
+			const paint = bridge.waitForSceneOperationRender("op-1").then(() => { painted = true; });
+			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "op-1", epoch: 0 } });
+			await Promise.resolve();
+			expect(painted).toBe(false);
+			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "op-1", epoch: 1 } });
+			await paint;
+			expect(onMainPoints).not.toHaveBeenCalled();
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
 	it("settles pending queries when the worker is disposed", async () => {
 		vi.stubGlobal("Worker", class { postMessage() {} terminate() {} });
 		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
@@ -164,7 +214,7 @@ describe("worker acknowledgement isolation", () => {
 			const pending = bridge.waitForSceneOperationRender("lab-only", 50).then(() => { settled = true; });
 			await Promise.resolve();
 			expect(settled).toBe(false);
-			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "lab-only" } });
+			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "lab-only", epoch: 0 } });
 			await pending;
 			expect(settled).toBe(true);
 		} finally {

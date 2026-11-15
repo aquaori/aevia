@@ -283,7 +283,15 @@
 		hasRenderableScene: () => commands.value.length > 0,
 		syncMainCanvasViewport: (payload) => {
 			if (canvasRef.value) {
-				workerBridge.bindMainCanvas(canvasRef.value, payload);
+				const bound = workerBridge.bindMainCanvas(canvasRef.value, payload);
+				if (!bound && !workerBridge.isOffscreenEnabled() && !ctx.value) {
+					ctx.value = canvasRef.value.getContext("2d");
+					if (ctx.value) {
+						ctx.value.setTransform(payload.dpr, 0, 0, payload.dpr, 0, 0);
+						ctx.value.lineCap = "round";
+						ctx.value.lineJoin = "round";
+					}
+				}
 			}
 			workerBridge.syncViewport(payload);
 		},

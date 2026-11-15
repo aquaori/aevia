@@ -17,7 +17,7 @@ interface CreateWhiteboardSessionOptions {
 	state: WhiteboardSessionState;
 	canUndo: ComputedRef<boolean>;
 	canRedo: ComputedRef<boolean>;
-	initialize?: () => void;
+	initialize?: () => boolean | void;
 	dispose?: () => void;
 	connect: () => void;
 	disconnect: () => void;
@@ -111,7 +111,9 @@ export const createWhiteboardSession = (
 				? null
 				: input.canvas.getContext("2d");
 		uiCtx.value = input.uiCanvas.getContext("2d");
-		options.initialize?.();
+		if (options.initialize?.() === false && !ctx.value) {
+			ctx.value = input.canvas.getContext("2d");
+		}
 		options.resize?.();
 		setLifecycle("ready");
 		emit("session:ready", undefined);

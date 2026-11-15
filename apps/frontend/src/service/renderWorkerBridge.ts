@@ -44,6 +44,7 @@ interface MergeDirtyRectsRequest {
 }
 
 interface InitRenderBinaryChunkRequest {
+	epoch: number;
 	snapshotVersion: number;
 	chunkIndex: number;
 	isLastChunk: boolean;
@@ -115,9 +116,11 @@ const cloneRect = (rect: DirtyRectRequest): DirtyRectRequest => ({
 
 export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => {
 	let worker: Worker | null = null;
+	let sceneEpoch = 0;
 	let offscreenEnabled = false;
 	let canvasTransferred = false;
 	let pendingMainCanvasRequest: MainCanvasRenderRequest | null = null;
+	let pendingMainCanvasResponseId: string | null = null;
 	let pendingMainCanvasRafId: number | null = null;
 	let pendingIncrementFlushScheduled = false;
 	let streamedInitPoints: FlatPoint[] = [];
@@ -151,6 +154,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const cancelPendingMainCanvasRequest = () => {
 		pendingMainCanvasRequest = null;
+		pendingMainCanvasResponseId = null;
 		if (pendingMainCanvasRafId !== null) {
 			cancelAnimationFrame(pendingMainCanvasRafId);
 			pendingMainCanvasRafId = null;
@@ -183,6 +187,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			return;
 		}
 
+		pendingMainCanvasResponseId = payload.requestId;
 		worker.postMessage({
 			type: "flat-points",
 			data,
@@ -251,11 +256,15 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const init = () => {
-		if (worker) return;
+		if (worker) return true;
 
-		worker = new Worker(new URL("../workers/canvasWorker.ts", import.meta.url), {
-			type: "module",
-		});
+		try {
+			worker = new Worker(new URL("../workers/canvasWorker.ts", import.meta.url), {
+				type: "module",
+			});
+		} catch {
+			return false;
+		}
 		const activeWorker = worker;
 
 		// Workers cannot see the harness-injected `window.__AEVIA_LAB__`; tell the
@@ -312,6 +321,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			if (type === "lab:operation-rendered") return;
 
 			if (type === "scene-operation-rendered") {
+				if (event.data.epoch !== sceneEpoch) return;
 				const callback = typeof opId === "string" ? pendingSceneOperationRenders.get(opId) : undefined;
 				if (typeof opId === "string") pendingSceneOperationRenders.delete(opId);
 				if (callback) callback();
@@ -327,11 +337,15 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 					return;
 				}
 
-				options.onMainPoints(points);
+				if (requestId && requestId === pendingMainCanvasResponseId) {
+					pendingMainCanvasResponseId = null;
+					options.onMainPoints(points);
+				}
 				return;
 			}
 
 			if (type === "merge-dirty-rects-result") {
+				if (event.data.epoch !== sceneEpoch) return;
 				options.onDirtyRects?.(rects ?? []);
 				return;
 			}
@@ -367,12 +381,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			}
 
 			if (type === "init-render-points-decoded") {
+				if (event.data.epoch !== sceneEpoch) return;
 				const decodedPoints = (event.data.points as FlatPoint[]) ?? [];
 				if (decodedPoints.length === 0) return;
 				streamedInitPoints.push(...decodedPoints);
 				options.onMainPoints([...streamedInitPoints]);
 			}
 		};
+		return true;
 	};
 
 	const bindMainCanvas = (canvas: HTMLCanvasElement, viewport: ViewportPayload) => {
@@ -380,7 +396,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			return false;
 		}
 
-		const offscreen = canvas.transferControlToOffscreen();
+		let offscreen: OffscreenCanvas;
+		try {
+			offscreen = canvas.transferControlToOffscreen();
+		} catch {
+			return false;
+		}
 		worker.postMessage(
 			{
 				type: "init-canvas",
@@ -428,6 +449,9 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const beginInitRenderStream = (pageId?: number) => {
+		sceneEpoch += 1;
+		renderedSceneOperations.clear();
+		settlePendingRequests();
 		streamedInitPoints = [];
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();
@@ -463,6 +487,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		if (!worker) return;
 
 		const request: InitRenderBinaryChunkRequest = {
+			epoch: sceneEpoch,
 			snapshotVersion: Number(meta.snapshotVersion ?? 0),
 			chunkIndex: Number(meta.chunkIndex ?? 0),
 			isLastChunk: meta.isLastChunk === true,
@@ -504,6 +529,9 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		transformingCmdIds: string[] = []
 	) => {
 		if (!worker || !offscreenEnabled) return;
+		sceneEpoch += 1;
+		renderedSceneOperations.clear();
+		settlePendingRequests();
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();
 		worker.postMessage({
@@ -517,6 +545,9 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const renderSceneFromFlatPoints = (points: FlatPoint[], pageId: number) => {
+		sceneEpoch += 1;
+		renderedSceneOperations.clear();
+		settlePendingRequests();
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();
 		streamedInitPoints = points;
@@ -602,6 +633,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			type: "update-command-state",
 			data: {
 				cmd: cloneCommandForStateSync(cmd),
+				epoch: sceneEpoch,
 			},
 		});
 	};
@@ -726,11 +758,13 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			type: "merge-dirty-rects",
 			data: {
 				rects: payload.rects.map(cloneRect),
+				epoch: sceneEpoch,
 			},
 		});
 	};
 
 	const dispose = () => {
+		sceneEpoch += 1;
 		settlePendingRequests();
 		renderedSceneOperations.clear();
 		cancelPendingMainCanvasRequest();
