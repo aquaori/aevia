@@ -181,6 +181,34 @@ func testClientInfo() ClientInfo {
 	}
 }
 
+func TestSlowInitialSnapshotDoesNotBlockRoom(t *testing.T) {
+	cfg := testConfig(t)
+	registry := NewRegistry(newTestStore(t, cfg), cfg)
+	t.Cleanup(func() { registry.Shutdown(context.Background()) })
+	actor, err := registry.Get(context.Background(), "room-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	defer close(done)
+	client := testClientInfo()
+	client.Send = make(chan Outbound, 1)
+	client.Done = done
+	if _, err = actor.Join(client, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	reviewed := make(chan error, 1)
+	go func() { _, err := actor.PageReview(); reviewed <- err }()
+	select {
+	case err := <-reviewed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow snapshot blocked room actor")
+	}
+}
+
 func waitForStopped(t *testing.T, actor *Actor) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

@@ -10,7 +10,11 @@ import (
 )
 
 func SendInitStream(out chan Outbound, roomName string, client ClientInfo, result JoinResult) {
-	ch := &streamSender{out: out, abort: client.Abort}
+	sendInitStream(out, roomName, client, result, false)
+}
+
+func sendInitStream(out chan Outbound, roomName string, client ClientInfo, result JoinResult, wait bool) {
+	ch := &streamSender{out: out, abort: client.Abort, wait: wait, done: client.Done}
 	if result.InitStreamed {
 		return
 	}
@@ -140,7 +144,11 @@ func sendDeltaReplay(ch *streamSender, result JoinResult) {
 }
 
 func sendPageChangeStream(out chan Outbound, abort func(), stream InitStream) {
-	ch := &streamSender{out: out, abort: abort}
+	sendPageChangeStreamWait(out, abort, nil, stream, false)
+}
+
+func sendPageChangeStreamWait(out chan Outbound, abort func(), done <-chan struct{}, stream InitStream, wait bool) {
+	ch := &streamSender{out: out, abort: abort, done: done, wait: wait}
 	requestID, _ := stream.Meta["requestId"].(int)
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "page-change-meta", Data: withStreamMeta(stream)}})
 	sendRenderStream(ch, "page-change", requestID, stream)
@@ -359,6 +367,8 @@ type streamSender struct {
 	out    chan Outbound
 	abort  func()
 	failed bool
+	wait   bool
+	done   <-chan struct{}
 }
 
 func (ch *streamSender) fail() {
@@ -376,6 +386,20 @@ func sendStreamOutbound(ch *streamSender, msg Outbound) bool {
 		return false
 	}
 	msg.Frozen = true
+	if ch.wait {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case ch.out <- msg:
+			return true
+		case <-ch.done:
+			ch.failed = true
+			return false
+		case <-timer.C:
+			ch.fail()
+			return false
+		}
+	}
 	if sendOutbound(ch.out, msg) {
 		return true
 	}

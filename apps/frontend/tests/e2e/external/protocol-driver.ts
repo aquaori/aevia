@@ -6,6 +6,7 @@ interface ApiResponse {
 	code?: number;
 	message?: string;
 	data?: {
+		ticket?: string;
 		sessionToken?: string;
 		token?: string;
 		userId?: string;
@@ -21,13 +22,14 @@ type ProtocolMessage = { type?: string; data?: Record<string, unknown> };
 const requestJson = async (
 	url: string,
 	body: unknown,
-	failurePrefix: string
+	failurePrefix: string,
+	token?: string
 ): Promise<ApiResponse> => {
 	let response: Response;
 	try {
 		response = await fetch(url, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
 			body: JSON.stringify(body),
 		});
 	} catch (error: unknown) {
@@ -55,10 +57,20 @@ export const assertFrontendReachable = async (config: ExternalConfig) => {
 };
 
 export const createRoom = async (config: ExternalConfig, roomId = randomRoomId()) => {
+	const account = await requestJson(
+		`${config.apiUrl}/v2/auth/register`,
+		{ username: `ext-${uuidv4()}`, password: "external-test-password" },
+		"register failed"
+	);
+	const token = account.data?.token;
+	if (account.code !== 200 || !token) {
+		throw new Error(`register rejected: ${JSON.stringify(account)}`);
+	}
 	const data = await requestJson(
 		`${config.apiUrl}/create-room`,
 		{ roomId, roomName: `External_${roomId}`, password: "" },
-		"create-room failed"
+		"create-room failed",
+		token
 	);
 	if (data?.code !== 200 && !String(data?.message || "").includes("已存在")) {
 		throw new Error(`create-room rejected: ${JSON.stringify(data)}`);
@@ -72,7 +84,7 @@ export const joinRoom = async (
 	userName: string
 ): Promise<RoomUser> => {
 	const data = await requestJson(
-		`${config.apiUrl}/join-room`,
+		`${config.apiUrl}/v2/rooms/${encodeURIComponent(roomId)}/admission`,
 		{ roomId, userName, password: "" },
 		"join-room failed"
 	);
@@ -102,9 +114,12 @@ export class ProtocolClient {
 		private user: RoomUser
 	) {}
 
-	connect() {
+	async connect() {
+		const response = await requestJson(`${this.config.apiUrl}/v2/rooms/${encodeURIComponent(this.user.roomId)}/ws-ticket`, {}, "ws-ticket failed", this.user.token);
+		const ticket = response.data?.ticket;
+		if (!ticket) throw new Error("ws-ticket missing");
 		return new Promise<void>((resolve, reject) => {
-			const ws = new WebSocket(this.config.wsUrl, [this.user.token]);
+			const ws = new WebSocket(this.config.wsUrl, [ticket]);
 			this.ws = ws;
 			const timer = setTimeout(() => {
 				reject(new Error("websocket init timeout"));

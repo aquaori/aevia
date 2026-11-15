@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"math"
@@ -118,6 +119,10 @@ type apiResponse struct {
 
 func do(t *testing.T, server *httptest.Server, method, path string, body any, token string) (int, apiResponse) {
 	t.Helper()
+	if method == "POST" && path == "/create-room" && token == "" {
+		_, registered := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "test-" + randomID(), "password": "password123"}, "")
+		token, _ = registered.Data["token"].(string)
+	}
 	var reader *bytes.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -355,10 +360,26 @@ type gatewayWSEnvelope struct {
 
 func dialGatewayWebsocket(t *testing.T, server *httptest.Server, token string) *websocket.Conn {
 	t.Helper()
+	parts := strings.Split(token, ".")
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		RoomID string `json:"roomId"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal(err)
+	}
+	status, response := do(t, server, "POST", "/v2/rooms/"+claims.RoomID+"/ws-ticket", map[string]any{}, token)
+	if status != http.StatusOK {
+		t.Fatalf("ws ticket: %d %+v", status, response)
+	}
+	ticket := response.Data["ticket"].(string)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, strings.Replace(server.URL, "http", "ws", 1)+"/ws?pageId=0", &websocket.DialOptions{
-		Subprotocols: []string{token},
+		Subprotocols: []string{ticket},
 	})
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)

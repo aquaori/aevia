@@ -1,0 +1,9 @@
+{
+  "date": "2026-11-15",
+  "framework": "Vue 3 + TypeScript + Tailwind CSS 4",
+  "fonts": "Existing system sans-serif stack",
+  "palette": "Light neutrals with Aevia indigo accent",
+  "motion": "CSS transitions; no animation library",
+  "spacing": "Tailwind spacing with a 4px baseline",
+  "scope": "Home, invite, account and shared room settings; exclude whiteboard layout"
+}

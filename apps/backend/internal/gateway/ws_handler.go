@@ -14,6 +14,7 @@ import (
 	"collaborative-whiteboard/apps/backend/internal/auth"
 	"collaborative-whiteboard/apps/backend/internal/config"
 	"collaborative-whiteboard/apps/backend/internal/room"
+	"collaborative-whiteboard/apps/backend/internal/storage"
 	"github.com/coder/websocket"
 )
 
@@ -27,15 +28,34 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := wsProtocolToken(r)
-	claims, err := s.verifySessionToken(token)
-	if err != nil {
+	claims, err := s.tokens.Verify(token, "ws-ticket")
+	if err != nil || claims.Iat < s.sessionEpoch || claims.TicketID == "" {
 		fail(w, http.StatusUnauthorized, "Invalid token")
+		return
+	}
+	consumed, err := s.store.ConsumeWebsocketTicket(r.Context(), claims.TicketID)
+	if err != nil || !consumed {
+		fail(w, http.StatusUnauthorized, "Invalid or used ticket")
 		return
 	}
 	roomData, exists, err := s.store.GetRoom(r.Context(), claims.RoomID)
 	if err != nil || !exists || roomData.CreatedAt != claims.RoomCreatedAt {
 		fail(w, http.StatusUnauthorized, "Invalid room session")
 		return
+	}
+	if claims.Account {
+		role, banned, lookupErr := s.store.MemberRole(r.Context(), claims.RoomID, claims.UserID)
+		if lookupErr != nil || banned || role == "" {
+			fail(w, http.StatusForbidden, "房间访问权限已失效")
+			return
+		}
+	}
+	if !claims.Account && claims.Role != "" {
+		_, kicked, lookupErr := s.store.GuestRole(r.Context(), claims.RoomID, claims.UserID)
+		if lookupErr != nil || kicked {
+			fail(w, http.StatusForbidden, "房间访问权限已失效")
+			return
+		}
 	}
 	actor, err := s.registry.Get(r.Context(), claims.RoomID)
 	if err != nil {
@@ -70,6 +90,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(s.cfg.WSMaxPayloadBytes)
 
 	client := newWSClient(conn, actor, claims, initialPageID(r), s.cfg)
+	client.store = s.store
 	// Start consuming the outbound queue before Join builds the initial stream.
 	// Otherwise a large snapshot can fill the bounded queue before writePump has
 	// started, causing init chunks (including init-complete) to be dropped.
@@ -92,6 +113,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	room.SendInitStream(client.send, roomData.Name, client.info(), result)
 	client.readPump(ctx)
 	client.actor.Leave(client.id)
+	client.abortConnection()
 	_ = client.conn.Close(websocket.StatusNormalClosure, "closed")
 	acquiredConnection = false
 	s.connectionLimit.Release(ip, claims.RoomID)
@@ -122,6 +144,7 @@ func lastRoomSeq(r *http.Request) uint64 {
 }
 
 type wsClient struct {
+	store       *storage.Store
 	conn        *websocket.Conn
 	actor       *room.Actor
 	claims      auth.Claims
@@ -166,8 +189,8 @@ func (c *wsClient) abortConnection() {
 
 func (c *wsClient) info() room.ClientInfo {
 	return room.ClientInfo{
-		ID: c.id, UserID: c.claims.UserID, UserName: c.claims.UserName,
-		PageID: c.pageID, Send: c.send, Abort: c.abortConnection,
+		ID: c.id, UserID: c.claims.UserID, UserName: c.claims.UserName, Account: c.claims.Account,
+		PageID: c.pageID, Send: c.send, Abort: c.abortConnection, Done: c.abort,
 	}
 }
 

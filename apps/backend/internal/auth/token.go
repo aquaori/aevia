@@ -17,6 +17,10 @@ type Claims struct {
 	RoomName         string `json:"roomName"`
 	RoomCreatedAt    int64  `json:"roomCreatedAt"`
 	PasswordRequired bool   `json:"passwordRequired,omitempty"`
+	Account          bool   `json:"account,omitempty"`
+	Role             string `json:"role,omitempty"`
+	InviteID         string `json:"inviteId,omitempty"`
+	TicketID         string `json:"ticketId,omitempty"`
 	TokenType        string `json:"tokenType"`
 	Exp              int64  `json:"exp"`
 	Iat              int64  `json:"iat"`

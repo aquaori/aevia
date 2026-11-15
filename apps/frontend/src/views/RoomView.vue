@@ -65,6 +65,13 @@
 	import RoomConnectionOverlays from "../components/RoomConnectionOverlays.vue";
 	import RoomSizePreview from "../components/RoomSizePreview.vue";
 	import RoomHeader from "../components/RoomHeader.vue";
+	import RoomInvites from "../components/RoomInvites.vue";
+	import RoomSettings from "../components/RoomSettings.vue";
+	import AccountPanel from "../components/AccountPanel.vue";
+	import { useAccountStore } from "../store/accountStore";
+	import axios from "axios";
+	import { toast } from "vue-sonner";
+	import { apiUrl } from "../config/endpoints";
 	import RoomTextEditor from "../components/RoomTextEditor.vue";
 	import { fetchPageOverview, type PageOverviewItem } from "../service/pageOverviewService";
 	import type { SelectionState } from "../utils/editorTypes";
@@ -75,6 +82,31 @@
 	const userStore = useUserStore();
 	const mainCanvasGeneration = ref(0);
 	let roomDisposed = false;
+	const accountStore = useAccountStore();
+	const showInvites = ref(false);
+	const showRoomSettings = ref(false);
+	const changeGuest = async (userId: string, action: string) => {
+		if (action === "kick" && !window.confirm("游客未登录，踢出后无法永久阻止其再次进入。需要更严格的管理时，可关闭游客入口或修改房间密码。确定踢出吗？")) return;
+		try { await axios.post(apiUrl(`/v2/rooms/${roomId.value}/guests/${userId}`), { action }, { headers: accountStore.headers() }); }
+		catch { toast.error("操作失败，请重试"); }
+	};
+	const enterWithAccount = async () => {
+		const join = (password: string) => axios.post(apiUrl(`/v2/rooms/${encodeURIComponent(roomId.value)}/admission`), { roomId: roomId.value, password }, { headers: accountStore.headers() });
+		try {
+			let response;
+			try { response = await join(""); }
+			catch (error) {
+				if (!axios.isAxiosError(error) || error.response?.data?.msg !== "Password incorrect") throw error;
+				const password = window.prompt("请输入房间密码，以账号身份重新进入")
+				if (password === null) return;
+				response = await join(password);
+			}
+			userStore.setToken(response.data.data.sessionToken);
+			userStore.setSessionExpiresAt(response.data.data.expiresAt);
+			userStore.setRoomRole(response.data.data.role || "editor");
+			window.location.reload();
+		} catch { toast.error("无法以账号身份进入房间，请返回首页重试"); }
+	};
 
 	// --- 断线重连状态 (Reconnection State) ---
 	const {
@@ -427,6 +459,7 @@
 			userStore.setToken(sessionToken);
 			userStore.setSessionExpiresAt(expiresAt);
 		},
+		onRoomRoleChanged: (role) => userStore.setRoomRole(role),
 		onSessionExpired: () => {
 			userStore.clearAll();
 		},
@@ -749,6 +782,7 @@
 			:on-close="roomPanelController.closeShortcuts"
 		/>
 		<RoomPageOverview
+			:can-edit="userStore.roomRole !== 'viewer'"
 			:visible="showPageOverview"
 			:total-pages="pageOverviewTotalPages || totalPages"
 			:current-page-id="currentPageId"
@@ -765,6 +799,8 @@
 			:online-count="onlineCount"
 			:member-list="memberList"
 			:current-user-id="userId"
+			:is-owner="userStore.roomRole === 'owner'"
+			:on-guest-action="changeGuest"
 			:on-close="roomPanelController.closeMemberList"
 		/>
 
@@ -781,16 +817,22 @@
 
 		<RoomHeader
 			:visible="!isFullscreen"
+			:can-share="userStore.roomRole !== 'viewer'"
+			:can-manage-room="!!accountStore.account && accountStore.account.id === userId"
 			:room-name="roomName"
 			:room-id="roomId"
 			:more-open="headerMenuOpen"
 			:online-count="onlineCount"
 			:has-copied="hasCopied"
 			:on-toggle-more="roomPanelController.toggleMoreMenu"
-			:on-copy-link="roomHeaderController.copyLink"
+			:on-copy-link="() => { showInvites = true; }"
 			:on-open-member-list="roomPanelController.openMemberList"
+			:on-open-room-settings="() => { headerMenuOpen = false; showRoomSettings = true; }"
 			:on-toggle-shortcuts="roomPanelController.toggleShortcuts"
 		/>
+		<RoomInvites v-if="showInvites" :room-id="roomId" :token="token" @close="showInvites = false" />
+		<RoomSettings v-if="showRoomSettings" :room-id="roomId" :room-name="roomName" :role="userStore.roomRole" @close="showRoomSettings = false" @changed="(name) => { roomName = name; }" @exit="() => { userStore.clearAll(); router.push('/'); }" />
+		<AccountPanel v-if="!accountStore.account" in-room @authenticated="enterWithAccount" />
 
 		<!-- Custom Cursor for Eraser -->
 		<div
@@ -805,6 +847,7 @@
 		></div>
 
 		<RoomPagination
+			:can-edit="userStore.roomRole !== 'viewer'"
 			:current-page-id="currentPageId"
 			:total-pages="totalPages"
 			:show-page-overview="showPageOverview"
@@ -819,11 +862,11 @@
 			<canvas
 				ref="canvasRef"
 				:key="mainCanvasGeneration"
-				@dblclick="roomPointerControllerRef?.editSelectedText($event)"
-				@pointerdown="startDrawing"
-				@pointermove="draw"
-				@pointerup="stopDrawing"
-				@pointercancel="stopDrawing"
+				@dblclick="userStore.roomRole !== 'viewer' && roomPointerControllerRef?.editSelectedText($event)"
+				@pointerdown="userStore.roomRole !== 'viewer' && startDrawing($event)"
+				@pointermove="userStore.roomRole !== 'viewer' && draw($event)"
+				@pointerup="userStore.roomRole !== 'viewer' && stopDrawing($event)"
+				@pointercancel="userStore.roomRole !== 'viewer' && stopDrawing($event)"
 				@pointerenter="showEraserCursor = true"
 				@pointerleave="showEraserCursor = false; canvasCursor = 'default'"
 				class="absolute inset-0 w-full h-full touch-none z-5"
@@ -841,7 +884,7 @@
 			></canvas>
 		</div>
 
-		<RoomToolbar
+		<RoomToolbar v-if="userStore.roomRole !== 'viewer'"
 			:active-menu="activeMenu"
 			:current-tool="currentTool"
 			:current-color="currentColor"

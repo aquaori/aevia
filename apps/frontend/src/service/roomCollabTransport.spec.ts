@@ -5,6 +5,7 @@ import { createRoomCollabTransport } from "./roomCollabTransport";
 const dispatcherState = vi.hoisted(() => ({ onSnapshot: (_version: number) => {} }));
 vi.mock("./roomSessionContext", () => ({ useRoomSessionEmitHook: () => () => {} }));
 vi.mock("vue-sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+vi.mock("./sessionApi", () => ({ requestWebsocketTicket: vi.fn(async () => "ticket"), renewRoomSession: vi.fn() }));
 vi.mock("./collabMessageDispatcher", () => ({
 	createCollabMessageDispatcher: (options: { onInitSnapshotCommitted: (version: number) => void }) => {
 		dispatcherState.onSnapshot = options.onInitSnapshotCommitted;

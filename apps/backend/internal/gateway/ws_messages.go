@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 
@@ -30,6 +31,10 @@ func handleBinaryClientMessage(c *wsClient, payload []byte) {
 	}
 	msg, err := protocol.DecodeRealtime(payload)
 	if err != nil {
+		return
+	}
+	if !c.canEdit(msg.Type) {
+		sendSceneRejected(c, msg.Type, msg.Data, "FORBIDDEN", "当前角色没有编辑权限")
 		return
 	}
 	if !c.events.Allow(msg.Type) {
@@ -65,6 +70,10 @@ func handleTextClientMessage(c *wsClient, payload []byte) {
 	if json.Unmarshal(payload, &msg) != nil || msg.Type == "" {
 		return
 	}
+	if !c.canEdit(msg.Type) {
+		sendSceneRejected(c, msg.Type, msg.Data, "FORBIDDEN", "当前角色没有编辑权限")
+		return
+	}
 	if !c.events.Allow(msg.Type) {
 		if !isRealtimeEvent(msg.Type) {
 			sendRateRejected(c, msg.Type, msg.Data)
@@ -88,6 +97,23 @@ func handleTextClientMessage(c *wsClient, payload []byte) {
 	if err := c.actor.Event(c.id, msg.Type, msg.Data, false); err != nil {
 		sendBusy(c, msg.Type, msg.Data)
 	}
+}
+
+func (c *wsClient) canEdit(event string) bool {
+	switch event {
+	case "push-cmd", "cmd-start", "cmd-update", "cmd-stop", "undo-cmd", "redo-cmd", "delete-cmd", "cmd-batch-move", "cmd-batch-update", "cmd-batch-stop", "cmd-page-add":
+	default:
+		return true
+	}
+	if c.store != nil && c.claims.Account {
+		role, banned, err := c.store.MemberRole(context.Background(), c.claims.RoomID, c.claims.UserID)
+		return err == nil && !banned && (role == "owner" || role == "editor")
+	}
+	if c.store != nil && c.claims.Role != "" {
+		role, kicked, err := c.store.GuestRole(context.Background(), c.claims.RoomID, c.claims.UserID)
+		return err == nil && !kicked && role == "editor"
+	}
+	return c.claims.Role != "viewer"
 }
 
 func sendRateRejected(c *wsClient, opType string, data map[string]any) {

@@ -11,6 +11,9 @@ Read this for Vue room behavior, canvas interaction, command state, rendering, p
 ## State and Stores
 
 - `apps/frontend/src/store/userStore.ts`: persisted token/user identity in `sessionStorage`.
+- `apps/frontend/src/store/accountStore.ts`: persistent account session and profile in `localStorage`; this is separate from the current room session.
+- `apps/frontend/src/components/AccountPanel.vue`, `RoomSettings.vue`, `RoomInvites.vue`: account, member/room settings, and room invitation flows.
+- `apps/frontend/src/entry.css`, root `tokens.css` and `design.md`: the shared room-entry, invite, account and settings presentation; `HomeView.vue` renders separate guest and signed-in layouts. Room settings and account dialogs are also used from the whiteboard.
 - `apps/frontend/src/store/commandStore.ts`: page-bucketed commands, command map, pending updates, history pointer, loaded page window.
 - `apps/frontend/src/store/lamportStore.ts`: Lamport clock plus dirty-point collision/redraw support.
 - `apps/frontend/src/states/roomSessionState.ts`: token/session/reconnect flags.
@@ -37,7 +40,7 @@ Important: do not bypass `commandStore` for command ordering/folding behavior.
 - `service/collabPresenceHandlers.ts`: cursors/member updates.
 - `service/localCommandService.ts`: local command creation/history/transport emission.
 - `service/realtimeBinary.ts`: cursor/legacy realtime frames and negotiated V2 append encoding.
-- `service/sessionApi.ts`: HTTP session calls.
+- `service/sessionApi.ts`: HTTP session calls, including a fresh single-use WebSocket ticket for every connection attempt.
 - `service/pageOverviewService.ts`: page overview API.
 
 ## Rendering
@@ -84,7 +87,7 @@ Selection transforms are preview matrices until pointer-up, then one multi-targe
 
 The worker must not mirror complete point geometry in `sceneCommands`; SceneEngine owns compiled geometry and point hydration. The backend render-point stream projects both legacy path points and V2 path create/append points; V2 command chunks still carry the authoritative operations and non-path semantics. SceneEngine adopts hydrated V2 geometry without compiling the points twice. Live remote commands and locally submitted operations during initialization are merged with the completed command snapshot rather than overwritten.
 
-Init and page-resync render chunks are painted progressively as soon as each clear-watermark-filtered chunk is ingested. `canvasWorker.ts` clears the previous pixels only when the first valid chunk is ready, draws newly compiled atom refs in stream order, and finalizes stroke tails at render-stream completion; V2 command chunks then fold progressively into the same SceneEngine. Do not delay first paint until both streams finish. The initialized command window is finalized after both streams and the overall completion signal; the recovery cursor advances only after the worker confirms its queued snapshot processing. Invalid binary chunks or unresolved dependencies fail that confirmation. Page-change snapshots merge live operations and deduplicate IDs before updating the loaded window. When switching to a cached page, replay its stored Scene operations as well as newly streamed operations after the command window is updated; the render-point stream alone cannot restore undo, transforms, or text. Forced current-page resync sends an empty `clientLoadedPageIds` window so the backend actually returns authoritative commands instead of a flat-only cache delta.
+Init and page-resync render chunks are painted progressively as soon as each clear-watermark-filtered chunk is ingested. `canvasWorker.ts` clears the previous pixels only when the first valid chunk is ready, draws newly compiled atom refs in stream order, and finalizes stroke tails at render-stream completion; V2 command chunks then fold progressively into the same SceneEngine. Do not delay first paint until both streams finish. The server materializes each snapshot before streaming, so progressive client painting does not mean snapshot collection is incremental. The initialized command window is finalized after both streams and the overall completion signal; the recovery cursor advances only after the worker confirms its queued snapshot processing. Invalid binary chunks or unresolved dependencies fail that confirmation. Page-change snapshots merge live operations and deduplicate IDs before updating the loaded window. When switching to a cached page, replay its stored Scene operations as well as newly streamed operations after the command window is updated; the render-point stream alone cannot restore undo, transforms, or text. Forced current-page resync sends an empty `clientLoadedPageIds` window so the backend actually returns authoritative commands instead of a flat-only cache delta.
 
 `RoomTextEditor.vue` places the editor over the canvas and keeps font controls local while editing. `roomPointerController.ts` appends a style operation on confirmation and a versioned text-box style operation after a resize; toolbar clicks must not emit one network operation per click. Double-click editing reconstructs the current text from scene operations. New text uses measured glyph advances and a versioned layout descriptor; legacy text keeps its original layout. Rejected scene pushes with a returned `cmdId` are rolled back locally and rebuild the Worker scene rather than forcing an unscoped page replay.
 

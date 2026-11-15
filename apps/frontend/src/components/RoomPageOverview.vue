@@ -12,6 +12,7 @@
 		onClose: () => void;
 		goToPage: (index: number) => void;
 		onAddPage: () => void;
+		canEdit: boolean;
 		onRetry: () => void;
 	}>();
 
@@ -151,6 +152,7 @@
 
 					<button
 						type="button"
+						v-if="props.canEdit"
 						@click="props.onAddPage"
 						class="aspect-video bg-slate-50/50 rounded-xl hmd:rounded-2xl border-2 border-dashed border-slate-300 hover:border-indigo-300 hover:bg-indigo-50/30 transition-all flex flex-col items-center justify-center gap-2 group text-slate-400 hover:text-indigo-500"
 					>

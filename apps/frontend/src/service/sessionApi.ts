@@ -44,6 +44,15 @@ export const renewRoomSession = async (sessionToken: string) => {
 	return response.data.data;
 };
 
+export const requestWebsocketTicket = async (roomId: string, sessionToken: string) => {
+	const response = await axios.post<{ data: { ticket: string } }>(
+		`${apiUrl}/v2/rooms/${encodeURIComponent(roomId)}/ws-ticket`,
+		{},
+		{ headers: buildSessionHeaders(sessionToken) }
+	);
+	return response.data.data.ticket;
+};
+
 export const generateShareInvite = async (roomId: string, sessionToken: string) => {
 	const response = await axios.get<{ data: ShareInvitePayload }>(
 		`${apiUrl}/generate-share-token?roomId=${encodeURIComponent(roomId)}`,
