@@ -44,7 +44,9 @@ Important: do not bypass `commandStore` for command ordering/folding behavior.
 
 Canonical scene core:
 
-- `scene/sceneEngine.ts`: immutable-operation folding, incremental primitive compilation, history, clear, transforms, erasure, hit testing, ordering, spatial queries, and rendering.
+- `scene/sceneCore.ts`: browser-independent operation folding, primitive compilation, history, transforms, erasure, hit testing and spatial queries. Text measurement is injected by the host.
+- `scene/sceneEngine.ts`: Canvas adapter over `SceneCore`, used by the worker and fallback paths; it supplies browser text measurement and retains the existing rendering API.
+- `scene/renderIR.ts`: detached, ordered render frames and revision-checked full-to-delta reconstruction. Canvas rendering still uses the existing direct adapter; the IR is not yet the renderer's sole input.
 - `scene/renderOrderIndex.ts`: block-ordered atom references used by full replay.
 - `scene/spatialGridIndex.ts`: 32×32 coarse grid over bounded geometry chunks.
 - `scene/dirtyRegionSet.ts`: up to eight disjoint regions, full-render thresholds, and enter/exit hysteresis.

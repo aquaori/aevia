@@ -193,11 +193,25 @@
       "owner": "apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts"
     },
     {
+      "id": "frontend:apps/frontend/src/scene/renderIR.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/renderIR.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneCore.spec.ts"
+    },
+    {
       "id": "frontend:apps/frontend/src/scene/renderOrderIndex.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/renderOrderIndex.ts",
       "state": "covered",
       "owner": "apps/frontend/src/scene/renderOrderIndex.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/sceneCore.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/sceneCore.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneCore.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/sceneEngine.ts",
