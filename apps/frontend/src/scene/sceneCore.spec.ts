@@ -6,6 +6,27 @@ import { applyRenderIRDelta } from "./renderIR";
 import { decodeRenderIR, encodeRenderIR } from "./renderIRCodec";
 
 describe("SceneCore without browser rendering", () => {
+	it("restores a valid element checkpoint and invalidates it when earlier history changes", () => {
+		const core = new SceneCore();
+		const reference = new SceneCore();
+		(reference as unknown as { maybeCheckpointElement: () => Generator<void> }).maybeCheckpointElement = function* () {};
+		const create: SceneOperationEnvelopeV2 = {
+			schemaVersion: 2, opId: "create", elementId: "stroke", actorId: "author", roomId: "room", pageId: 0, lamport: 1, historyGroupId: "create", kind: "element.create",
+			payload: { descriptor: { elementKind: "path", toolId: "pen", recipeId: "stroke", style: { color: "#000", size: 4 } }, points: [{ x: .1, y: .2, p: .5, lamport: 1 }] },
+		};
+		const apply = (op: SceneOperationEnvelopeV2) => { core.applyOperation(op); reference.applyOperation(op); };
+		apply(create);
+		for (let index = 1; index < 140; index++) apply({ ...create, opId: `append-${index}`, lamport: index + 1, historyGroupId: `append-${index}`, kind: "element.append", payload: { sourceStart: index, points: [{ x: .1 + index / 1000, y: .2, p: .5, lamport: index + 1 }] } });
+		const checkpoints = (core as unknown as { elementCheckpoints: Map<string, unknown> }).elementCheckpoints;
+		expect(checkpoints.has("stroke")).toBe(true);
+		apply({ ...create, opId: "style", lamport: 200, historyGroupId: "style", kind: "element.style", payload: { style: { color: "#f00" } } });
+		apply({ ...create, opId: "undo-style", lamport: 201, historyGroupId: "undo-style", kind: "history.toggle", payload: { targetHistoryGroupId: "style", enabled: false } });
+		expect(checkpoints.has("stroke")).toBe(true);
+		expect(core.sceneHash()).toBe(reference.sceneHash());
+		apply({ ...create, opId: "undo-early", lamport: 202, historyGroupId: "undo-early", kind: "history.toggle", payload: { targetHistoryGroupId: "append-2", enabled: false } });
+		expect(checkpoints.has("stroke")).toBe(false);
+		expect(core.sceneHash()).toBe(reference.sceneHash());
+	});
 	it("sorts large out-of-order input across multiple slices", () => {
 		const values = Array.from({ length: 5000 }, (_, index) => ({ value: (4999 - index) % 113, index }));
 		const expected = [...values].sort((a, b) => a.value - b.value);

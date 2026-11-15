@@ -63,6 +63,11 @@ export class RenderOrderIndex {
 		for (const block of this.blocks) yield* block;
 	}
 
+	lastRef() {
+		const block = this.blocks[this.blocks.length - 1];
+		return block?.[block.length - 1];
+	}
+
 	toArray() {
 		const result: number[] = [];
 		this.forEach((ref) => result.push(ref));
