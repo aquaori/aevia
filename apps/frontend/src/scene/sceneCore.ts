@@ -31,7 +31,7 @@ import type {
 import { SpatialGridIndex } from "./spatialGridIndex";
 import { splitGraphemes } from "./graphemes";
 import { resolveStickerAsset } from "./stickerAssets";
-import type { AtomHandle, RenderIRFrame, RenderIRItem, SceneCorePort } from "./renderIR";
+import type { AtomHandle, RenderIRDelta, RenderIRFrame, RenderIRItem, SceneCorePort } from "./renderIR";
 import {
 	compileStrokeSample,
 	finishCompiledStroke,
@@ -164,9 +164,10 @@ const operationTargets = (operation: SceneOperationEnvelopeV2) => {
 export class SceneCore implements SceneCorePort {
 	private readonly measureText?: (text: string, font: string) => number;
 	constructor(measureText?: (text: string, font: string) => number) { this.measureText = measureText; }
-	private renderRevision = 0;
 	private materializedRevision = 0;
-	private lastRenderSignature: string | null = null;
+	private staleAtomCount = 0;
+	private readonly changedRenderElements = new Set<string>();
+	private renderFullRequired = true;
 	private nextAtomGeneration = 0;
 	private readonly atomEpoch = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 	protected readonly atoms: RenderAtom[] = [];
@@ -189,6 +190,7 @@ export class SceneCore implements SceneCorePort {
 	private readonly operationsByHistoryGroup = new Map<string, SceneOperationEnvelopeV2[]>();
 	private readonly revisionSeed = new Map<string, number>();
 	private readonly historyEnabled = new Map<string, boolean>();
+	private readonly latestHistoryToggle = new Map<string, Extract<SceneOperationEnvelopeV2, { kind: "history.toggle" }>>();
 	private readonly pageClearBefore = new Map<number, RenderOrderKey>();
 	private readonly spatial = new SpatialGridIndex();
 	protected readonly dirtyRegions = new DirtyRegionSet();
@@ -200,8 +202,11 @@ export class SceneCore implements SceneCorePort {
 	private bulkLoading = false;
 
 	reset(pageId = this.pageId) {
+		this.renderFullRequired = true;
+		this.changedRenderElements.clear();
 		this.materializedRevision += 1;
 		this.atoms.length = 0;
+		this.staleAtomCount = 0;
 		this.elements.clear();
 		this.compilerStates.clear();
 		this.pendingAppends.clear();
@@ -217,6 +222,7 @@ export class SceneCore implements SceneCorePort {
 		this.operationsByHistoryGroup.clear();
 		this.revisionSeed.clear();
 		this.historyEnabled.clear();
+		this.latestHistoryToggle.clear();
 		this.pageClearBefore.clear();
 		this.spatial.clear();
 		this.order.clear();
@@ -244,11 +250,12 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	setPage(pageId: number) {
-		if (pageId !== this.pageId) this.materializedRevision += 1;
+		if (pageId !== this.pageId) { this.materializedRevision += 1; this.renderFullRequired = true; }
 		this.pageId = pageId;
 	}
 
 	ingestFlatPoint(point: FlatPoint) {
+		this.changedRenderElements.add(point.cmdId);
 		this.materializedRevision += 1;
 		let element = this.elements.get(point.cmdId);
 		if (!element) {
@@ -278,6 +285,7 @@ export class SceneCore implements SceneCorePort {
 
 	appendCommandPoints(command: Command, points: Point[]) {
 		if (command.type !== "path" || points.length === 0) return [] as number[];
+		this.changedRenderElements.add(command.id);
 		this.materializedRevision += 1;
 		let element = this.elements.get(command.id);
 		if (!element) {
@@ -297,6 +305,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	finishElement(elementId: string) {
+		this.changedRenderElements.add(elementId);
 		const element = this.elements.get(elementId);
 		if (!element || element.descriptor.recipeId !== "stroke") return [] as number[];
 		const state = this.compilerStates.get(elementId);
@@ -361,20 +370,24 @@ export class SceneCore implements SceneCorePort {
 			return [] as string[];
 		}
 		if (this.operationIds.has(operation.opId)) return [] as string[];
+		if (operation.kind === "page.clear") this.renderFullRequired = true;
+		else if (operation.kind === "history.toggle") {
+			const impact = this.getHistoryImpact(operation.payload.targetHistoryGroupId);
+			if (impact.pageWide) this.renderFullRequired = true;
+			else for (const id of impact.elementIds) this.changedRenderElements.add(id);
+		} else for (const id of operationTargets(operation)) this.changedRenderElements.add(id);
 		this.materializedRevision += 1;
 		this.operationIds.add(operation.opId);
-		let insertAt = this.operations.length;
-		while (insertAt > 0 && compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(this.operations[insertAt - 1]!)) < 0) {
-			insertAt -= 1;
-		}
-		this.operations.splice(insertAt, 0, operation);
+		const insertAt = this.insertOperationOrdered(this.operations, operation);
 		this.indexOperation(operation);
 		const tail = insertAt === this.operations.length - 1;
 		if (operation.kind === "history.toggle") {
-			const newerToggle = this.operations.slice(insertAt + 1).some((candidate) =>
-				candidate.kind === "history.toggle" && candidate.payload.targetHistoryGroupId === operation.payload.targetHistoryGroupId
-			);
-			if (!newerToggle) this.applyHistoryToggle(operation);
+			const groupId = operation.payload.targetHistoryGroupId;
+			const latest = this.latestHistoryToggle.get(groupId);
+			if (!latest || compareRenderOrder(sceneOperationOrderKey(latest), sceneOperationOrderKey(operation)) < 0) {
+				this.latestHistoryToggle.set(groupId, operation);
+				this.applyHistoryToggle(operation);
+			}
 			return operationTargets(operation);
 		}
 		if (!tail) {
@@ -390,6 +403,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	setLegacyCommandState(command: Command) {
+		this.changedRenderElements.add(command.id);
 		if (command.type === "scene-op" && command.sceneOperation) {
 			this.applyOperation(command.sceneOperation);
 			return;
@@ -409,6 +423,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	removeElement(elementId: string) {
+		this.changedRenderElements.add(elementId);
 		const element = this.elements.get(elementId);
 		if (element && !element.deleted) {
 			this.materializedRevision += 1;
@@ -419,6 +434,14 @@ export class SceneCore implements SceneCorePort {
 
 	getElementPoints(elementId: string) {
 		return this.elements.get(elementId)?.points.map((point) => ({ ...point })) ?? [];
+	}
+
+	canAppendWithoutRebuild(operation: SceneOperationEnvelopeV2) {
+		if (operation.kind !== "element.append" || operation.payload.isComplete || this.operationIds.has(operation.opId)) return false;
+		const element = this.elements.get(operation.elementId);
+		const last = this.operations[this.operations.length - 1];
+		return !!element && operation.payload.sourceStart === element.points.length && !this.pendingAppends.has(operation.elementId) &&
+			(!last || compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(last)) >= 0);
 	}
 
 	hasHydratedPathRange(elementId: string, sourceEndExclusive: number) {
@@ -587,6 +610,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	previewTextBox(elementId: string, box: AabbBox) {
+		this.changedRenderElements.add(elementId);
 		if (this.elements.has(elementId)) this.materializedRevision += 1;
 		this.applyElementStyle(elementId, {}, box);
 	}
@@ -648,12 +672,33 @@ export class SceneCore implements SceneCorePort {
 		const refs: number[] = [];
 		this.order.forEach((ref) => refs.push(ref));
 		const items = structuredClone(Array.from(this.renderItemsForRefs(refs, new Set())));
-		const signature = JSON.stringify(items);
-		if (signature !== this.lastRenderSignature) {
-			this.renderRevision += 1;
-			this.lastRenderSignature = signature;
+		this.changedRenderElements.clear();
+		this.renderFullRequired = false;
+		return { version: 1, revision: this.materializedRevision, items };
+	}
+
+	/** Emit changes since the preceding frame without comparing whole serialized scenes. */
+	getRenderIRDelta(previous: RenderIRFrame): RenderIRDelta | null {
+		if (this.renderFullRequired) return null;
+		const changed = this.changedRenderElements;
+		const oldItems = previous.items.filter((item) => changed.has(item.atom.elementId));
+		const refs: number[] = [];
+		this.order.forEach((ref) => refs.push(ref));
+		const order: string[] = [];
+		const upserted: RenderIRItem[] = [];
+		for (const item of this.renderItemsForRefs(refs, new Set())) {
+			order.push(item.id);
+			if (changed.has(item.atom.elementId)) upserted.push(item);
 		}
-		return { version: 1, revision: this.renderRevision, items };
+		const newIds = new Set(upserted.map((item) => item.id));
+		const delta: RenderIRDelta = {
+			version: 1, baseRevision: previous.revision, revision: this.materializedRevision,
+			removed: oldItems.filter((item) => !newIds.has(item.id)).map((item) => item.id),
+			upserted: structuredClone(upserted), order,
+			dirtyBounds: [...oldItems, ...upserted].map((item) => transformBounds(item.matrix, item.atom.bounds)),
+		};
+		this.changedRenderElements.clear();
+		return delta;
 	}
 
 	protected *renderItemsForRefs(refs: readonly number[], excluded: ReadonlySet<string>): IterableIterator<RenderIRItem> {
@@ -778,9 +823,20 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private insertOperationOrdered(target: SceneOperationEnvelopeV2[], operation: SceneOperationEnvelopeV2) {
-		let index = target.length;
-		while (index > 0 && compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(target[index - 1]!)) < 0) index -= 1;
-		target.splice(index, 0, operation);
+		const key = sceneOperationOrderKey(operation);
+		let low = 0;
+		let high = target.length;
+		if (high === 0 || compareRenderOrder(sceneOperationOrderKey(target[high - 1]!), key) <= 0) {
+			target.push(operation);
+			return high;
+		}
+		while (low < high) {
+			const middle = (low + high) >>> 1;
+			if (compareRenderOrder(sceneOperationOrderKey(target[middle]!), key) <= 0) low = middle + 1;
+			else high = middle;
+		}
+		target.splice(low, 0, operation);
+		return low;
 	}
 
 	private applyHistoryToggle(operation: Extract<SceneOperationEnvelopeV2, { kind: "history.toggle" }>) {
@@ -810,7 +866,10 @@ export class SceneCore implements SceneCorePort {
 				previous.eraseMasks = [];
 				if (this.isElementBaseVisible(previous)) this.visibleAtomCount += previous.atomRefs.length;
 			} else {
-				if (previous) this.revisionSeed.set(elementId, previous.revision + 1);
+				if (previous) {
+					this.staleAtomCount += previous.atomRefs.length;
+					this.revisionSeed.set(elementId, previous.revision + 1);
+				}
 				this.elements.delete(elementId);
 				this.compilerStates.delete(elementId);
 			}
@@ -819,9 +878,7 @@ export class SceneCore implements SceneCorePort {
 				this.applyOperationToElement(candidate, elementId);
 			}
 		}
-		let currentAtoms = 0;
-		for (const element of this.elements.values()) currentAtoms += element.atomRefs.length;
-		if (this.atoms.length - currentAtoms > 4096 && this.atoms.length > currentAtoms * 1.25) this.compactIndexes();
+		this.maybeCompactIndexes();
 	}
 
 	private applyOperationToElement(operation: SceneOperationEnvelopeV2, elementId: string) {
@@ -1051,6 +1108,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private rebuildTextAtoms(element: SceneElementState) {
+		this.staleAtomCount += element.atomRefs.length;
 		if (this.isElementBaseVisible(element)) this.visibleAtomCount -= element.atomRefs.length;
 		element.revision += 1;
 		element.atomRefs = [];
@@ -1133,10 +1191,9 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private maybeCompactIndexes() {
-		if (this.bulkLoading) return;
-		let currentAtoms = 0;
-		for (const element of this.elements.values()) currentAtoms += element.atomRefs.length;
-		if (this.atoms.length - currentAtoms > 4096 && this.atoms.length > currentAtoms * 1.25) this.compactIndexes();
+		if (this.bulkLoading || this.staleAtomCount <= 4096) return;
+		const currentAtoms = this.atoms.length - this.staleAtomCount;
+		if (this.atoms.length > currentAtoms * 1.25) this.compactIndexes();
 	}
 
 	private applyElementMatrix(elementId: string, delta: AffineMatrix) {
@@ -1201,6 +1258,7 @@ export class SceneCore implements SceneCorePort {
 		this.hydratedThrough.clear();
 		for (const [elementId] of this.elements) {
 			if (!this.legacyElementIds.has(elementId)) {
+				this.staleAtomCount += this.elements.get(elementId)!.atomRefs.length;
 				this.elements.delete(elementId);
 				this.compilerStates.delete(elementId);
 				continue;
@@ -1213,8 +1271,8 @@ export class SceneCore implements SceneCorePort {
 		}
 		this.historyEnabled.clear();
 		this.pageClearBefore.clear();
-		for (const operation of this.operations) {
-			if (operation.kind === "history.toggle") this.historyEnabled.set(operation.payload.targetHistoryGroupId, operation.payload.enabled);
+		for (const [groupId, operation] of this.latestHistoryToggle) {
+			this.historyEnabled.set(groupId, operation.payload.enabled);
 		}
 		for (const operation of this.operations) {
 			if (operation.kind !== "history.toggle") this.applyOperationIncremental(operation);
@@ -1224,7 +1282,10 @@ export class SceneCore implements SceneCorePort {
 
 	private rebuildLegacyElement(command: Command) {
 		const previous = this.elements.get(command.id);
-		if (previous) previous.revision += 1;
+		if (previous) {
+			this.staleAtomCount += previous.atomRefs.length;
+			previous.revision += 1;
+		}
 		this.elements.delete(command.id);
 		this.compilerStates.delete(command.id);
 		const points = command.points ?? [];
@@ -1251,7 +1312,8 @@ export class SceneCore implements SceneCorePort {
 			element.atomRefs = nextRefs;
 		}
 		this.atoms.length = 0;
-		this.atoms.push(...activeAtoms);
+		for (const atom of activeAtoms) this.atoms.push(atom);
+		this.staleAtomCount = 0;
 		this.order.clear();
 		this.spatial.clear();
 		this.visibleAtomCount = 0;

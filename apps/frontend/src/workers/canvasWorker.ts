@@ -9,7 +9,7 @@ import {
 } from "@collaborative-whiteboard/shared";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 import { SceneEngine } from "../scene/sceneEngine";
-import { diffRenderIR, type RenderIRFrame } from "../scene/renderIR";
+import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
 import { encodeRenderIR } from "../scene/renderIRCodec";
 import { labDrainMarks, labEnabled, labMark, labSetEnabled } from "../instrumentation/labMarks";
 import {
@@ -477,6 +477,12 @@ const renderDirtyRegions = (dirtyRects: Rect[], transformingCmdIds: string[]) =>
 	);
 };
 
+// Keep scene messages ordered while long operations run in bounded slices.
+let sceneTaskInProgress = false;
+const deferredMessages: MessageEvent[] = [];
+let deferredMessageHead = 0;
+let drainingMessages = false;
+
 const applyPendingInitSceneOperations = () => {
 	if (!initRenderFinished || (pendingInitSceneCommands.length === 0 && liveSceneCommandsDuringInit.size === 0)) return;
 	const merged = new Map<string, Command>();
@@ -491,30 +497,44 @@ const applyPendingInitSceneOperations = () => {
 	pendingInitSceneCommands = [];
 	liveSceneCommandsDuringInit.clear();
 	let needsFullRender = false;
-	for (const command of commands) {
-		const operation = command.sceneOperation!;
-		if (operation.kind === "element.create") {
-			const hydratedThrough = operation.payload.points?.length ?? 0;
-			if (
-				operation.payload.descriptor.elementKind !== "path" ||
-				!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)
-			) {
+	let index = 0;
+	const runSlice = () => {
+		const deadline = performance.now() + 6;
+		while (index < commands.length) {
+			const command = commands[index++]!;
+			const operation = command.sceneOperation!;
+			if (operation.kind === "element.create") {
+				const hydratedThrough = operation.payload.points?.length ?? 0;
+				if (
+					operation.payload.descriptor.elementKind !== "path" ||
+					!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)
+				) {
+					needsFullRender = true;
+				}
+			} else if (operation.kind === "element.append") {
+				const hydratedThrough = operation.payload.sourceStart + operation.payload.points.length;
+				if (!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) {
+					needsFullRender = true;
+				}
+			} else {
 				needsFullRender = true;
 			}
-		} else if (operation.kind === "element.append") {
-			const hydratedThrough = operation.payload.sourceStart + operation.payload.points.length;
-			if (!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) {
-				needsFullRender = true;
-			}
-		} else {
-			needsFullRender = true;
+			sceneCommands.set(command.id, cloneCommandMetadata(command));
+			sceneEngine.applyOperation(operation);
+			if (performance.now() >= deadline) break;
 		}
-		sceneCommands.set(command.id, cloneCommandMetadata(command));
-		sceneEngine.applyOperation(operation);
-	}
-	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
-	checkSceneDependencies();
-	if (needsFullRender) renderFullScene();
+		if (index < commands.length) {
+			sceneTaskInProgress = true;
+			setTimeout(runSlice, 0);
+			return;
+		}
+		if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
+		checkSceneDependencies();
+		if (needsFullRender) renderFullScene();
+		sceneTaskInProgress = false;
+		drainDeferredMessages();
+	};
+	runSlice();
 };
 
 const operationElementIds = (operation: SceneOperationEnvelopeV2) => {
@@ -545,24 +565,42 @@ const elementBounds = (ids: ReadonlySet<string>) => {
 	return bounds;
 };
 
+let pendingSceneDirty: Rect[] = [];
+let pendingSceneRenderFrame: number | null = null;
+let pendingSceneBaseRevision: number | null = null;
+
+const flushSceneRender = () => {
+	if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
+	pendingSceneRenderFrame = null;
+	if (pendingSceneDirty.length === 0 || !mainCtx) return;
+	const regions = pendingSceneDirty;
+	pendingSceneDirty = [];
+	sceneEngine.renderDirtyRegions(mainCtx, regions, viewport.width, viewport.height, currentTransformingIds);
+	if (currentTransformingIds.size === 0 && presentedRevision === pendingSceneBaseRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	pendingSceneBaseRevision = null;
+};
+
 const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
+	if (operation.kind === "element.transform" || operation.kind === "page.clear" || operation.kind === "history.toggle") flushSceneRender();
 	const previousRevision = sceneEngine.getSceneRevision();
 	const historyImpact = operation.kind === "history.toggle"
 		? sceneEngine.getHistoryImpact(operation.payload.targetHistoryGroupId)
 		: null;
 	const ids = new Set(historyImpact?.elementIds ?? operationElementIds(operation));
-	const oldBounds = elementBounds(ids);
+	const appendOnly = sceneEngine.canAppendWithoutRebuild(operation);
+	const oldBounds = appendOnly ? null : elementBounds(ids);
 	const firstNewRef = sceneEngine.atomCount;
 	sceneEngine.applyOperation(operation);
 	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
 	checkSceneDependencies();
 	if (!mainCtx || operation.pageId !== currentPageId) return false;
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
+		flushSceneRender();
 		renderFullScene();
 		return true;
 	}
 	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
-	const newBounds = addedBounds ?? elementBounds(ids);
+	const newBounds = addedBounds ?? (appendOnly ? null : elementBounds(ids));
 	const dirty = mergeBounds(oldBounds, newBounds);
 	if (!dirty) return false;
 	const pixelBounds: Rect = {
@@ -573,9 +611,19 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 		width: dirty.width * viewport.width,
 		height: dirty.height * viewport.height,
 	};
-	const excludedIds = operation.kind === "element.transform" ? new Set<string>() : currentTransformingIds;
-	sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, excludedIds);
-	if (excludedIds.size === 0 && presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	if (operation.kind === "element.transform") {
+		flushSceneRender();
+		sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, new Set());
+		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	} else {
+		if (pendingSceneDirty.length === 0) pendingSceneBaseRevision = previousRevision;
+		if (pendingSceneDirty.length < 8) pendingSceneDirty.push(pixelBounds);
+		else {
+			const combined = pendingSceneDirty.reduce<AabbBox | null>((bounds, rect) => mergeBounds(bounds, rect), pixelBounds);
+			pendingSceneDirty = combined ? [combined] : [];
+		}
+		if (pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
+	}
 	return true;
 };
 
@@ -620,8 +668,9 @@ const mergeRects = (rects: Rect[]): Rect[] => {
 	return Array.from(groups.values());
 };
 
-self.onmessage = (event: MessageEvent) => {
+const handleWorkerMessage = (event: MessageEvent) => {
 	const { type, data } = event.data;
+	if (type !== "update-command-state" || data?.cmd?.type !== "scene-op") flushSceneRender();
 
 	if (type === "lab-configure") {
 		labSetEnabled(data?.enabled === true);
@@ -754,10 +803,29 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-increment-batch") {
-		if (typeof event.data.dispatchSeq === "number") processedDispatchSeq = event.data.dispatchSeq;
-		(data as IncrementBatchItem[]).forEach((entry) => {
-			renderIncrementalPoints(entry.cmd, entry.points);
-		});
+		const entries = data as IncrementBatchItem[];
+		let entryIndex = 0;
+		let pointIndex = 0;
+		const runSlice = () => {
+			const deadline = performance.now() + 6;
+			while (entryIndex < entries.length) {
+				const entry = entries[entryIndex]!;
+				const end = Math.min(pointIndex + 128, entry.points.length);
+				renderIncrementalPoints(entry.cmd, entry.points.slice(pointIndex, end));
+				pointIndex = end;
+				if (pointIndex >= entry.points.length) { entryIndex += 1; pointIndex = 0; }
+				if (performance.now() >= deadline) break;
+			}
+			if (entryIndex < entries.length) {
+				sceneTaskInProgress = true;
+				setTimeout(runSlice, 0);
+				return;
+			}
+			if (typeof event.data.dispatchSeq === "number") processedDispatchSeq = event.data.dispatchSeq;
+			sceneTaskInProgress = false;
+			drainDeferredMessages();
+		};
+		runSlice();
 		return;
 	}
 
@@ -810,6 +878,7 @@ self.onmessage = (event: MessageEvent) => {
 			if (cmd.sceneOperation.kind === "element.transform" && rendered) {
 				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId, epoch: data.epoch });
 			} else if (rendered && labEnabled()) {
+				flushSceneRender();
 				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
 			}
 			return;
@@ -843,12 +912,11 @@ self.onmessage = (event: MessageEvent) => {
 			self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: null });
 			return;
 		}
-		const next = sceneEngine.getRenderIR();
 		const previous = exportedRenderEpoch === epoch ? exportedRenderFrame : null;
-		const frameBytes = encodeRenderIR(next);
-		const deltaBytes = previous && data.baseRevision === previous.revision ? encodeRenderIR(diffRenderIR(previous, next)) : null;
-		const bytes = deltaBytes && deltaBytes.byteLength < frameBytes.byteLength ? deltaBytes : frameBytes;
-		exportedRenderFrame = next;
+		const delta = previous && data.baseRevision === previous.revision ? sceneEngine.getRenderIRDelta(previous) : null;
+		const result = delta ?? sceneEngine.getRenderIR();
+		const bytes = encodeRenderIR(result);
+		exportedRenderFrame = delta && previous ? applyRenderIRDelta(previous, delta, false) : result as RenderIRFrame;
 		exportedRenderEpoch = epoch;
 		self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: bytes.buffer }, { transfer: [bytes.buffer as ArrayBuffer] });
 		return;
@@ -954,4 +1022,34 @@ self.onmessage = (event: MessageEvent) => {
 		offscreenCanvas = null;
 		mainCtx = null;
 	}
+};
+
+function drainDeferredMessages() {
+	if (drainingMessages || sceneTaskInProgress) return;
+	drainingMessages = true;
+	const runSlice = () => {
+		const deadline = performance.now() + 6;
+		while (!sceneTaskInProgress && deferredMessageHead < deferredMessages.length) {
+			handleWorkerMessage(deferredMessages[deferredMessageHead++]!);
+			if (performance.now() >= deadline) break;
+		}
+		if (sceneTaskInProgress) { drainingMessages = false; return; }
+		if (deferredMessageHead < deferredMessages.length) { setTimeout(runSlice, 0); return; }
+		deferredMessages.length = 0;
+		deferredMessageHead = 0;
+		drainingMessages = false;
+	};
+	runSlice();
+}
+
+self.onmessage = (event: MessageEvent) => {
+	// Rectangle merging does not read the scene and can serve interaction work
+	// while a large scene batch is yielding between slices.
+	if ((sceneTaskInProgress || drainingMessages) && event.data.type === "merge-dirty-rects") {
+		const data = event.data.data;
+		self.postMessage({ type: "merge-dirty-rects-result", rects: mergeRects(data.rects as Rect[]), epoch: data.epoch });
+		return;
+	}
+	if (sceneTaskInProgress || drainingMessages) deferredMessages.push(event);
+	else handleWorkerMessage(event);
 };

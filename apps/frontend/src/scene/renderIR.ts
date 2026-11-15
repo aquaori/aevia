@@ -58,11 +58,11 @@ export function diffRenderIR(previous: RenderIRFrame, next: RenderIRFrame): Rend
 	};
 }
 
-export function applyRenderIRDelta(frame: RenderIRFrame, delta: RenderIRDelta): RenderIRFrame {
+export function applyRenderIRDelta(frame: RenderIRFrame, delta: RenderIRDelta, cloneItems = true): RenderIRFrame {
 	if (frame.version !== 1 || delta.version !== 1 || frame.revision !== delta.baseRevision) throw new Error("Render IR revision mismatch");
-	const items = new Map(frame.items.map((item) => [item.id, structuredClone(item)]));
+	const items = new Map(frame.items.map((item) => [item.id, cloneItems ? structuredClone(item) : item]));
 	for (const id of delta.removed) items.delete(id);
-	for (const item of delta.upserted) items.set(item.id, structuredClone(item));
+	for (const item of delta.upserted) items.set(item.id, cloneItems ? structuredClone(item) : item);
 	const ordered = delta.order.map((id) => {
 		const item = items.get(id);
 		if (!item) throw new Error("Render IR delta references a missing atom");

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { SceneOperationEnvelopeV2 } from "@collaborative-whiteboard/shared";
 import { SceneCore } from "./sceneCore";
-import { applyRenderIRDelta, diffRenderIR } from "./renderIR";
+import { applyRenderIRDelta } from "./renderIR";
 import { decodeRenderIR, encodeRenderIR } from "./renderIRCodec";
 
 describe("SceneCore without browser rendering", () => {
@@ -40,8 +40,9 @@ describe("SceneCore without browser rendering", () => {
 			payload: { targets: [{ elementId: "stroke", deltaMatrix: [1, 0, 0, 1, 0.1, 0] }] },
 		});
 		expect(core.getSceneRevision()).toBeGreaterThan(revision);
+		const delta = core.getRenderIRDelta(initial)!;
 		const moved = core.getRenderIR();
-		const delta = diffRenderIR(initial, moved);
+		expect(delta.upserted.length).toBeGreaterThan(0);
 		expect(applyRenderIRDelta(initial, delta)).toEqual(moved);
 		expect(() => applyRenderIRDelta(moved, delta)).toThrow("revision mismatch");
 		expect(initial.items[0]?.matrix).not.toEqual(moved.items[0]?.matrix);
