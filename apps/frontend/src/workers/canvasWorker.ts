@@ -76,6 +76,8 @@ let currentTransformingIds = new Set<string>();
 const activeStrokeIds = new Set<string>();
 const sceneCommands = new Map<string, Command>();
 const sceneEngine = new SceneEngine();
+let presentedRevision: number | null = null;
+let processedDispatchSeq = 0;
 let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
 const checkSceneDependencies = () => {
 	if (!sceneEngine.hasPendingDependencies() || dependencyTimer) return;
@@ -354,6 +356,7 @@ const renderFullScene = () => {
 		currentTransformingIds
 	);
 	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
+	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
 	return paintedRefs;
 };
 
@@ -539,6 +542,7 @@ const elementBounds = (ids: ReadonlySet<string>) => {
 };
 
 const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
+	const previousRevision = sceneEngine.getSceneRevision();
 	const historyImpact = operation.kind === "history.toggle"
 		? sceneEngine.getHistoryImpact(operation.payload.targetHistoryGroupId)
 		: null;
@@ -548,15 +552,15 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 	sceneEngine.applyOperation(operation);
 	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
 	checkSceneDependencies();
-	if (!mainCtx || operation.pageId !== currentPageId) return;
+	if (!mainCtx || operation.pageId !== currentPageId) return false;
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
 		renderFullScene();
-		return;
+		return true;
 	}
 	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
 	const newBounds = addedBounds ?? elementBounds(ids);
 	const dirty = mergeBounds(oldBounds, newBounds);
-	if (!dirty) return;
+	if (!dirty) return false;
 	const pixelBounds: Rect = {
 		minX: dirty.minX * viewport.width,
 		minY: dirty.minY * viewport.height,
@@ -567,6 +571,8 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 	};
 	const excludedIds = operation.kind === "element.transform" ? new Set<string>() : currentTransformingIds;
 	sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, excludedIds);
+	if (excludedIds.size === 0 && presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	return true;
 };
 
 const isIntersect = (a: Rect, b: Rect): boolean =>
@@ -661,6 +667,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "begin-init-stream") {
+		presentedRevision = null;
 		initStreamValid = true;
 		if (typeof data?.pageId === "number") {
 			currentPageId = data.pageId;
@@ -780,6 +787,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "update-command-state") {
+		if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 		const cmd = data.cmd as Command;
 		if (cmd.type === "scene-op" && cmd.sceneOperation) {
 			if (!initRenderFinished) {
@@ -787,10 +795,10 @@ self.onmessage = (event: MessageEvent) => {
 				return;
 			}
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
-			renderSceneOperation(cmd.sceneOperation);
-			if (cmd.sceneOperation.kind === "element.transform") {
+			const rendered = renderSceneOperation(cmd.sceneOperation);
+			if (cmd.sceneOperation.kind === "element.transform" && rendered) {
 				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId, epoch: data.epoch });
-			} else if (labEnabled()) {
+			} else if (rendered && labEnabled()) {
 				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
 			}
 			return;
@@ -809,6 +817,12 @@ self.onmessage = (event: MessageEvent) => {
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 		}
 		sceneEngine.setLegacyCommandState(cmd);
+		return;
+	}
+
+	if (type === "get-render-watermarks") {
+		self.postMessage({ type: "render-watermarks", requestId: data.requestId, epoch: data.epoch,
+			sceneRevision: sceneEngine.getSceneRevision(), presentedRevision, processedDispatchSeq });
 		return;
 	}
 

@@ -61,6 +61,29 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("reports dispatch, scene and presentation watermarks independently", async () => {
+		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string; epoch?: number } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId?: string; epoch?: number } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { worker = this; }
+			postMessage(message: { type: string; data?: { requestId?: string; epoch?: number } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			bridge.syncCommandState(command([]));
+			bridge.syncCommandState(command([]));
+			const pending = bridge.requestRenderWatermarks();
+			const request = worker!.sent.at(-1)!.data!;
+			worker!.onmessage?.({ data: { type: "render-watermarks", requestId: request.requestId, epoch: request.epoch, processedDispatchSeq: 1, sceneRevision: 5, presentedRevision: 3 } });
+			expect(await pending).toEqual({ epoch: 0, submittedDispatchSeq: 2, processedDispatchSeq: 1, sceneRevision: 5, presentedRevision: 3 });
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
 	it("reports that the main-thread renderer is needed when worker creation fails", () => {
 		vi.stubGlobal("Worker", class { constructor() { throw new Error("worker unavailable"); } });
 		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });

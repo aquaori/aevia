@@ -61,6 +61,14 @@ interface ViewportPayload {
 	dpr: number;
 }
 
+export interface RenderWatermarks {
+	epoch: number;
+	submittedDispatchSeq: number;
+	processedDispatchSeq: number;
+	sceneRevision: number;
+	presentedRevision: number | null;
+}
+
 interface PendingIncrement {
 	cmd: Command;
 	pageId: number;
@@ -117,6 +125,7 @@ const cloneRect = (rect: DirtyRectRequest): DirtyRectRequest => ({
 export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => {
 	let worker: Worker | null = null;
 	let sceneEpoch = 0;
+	let dispatchSeq = 0;
 	let offscreenEnabled = false;
 	let canvasTransferred = false;
 	let pendingMainCanvasRequest: MainCanvasRenderRequest | null = null;
@@ -132,6 +141,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const pendingSceneHitRequests = new Map<string, (result: { elementId: string | null; bounds: aabbBox | null }) => void>();
 	const pendingSceneQueryRequests = new Map<string, (result: { elementIds: string[]; bounds: aabbBox | null }) => void>();
 	const pendingSceneOperationRenders = new Map<string, () => void>();
+	const pendingWatermarks = new Map<string, (value: RenderWatermarks | null) => void>();
 	const renderedSceneOperations = new Set<string>();
 	const pendingIncrements = new Map<string, PendingIncrement>();
 
@@ -143,6 +153,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		for (const callback of pendingSceneHitRequests.values()) callback({ elementId: null, bounds: null });
 		for (const callback of pendingSceneQueryRequests.values()) callback({ elementIds: [], bounds: null });
 		for (const callback of pendingSceneOperationRenders.values()) callback();
+		for (const callback of pendingWatermarks.values()) callback(null);
 		pendingInitBarriers.clear();
 		pendingRequests.clear();
 		pendingCommandPointRequests.clear();
@@ -150,6 +161,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		pendingSceneHitRequests.clear();
 		pendingSceneQueryRequests.clear();
 		pendingSceneOperationRenders.clear();
+		pendingWatermarks.clear();
 	};
 
 	const cancelPendingMainCanvasRequest = () => {
@@ -285,6 +297,16 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		worker.onmessage = (event) => {
 			if (worker !== activeWorker) return;
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
+			if (type === "render-watermarks") {
+				const callback = pendingWatermarks.get(requestId);
+				pendingWatermarks.delete(requestId);
+				if (callback) callback(event.data.epoch === sceneEpoch ? {
+					epoch: sceneEpoch, submittedDispatchSeq: dispatchSeq,
+					processedDispatchSeq: event.data.processedDispatchSeq,
+					sceneRevision: event.data.sceneRevision, presentedRevision: event.data.presentedRevision,
+				} : null);
+				return;
+			}
 			if (type === "scene-resync-required") { options.onSceneResyncRequired?.(); return; }
 			if (type === "init-scene-barrier-result") {
 				const callback = pendingInitBarriers.get(requestId);
@@ -634,9 +656,18 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			data: {
 				cmd: cloneCommandForStateSync(cmd),
 				epoch: sceneEpoch,
+				dispatchSeq: ++dispatchSeq,
 			},
 		});
 	};
+
+	const requestRenderWatermarks = () => new Promise<RenderWatermarks | null>((resolve) => {
+		if (!worker) { resolve(null); return; }
+		const requestId = `watermarks:${sceneEpoch}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+		const timer = setTimeout(() => { pendingWatermarks.delete(requestId); resolve(null); }, 2000);
+		pendingWatermarks.set(requestId, (value) => { clearTimeout(timer); resolve(value); });
+		worker.postMessage({ type: "get-render-watermarks", data: { requestId, epoch: sceneEpoch } });
+	});
 
 	const waitForSceneOperationRender = (opId: string, timeoutMs = 800) => new Promise<void>((resolve) => {
 		if (!worker || !offscreenEnabled || renderedSceneOperations.delete(opId)) {
@@ -803,6 +834,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		renderDirtyRect,
 		renderDirtyRects,
 		syncCommandState,
+		requestRenderWatermarks,
 		waitForSceneOperationRender,
 		removeCommandState,
 		rerenderScene,

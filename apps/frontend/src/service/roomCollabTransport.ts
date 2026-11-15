@@ -864,6 +864,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		isReconnecting,
 		reconnectCount,
 		MAX_RECONNECT,
+		getRecoveryRoomSeq: () => lastRoomSeq,
 		send,
 		openMemberList,
 		connect,

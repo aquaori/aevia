@@ -165,6 +165,7 @@ export class SceneCore implements SceneCorePort {
 	private readonly measureText?: (text: string, font: string) => number;
 	constructor(measureText?: (text: string, font: string) => number) { this.measureText = measureText; }
 	private renderRevision = 0;
+	private materializedRevision = 0;
 	private lastRenderSignature: string | null = null;
 	private nextAtomGeneration = 0;
 	private readonly atomEpoch = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
@@ -199,6 +200,7 @@ export class SceneCore implements SceneCorePort {
 	private bulkLoading = false;
 
 	reset(pageId = this.pageId) {
+		this.materializedRevision += 1;
 		this.atoms.length = 0;
 		this.elements.clear();
 		this.compilerStates.clear();
@@ -242,10 +244,12 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	setPage(pageId: number) {
+		if (pageId !== this.pageId) this.materializedRevision += 1;
 		this.pageId = pageId;
 	}
 
 	ingestFlatPoint(point: FlatPoint) {
+		this.materializedRevision += 1;
 		let element = this.elements.get(point.cmdId);
 		if (!element) {
 			element = this.createElement(
@@ -274,6 +278,7 @@ export class SceneCore implements SceneCorePort {
 
 	appendCommandPoints(command: Command, points: Point[]) {
 		if (command.type !== "path" || points.length === 0) return [] as number[];
+		this.materializedRevision += 1;
 		let element = this.elements.get(command.id);
 		if (!element) {
 			const first = points[0]!;
@@ -296,6 +301,7 @@ export class SceneCore implements SceneCorePort {
 		if (!element || element.descriptor.recipeId !== "stroke") return [] as number[];
 		const state = this.compilerStates.get(elementId);
 		if (state && !state.finished && state.pointCount === 1 && (element.descriptor.toolId === "pencil" || element.descriptor.toolId === "highlighter")) {
+			this.materializedRevision += 1;
 			state.finished = true;
 			return [...element.atomRefs];
 		}
@@ -306,6 +312,7 @@ export class SceneCore implements SceneCorePort {
 			descriptor: element.descriptor,
 			state: this.compilerStates.get(elementId),
 		});
+		if (atoms.length) this.materializedRevision += 1;
 		return atoms.map((atom) => this.storeAtom(element, atom));
 	}
 
@@ -354,6 +361,7 @@ export class SceneCore implements SceneCorePort {
 			return [] as string[];
 		}
 		if (this.operationIds.has(operation.opId)) return [] as string[];
+		this.materializedRevision += 1;
 		this.operationIds.add(operation.opId);
 		let insertAt = this.operations.length;
 		while (insertAt > 0 && compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(this.operations[insertAt - 1]!)) < 0) {
@@ -388,6 +396,7 @@ export class SceneCore implements SceneCorePort {
 		}
 		const element = this.elements.get(command.id);
 		if (!element || command.type !== "path") return;
+		this.materializedRevision += 1;
 		const wasVisible = this.isElementBaseVisible(element);
 		element.deleted = command.isDeleted;
 		this.legacyDeleted.set(element.id, command.isDeleted);
@@ -402,6 +411,7 @@ export class SceneCore implements SceneCorePort {
 	removeElement(elementId: string) {
 		const element = this.elements.get(elementId);
 		if (element && !element.deleted) {
+			this.materializedRevision += 1;
 			if (this.isElementBaseVisible(element)) this.visibleAtomCount -= element.atomRefs.length;
 			element.deleted = true;
 		}
@@ -577,8 +587,11 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	previewTextBox(elementId: string, box: AabbBox) {
+		if (this.elements.has(elementId)) this.materializedRevision += 1;
 		this.applyElementStyle(elementId, {}, box);
 	}
+
+	getSceneRevision() { return this.materializedRevision; }
 
 	getElementBounds(elementId: string) {
 		const element = this.elements.get(elementId);

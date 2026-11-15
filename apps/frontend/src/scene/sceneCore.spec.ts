@@ -13,6 +13,9 @@ describe("SceneCore without browser rendering", () => {
 			kind: "element.create", payload: { descriptor: { elementKind: "sticker", toolId: "sticker", recipeId: "bitmap", style: { color: "#000", size: 4 }, sticker: "🎉" } },
 		};
 		core.applyOperation(create);
+		const revision = core.getSceneRevision();
+		core.applyOperation(create);
+		expect(core.getSceneRevision()).toBe(revision);
 		expect(core.getRenderIR().items[0]?.atom).toMatchObject({ primitive: "bitmap", value: "🎉" });
 		core.applyOperation({ ...create, opId: "unknown", elementId: "unknown", payload: { descriptor: { ...create.payload.descriptor, asset: { key: "unknown", version: 1 } } } });
 		expect(core.needsResync).toBe(true);
@@ -29,12 +32,14 @@ describe("SceneCore without browser rendering", () => {
 		};
 		core.applyOperation(create);
 		expect(core.exportFlatPoints()).toHaveLength(2);
+		const revision = core.getSceneRevision();
 		expect(core.queryElements({ minX: 0, minY: 0, maxX: 600, maxY: 600, width: 600, height: 600 }, 1000, 1000)).toContain("stroke");
 		const initial = core.getRenderIR();
 		core.applyOperation({
 			...create, opId: "move", lamport: 3, historyGroupId: "move", kind: "element.transform",
 			payload: { targets: [{ elementId: "stroke", deltaMatrix: [1, 0, 0, 1, 0.1, 0] }] },
 		});
+		expect(core.getSceneRevision()).toBeGreaterThan(revision);
 		const moved = core.getRenderIR();
 		const delta = diffRenderIR(initial, moved);
 		expect(applyRenderIRDelta(initial, delta)).toEqual(moved);

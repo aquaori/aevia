@@ -147,6 +147,18 @@ describe("canvas worker init render stream", () => {
 		worker = null;
 	});
 
+	it("does not claim an unpainted scene has been presented", async () => {
+		worker = new Worker(new URL("../../src/workers/canvasWorker.ts", import.meta.url), { type: "module" });
+		worker.postMessage({ type: "begin-init-stream", data: { pageId: 0 } });
+		const status = await request<{ sceneRevision: number; presentedRevision: number | null; processedDispatchSeq: number }>(
+			worker, { type: "get-render-watermarks", data: { requestId: "status", epoch: 1 } },
+			(data) => data.type === "render-watermarks" && data.requestId === "status", "render-watermarks"
+		);
+		expect(status.sceneRevision).toBeGreaterThan(0);
+		expect(status.presentedRevision).toBeNull();
+		expect(status.processedDispatchSeq).toBe(0);
+	});
+
 	if (typeof HTMLCanvasElement.prototype.transferControlToOffscreen !== "function") {
 		it("uses the mounted 2D canvas and decodes the requested page without canvas transfer", async () => {
 			const canvas = document.createElement("canvas");

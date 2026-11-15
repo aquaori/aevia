@@ -70,6 +70,7 @@ export interface EditorHost {
 }
 
 export interface WhiteboardSession extends EditorHost {
+	getConsistencyWatermarks(): Promise<ConsistencyWatermarks>;
 	mountCanvas(input: { canvas: HTMLCanvasElement; uiCanvas: HTMLCanvasElement }): void;
 	unmount(): void;
 	connect(): void;
@@ -82,5 +83,16 @@ export interface WhiteboardSession extends EditorHost {
 	requestDirtyRender(rect: unknown): void;
 	requestRender(reason?: "full" | "incremental" | "overlay"): void;
 	requestOverlayRender(): void;
+}
+
+export interface ConsistencyWatermarks {
+	roomSeq: number;
+	render: {
+		epoch: number;
+		submittedDispatchSeq: number;
+		processedDispatchSeq: number;
+		sceneRevision: number;
+		presentedRevision: number | null;
+	} | null;
 }
 
