@@ -4,6 +4,7 @@ import { canvasRef, ctx, uiCanvasRef, uiCtx } from "./canvas";
 import { createEventBus } from "../utils/editorEventBus";
 import type {
 	EditorHookMap,
+	ConsistencyWatermarks,
 	EditorPlugin,
 	SelectionState,
 	SessionLifecyclePhase,
@@ -12,12 +13,15 @@ import type {
 } from "../utils/editorTypes";
 import type { RemoteCursor } from "../utils/type";
 import type { EditorTool } from "@collaborative-whiteboard/shared";
+import type { RenderIRFrame } from "../scene/renderIR";
 
 interface CreateWhiteboardSessionOptions {
+	getConsistencyWatermarks?: () => Promise<ConsistencyWatermarks>;
+	getRenderIR?: () => Promise<RenderIRFrame | null>;
 	state: WhiteboardSessionState;
 	canUndo: ComputedRef<boolean>;
 	canRedo: ComputedRef<boolean>;
-	initialize?: () => void;
+	initialize?: () => boolean | void;
 	dispose?: () => void;
 	connect: () => void;
 	disconnect: () => void;
@@ -111,7 +115,9 @@ export const createWhiteboardSession = (
 				? null
 				: input.canvas.getContext("2d");
 		uiCtx.value = input.uiCanvas.getContext("2d");
-		options.initialize?.();
+		if (options.initialize?.() === false && !ctx.value) {
+			ctx.value = input.canvas.getContext("2d");
+		}
 		options.resize?.();
 		setLifecycle("ready");
 		emit("session:ready", undefined);
@@ -172,6 +178,8 @@ export const createWhiteboardSession = (
 	};
 
 	return {
+		getConsistencyWatermarks: () => options.getConsistencyWatermarks?.() ?? Promise.resolve({ roomSeq: 0, render: null }),
+		getRenderIR: () => options.getRenderIR?.() ?? Promise.resolve(null),
 		state: hostState,
 		canUndo: options.canUndo,
 		canRedo: options.canRedo,

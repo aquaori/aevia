@@ -63,6 +63,7 @@ export interface SceneElementDescriptor {
 	text?: string;
 	textLayout?: { version: 1; referenceWidth: number; aspectRatio: number };
 	sticker?: string;
+	asset?: { key: string; version: 1 };
 }
 
 export interface ElementCreatePayload {

@@ -47,12 +47,16 @@ Important: do not bypass `commandStore` for command ordering/folding behavior.
 
 Canonical scene core:
 
-- `scene/sceneEngine.ts`: immutable-operation folding, incremental primitive compilation, history, clear, transforms, erasure, hit testing, ordering, spatial queries, and rendering.
+- `scene/sceneCore.ts`: browser-independent operation folding, primitive compilation, history, transforms, erasure, hit testing and spatial queries. Text measurement is injected by the host.
+- `scene/sceneEngine.ts`: Canvas adapter over `SceneCore`, used by the worker and fallback paths; it supplies browser text measurement and retains the existing rendering API.
+- `scene/renderIR.ts`: detached ordered render frames and revision-checked full-to-delta reconstruction, with old/new dirty bounds. `scene/canvasIRRenderer.ts` consumes these render items; the live adapter feeds it visible items without cloning the entire scene on every redraw. `scene/renderIRCodec.ts` frames full/delta payloads with version, length, little-endian header and corruption check. `WhiteboardSession.getRenderIR()` requests transferable frames or deltas from a ready offscreen worker; it returns null during initialization, fallback, stale epochs or invalid data. The payload remains JSON and this on-demand export is not the primary drawing path.
+- Render IR atom handles carry an engine epoch and generation, survive index compaction, and cannot resolve after a reset/recreation. Handle resolution is currently linear; do not use it as a hot-path spatial index.
 - `scene/renderOrderIndex.ts`: block-ordered atom references used by full replay.
 - `scene/spatialGridIndex.ts`: 32×32 coarse grid over bounded geometry chunks.
 - `scene/dirtyRegionSet.ts`: up to eight disjoint regions, full-render thresholds, and enter/exit hysteresis.
 - `scene/primitiveRenderer.ts`: the only Canvas2D recipe executor for stroke, shape, glyph, and bitmap atoms.
 - `scene/toolRegistry.ts`: declarative built-in tools and their public primitive mappings.
+- `scene/stickerAssets.ts`: versioned built-in sticker keys; new operations retain the legacy Emoji value so old rooms and clients remain readable. Backend asset validation must stay in sync.
 
 Preferred worker path:
 
@@ -70,6 +74,10 @@ Main-thread/fallback and scheduling:
 - `service/commandDirtyRect.ts`
 
 Worker and fallback paths both use `SceneEngine`; do not add a second tool-specific renderer or command scan. Dirty-rect changes should usually inspect `sceneEngine.ts`, `spatialGridIndex.ts`, `dirtyRegionSet.ts`, `dirtyRenderQueue.ts`, `canvasWorker.ts`, and `canvas.ts` together.
+
+The render worker bridge forwards queued legacy stroke increments in a microtask rather than depending on animation frames. Only adjacent increments for the same stroke are merged; pending increments are sent before later state changes, erasure, scene queries and redraw requests. The bridge settles pending queries when the worker fails, is disposed, or its scene is replaced, and rejects old scene-epoch replies. If worker creation or canvas transfer fails before transfer succeeds, the session uses the main-thread Canvas context. If an active worker fails after canvas transfer, the room replaces the canvas, restarts the worker and requests a full snapshot; in-memory unconfirmed operations are replayed only after initialization is confirmed. Failed recovery remains explicitly retryable and pending operations are not durable across a browser reload.
+
+`WhiteboardSession.getConsistencyWatermarks()` samples the transport's contiguous recovery `roomSeq`, the worker's separate submitted/processed dispatch sequence, materialized scene revision, last conservatively drawn revision, and the reliable queue depth/oldest age before the sample flushes it. It also reports whether a replaceable full-render request was pending. Dispatch processing may only mean an operation was buffered during initialization; it does not imply scene application or painting. Sampling crosses threads and is not an atomic snapshot. A null presented revision means no complete eligible Canvas draw has been recorded, not that the scene is empty; drawing means Canvas commands ran, not that browser compositing was observed.
 
 New drawing writes are immutable `element.create`/`element.append` scene operations. Stroke rendering compiles midpoint-based quadratic atoms once as points enter the scene, and `isComplete` commits the stable tail atom. `cmd-start/update/stop` remains only in V1 read/rejection compatibility code and must not be used for a new write path.
 

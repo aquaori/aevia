@@ -17,6 +17,7 @@ import {
 	type aabbBox,
 } from "@collaborative-whiteboard/shared";
 import { builtinToolRegistry } from "../scene/toolRegistry";
+import { stickerAssetByValue } from "../scene/stickerAssets";
 import { SceneEngine } from "../scene/sceneEngine";
 import { splitGraphemes } from "../scene/graphemes";
 import {
@@ -1153,7 +1154,11 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 						if (e.target && (e.target as HTMLElement).hasPointerCapture(e.pointerId)) (e.target as HTMLElement).releasePointerCapture(e.pointerId);
 						void editText(elementId, descriptor);
 					}
-					if (toolDefinition.inputMode === "sticker") descriptor.sticker = options.currentSticker.value;
+					if (toolDefinition.inputMode === "sticker") {
+						descriptor.sticker = options.currentSticker.value;
+						const asset = stickerAssetByValue(options.currentSticker.value);
+						if (asset) descriptor.asset = { key: asset.key, version: asset.version };
+					}
 					if (toolDefinition.inputMode !== "text") {
 						pushSceneCreate(options.currentDrawingId.value, descriptor);
 					}

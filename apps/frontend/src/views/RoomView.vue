@@ -6,6 +6,7 @@
 		computed,
 		toRaw,
 		watch,
+		nextTick,
 		type Ref,
 	} from "vue";
 	import { useRouter } from "vue-router";
@@ -79,6 +80,8 @@
 	// 路由钩子，获取URL中的token参数
 	const router = useRouter();
 	const userStore = useUserStore();
+	const mainCanvasGeneration = ref(0);
+	let roomDisposed = false;
 	const accountStore = useAccountStore();
 	const showInvites = ref(false);
 	const showRoomSettings = ref(false);
@@ -315,7 +318,15 @@
 		hasRenderableScene: () => commands.value.length > 0,
 		syncMainCanvasViewport: (payload) => {
 			if (canvasRef.value) {
-				workerBridge.bindMainCanvas(canvasRef.value, payload);
+				const bound = workerBridge.bindMainCanvas(canvasRef.value, payload);
+				if (!bound && !workerBridge.isOffscreenEnabled() && !ctx.value) {
+					ctx.value = canvasRef.value.getContext("2d");
+					if (ctx.value) {
+						ctx.value.setTransform(payload.dpr, 0, 0, payload.dpr, 0, 0);
+						ctx.value.lineCap = "round";
+						ctx.value.lineJoin = "round";
+					}
+				}
 			}
 			workerBridge.syncViewport(payload);
 		},
@@ -373,6 +384,15 @@
 
 
 	const roomCollabTransport = createRoomCollabTransport({
+		recoverRenderer: async () => {
+			workerBridge.dispose();
+			ctx.value = null;
+			mainCanvasGeneration.value += 1;
+			await nextTick();
+			if (roomDisposed || !canvasRef.value || !workerBridge.init()) return false;
+			canvasRuntime.resize();
+			return workerBridge.isOffscreenEnabled() || !!ctx.value;
+		},
 		token,
 		userId,
 		roomId,
@@ -639,6 +659,11 @@
 	const canUndo = computed(() => currentCommandIndex.value >= 0);
 	const canRedo = computed(() => currentCommandIndex.value < commands.value.length - 1);
 	const session = createWhiteboardSession({
+		getRenderIR: () => workerBridge.requestRenderIR(),
+		getConsistencyWatermarks: async () => ({
+			roomSeq: roomCollabTransport.getRecoveryRoomSeq(),
+			render: await workerBridge.requestRenderWatermarks(),
+		}),
 		state: {
 			currentTool,
 			currentColor,
@@ -653,6 +678,7 @@
 		canRedo,
 		initialize: workerBridge.init,
 		dispose: () => {
+			roomDisposed = true;
 			canvasRuntime.dispose();
 			workerBridge.dispose();
 		},
@@ -835,6 +861,7 @@
 			<!-- Main Drawing Canvas (Bottom Layer) -->
 			<canvas
 				ref="canvasRef"
+				:key="mainCanvasGeneration"
 				@dblclick="userStore.roomRole !== 'viewer' && roomPointerControllerRef?.editSelectedText($event)"
 				@pointerdown="userStore.roomRole !== 'viewer' && startDrawing($event)"
 				@pointermove="userStore.roomRole !== 'viewer' && draw($event)"

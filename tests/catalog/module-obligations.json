@@ -176,6 +176,13 @@
       "owner": "tests/report/feature-obligations.spec.ts"
     },
     {
+      "id": "frontend:apps/frontend/src/scene/canvasIRRenderer.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/canvasIRRenderer.ts",
+      "state": "covered",
+      "owner": "apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts"
+    },
+    {
       "id": "frontend:apps/frontend/src/scene/dirtyRegionSet.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/dirtyRegionSet.ts",
@@ -211,11 +218,32 @@
       "owner": "apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts"
     },
     {
+      "id": "frontend:apps/frontend/src/scene/renderIR.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/renderIR.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneCore.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/renderIRCodec.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/renderIRCodec.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneCore.spec.ts"
+    },
+    {
       "id": "frontend:apps/frontend/src/scene/renderOrderIndex.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/renderOrderIndex.ts",
       "state": "covered",
       "owner": "apps/frontend/src/scene/renderOrderIndex.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/sceneCore.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/sceneCore.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneCore.spec.ts"
     },
     {
       "id": "frontend:apps/frontend/src/scene/sceneEngine.ts",
@@ -237,6 +265,12 @@
       "path": "apps/frontend/src/scene/spatialGridIndex.ts",
       "state": "covered",
       "owner": "apps/frontend/src/scene/spatialGridIndex.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/scene/stickerAssets.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/scene/stickerAssets.ts",
+      "state": "uncovered"
     },
     {
       "id": "frontend:apps/frontend/src/scene/strokeCompiler.ts",

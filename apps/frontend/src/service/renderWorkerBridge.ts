@@ -1,5 +1,7 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
 import type { Command, EraseTarget, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
+import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
+import { decodeRenderIR } from "../scene/renderIRCodec";
 import type {
 	InitRenderChunkCommandDictionaryEntry,
 	InitRenderChunkMetaPayload,
@@ -44,6 +46,7 @@ interface MergeDirtyRectsRequest {
 }
 
 interface InitRenderBinaryChunkRequest {
+	epoch: number;
 	snapshotVersion: number;
 	chunkIndex: number;
 	isLastChunk: boolean;
@@ -58,6 +61,15 @@ interface ViewportPayload {
 	width: number;
 	height: number;
 	dpr: number;
+}
+
+export interface RenderWatermarks {
+	epoch: number;
+	submittedDispatchSeq: number;
+	processedDispatchSeq: number;
+	sceneRevision: number;
+	presentedRevision: number | null;
+	queue: { reliableBatches: number; oldestReliableAgeMs: number; replaceableRenderPending: boolean };
 }
 
 interface PendingIncrement {
@@ -115,11 +127,15 @@ const cloneRect = (rect: DirtyRectRequest): DirtyRectRequest => ({
 
 export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => {
 	let worker: Worker | null = null;
+	let sceneEpoch = 0;
+	let dispatchSeq = 0;
+	let renderIRFrame: RenderIRFrame | null = null;
 	let offscreenEnabled = false;
 	let canvasTransferred = false;
 	let pendingMainCanvasRequest: MainCanvasRenderRequest | null = null;
+	let pendingMainCanvasResponseId: string | null = null;
 	let pendingMainCanvasRafId: number | null = null;
-	let pendingIncrementFlushRafId: number | null = null;
+	let pendingIncrementFlushScheduled = false;
 	let streamedInitPoints: FlatPoint[] = [];
 	const pendingRequests = new Map<string, (points: FlatPoint[]) => void>();
 	const pendingInitBarriers = new Map<string, (valid: boolean) => void>();
@@ -129,11 +145,37 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const pendingSceneHitRequests = new Map<string, (result: { elementId: string | null; bounds: aabbBox | null }) => void>();
 	const pendingSceneQueryRequests = new Map<string, (result: { elementIds: string[]; bounds: aabbBox | null }) => void>();
 	const pendingSceneOperationRenders = new Map<string, () => void>();
+	const pendingWatermarks = new Map<string, (value: Omit<RenderWatermarks, "queue"> | null) => void>();
+	const pendingRenderIR = new Map<string, (value: RenderIRFrame | null) => void>();
 	const renderedSceneOperations = new Set<string>();
-	const pendingIncrements = new Map<string, PendingIncrement>();
+	const pendingIncrements: PendingIncrement[] = [];
+	let pendingIncrementsSince: number | null = null;
+
+	const settlePendingRequests = () => {
+		for (const callback of pendingInitBarriers.values()) callback(false);
+		for (const callback of pendingRequests.values()) callback([]);
+		for (const callback of pendingCommandPointRequests.values()) callback([]);
+		for (const callback of pendingEraseTargetRequests.values()) callback([]);
+		for (const callback of pendingSceneHitRequests.values()) callback({ elementId: null, bounds: null });
+		for (const callback of pendingSceneQueryRequests.values()) callback({ elementIds: [], bounds: null });
+		for (const callback of pendingSceneOperationRenders.values()) callback();
+		for (const callback of pendingWatermarks.values()) callback(null);
+		for (const callback of pendingRenderIR.values()) callback(null);
+		pendingInitBarriers.clear();
+		pendingRequests.clear();
+		pendingCommandPointRequests.clear();
+		pendingEraseTargetRequests.clear();
+		pendingSceneHitRequests.clear();
+		pendingSceneQueryRequests.clear();
+		pendingSceneOperationRenders.clear();
+		pendingWatermarks.clear();
+		pendingRenderIR.clear();
+		renderIRFrame = null;
+	};
 
 	const cancelPendingMainCanvasRequest = () => {
 		pendingMainCanvasRequest = null;
+		pendingMainCanvasResponseId = null;
 		if (pendingMainCanvasRafId !== null) {
 			cancelAnimationFrame(pendingMainCanvasRafId);
 			pendingMainCanvasRafId = null;
@@ -141,11 +183,9 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const cancelPendingIncrementFlush = () => {
-		pendingIncrements.clear();
-		if (pendingIncrementFlushRafId !== null) {
-			cancelAnimationFrame(pendingIncrementFlushRafId);
-			pendingIncrementFlushRafId = null;
-		}
+		pendingIncrements.length = 0;
+		pendingIncrementsSince = null;
+		pendingIncrementFlushScheduled = false;
 	};
 
 	const flushMainCanvasRequest = () => {
@@ -169,6 +209,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			return;
 		}
 
+		pendingMainCanvasResponseId = payload.requestId;
 		worker.postMessage({
 			type: "flat-points",
 			data,
@@ -182,10 +223,10 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const flushIncrementalCommands = () => {
-		pendingIncrementFlushRafId = null;
-		if (!worker || !offscreenEnabled || pendingIncrements.size === 0) return;
+		pendingIncrementFlushScheduled = false;
+		if (!worker || !offscreenEnabled || pendingIncrements.length === 0) return;
 
-		const batch = Array.from(pendingIncrements.values()).map((entry) => ({
+		const batch = pendingIncrements.map((entry) => ({
 			cmd: cloneCommand({
 				...entry.cmd,
 				points: entry.points,
@@ -195,16 +236,21 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			source: entry.source,
 		}));
 
-		pendingIncrements.clear();
+		pendingIncrements.length = 0;
+		pendingIncrementsSince = null;
 		worker.postMessage({
 			type: "render-increment-batch",
+			dispatchSeq: ++dispatchSeq,
 			data: batch,
 		});
 	};
 
 	const scheduleIncrementFlush = () => {
-		if (pendingIncrementFlushRafId !== null) return;
-		pendingIncrementFlushRafId = requestAnimationFrame(flushIncrementalCommands);
+		if (pendingIncrementFlushScheduled) return;
+		pendingIncrementFlushScheduled = true;
+		queueMicrotask(() => {
+			if (pendingIncrementFlushScheduled) flushIncrementalCommands();
+		});
 	};
 
 	const queueIncrementalCommand = (
@@ -214,15 +260,16 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		source: "local" | "remote"
 	) => {
 		if (!worker || !offscreenEnabled || cmd.pageId !== pageId || points.length === 0) return;
+		if (pendingIncrements.length === 0) pendingIncrementsSince = performance.now();
 
-		const existing = pendingIncrements.get(cmd.id);
-		if (existing) {
+		const existing = pendingIncrements[pendingIncrements.length - 1];
+		if (existing && existing.cmd.id === cmd.id && existing.pageId === pageId && existing.source === source) {
 			existing.cmd = cmd;
 			existing.pageId = pageId;
 			existing.source = source;
 			existing.points.push(...points);
 		} else {
-			pendingIncrements.set(cmd.id, {
+			pendingIncrements.push({
 				cmd,
 				pageId,
 				points: [...points],
@@ -234,11 +281,16 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const init = () => {
-		if (worker) return;
+		if (worker) return true;
 
-		worker = new Worker(new URL("../workers/canvasWorker.ts", import.meta.url), {
-			type: "module",
-		});
+		try {
+			worker = new Worker(new URL("../workers/canvasWorker.ts", import.meta.url), {
+				type: "module",
+			});
+		} catch {
+			return false;
+		}
+		const activeWorker = worker;
 
 		// Workers cannot see the harness-injected `window.__AEVIA_LAB__`; tell the
 		// worker once whether lab mode is on. Message order guarantees this lands
@@ -248,15 +300,42 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		}
 
 		const handleWorkerFailure = () => {
-			for (const callback of pendingInitBarriers.values()) callback(false);
-			pendingInitBarriers.clear();
+			if (worker !== activeWorker) return;
+			settlePendingRequests();
 			options.onWorkerFailure?.();
 		};
 		worker.onerror = handleWorkerFailure;
 		worker.onmessageerror = handleWorkerFailure;
 
 		worker.onmessage = (event) => {
+			if (worker !== activeWorker) return;
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
+			if (type === "render-ir") {
+				const callback = pendingRenderIR.get(requestId);
+				pendingRenderIR.delete(requestId);
+				if (!callback) return;
+				try {
+					if (event.data.epoch !== sceneEpoch || !(event.data.buffer instanceof ArrayBuffer)) throw new Error("Invalid Render IR response");
+					const decoded = decodeRenderIR(new Uint8Array(event.data.buffer));
+					if ("baseRevision" in decoded && !renderIRFrame) throw new Error("Missing Render IR baseline");
+					renderIRFrame = "baseRevision" in decoded ? applyRenderIRDelta(renderIRFrame!, decoded) : decoded;
+					callback(structuredClone(renderIRFrame));
+				} catch {
+					renderIRFrame = null;
+					callback(null);
+				}
+				return;
+			}
+			if (type === "render-watermarks") {
+				const callback = pendingWatermarks.get(requestId);
+				pendingWatermarks.delete(requestId);
+				if (callback) callback(event.data.epoch === sceneEpoch ? {
+					epoch: sceneEpoch, submittedDispatchSeq: dispatchSeq,
+					processedDispatchSeq: event.data.processedDispatchSeq,
+					sceneRevision: event.data.sceneRevision, presentedRevision: event.data.presentedRevision,
+				} : null);
+				return;
+			}
 			if (type === "scene-resync-required") { options.onSceneResyncRequired?.(); return; }
 			if (type === "init-scene-barrier-result") {
 				const callback = pendingInitBarriers.get(requestId);
@@ -293,6 +372,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			if (type === "lab:operation-rendered") return;
 
 			if (type === "scene-operation-rendered") {
+				if (event.data.epoch !== sceneEpoch) return;
 				const callback = typeof opId === "string" ? pendingSceneOperationRenders.get(opId) : undefined;
 				if (typeof opId === "string") pendingSceneOperationRenders.delete(opId);
 				if (callback) callback();
@@ -308,11 +388,15 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 					return;
 				}
 
-				options.onMainPoints(points);
+				if (requestId && requestId === pendingMainCanvasResponseId) {
+					pendingMainCanvasResponseId = null;
+					options.onMainPoints(points);
+				}
 				return;
 			}
 
 			if (type === "merge-dirty-rects-result") {
+				if (event.data.epoch !== sceneEpoch) return;
 				options.onDirtyRects?.(rects ?? []);
 				return;
 			}
@@ -348,12 +432,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			}
 
 			if (type === "init-render-points-decoded") {
+				if (event.data.epoch !== sceneEpoch) return;
 				const decodedPoints = (event.data.points as FlatPoint[]) ?? [];
 				if (decodedPoints.length === 0) return;
 				streamedInitPoints.push(...decodedPoints);
 				options.onMainPoints([...streamedInitPoints]);
 			}
 		};
+		return true;
 	};
 
 	const bindMainCanvas = (canvas: HTMLCanvasElement, viewport: ViewportPayload) => {
@@ -361,7 +447,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			return false;
 		}
 
-		const offscreen = canvas.transferControlToOffscreen();
+		let offscreen: OffscreenCanvas;
+		try {
+			offscreen = canvas.transferControlToOffscreen();
+		} catch {
+			return false;
+		}
 		worker.postMessage(
 			{
 				type: "init-canvas",
@@ -390,6 +481,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		onResult?: (points: FlatPoint[]) => void
 	) => {
 		if (!worker) return;
+		flushIncrementalCommands();
 		if (onResult) {
 			pendingRequests.set(payload.requestId, onResult);
 		}
@@ -409,8 +501,12 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const beginInitRenderStream = (pageId?: number) => {
+		sceneEpoch += 1;
+		renderedSceneOperations.clear();
+		settlePendingRequests();
 		streamedInitPoints = [];
 		cancelPendingMainCanvasRequest();
+		flushIncrementalCommands();
 		cancelPendingIncrementFlush();
 		if (!worker) return;
 		worker.postMessage({
@@ -444,6 +540,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		if (!worker) return;
 
 		const request: InitRenderBinaryChunkRequest = {
+			epoch: sceneEpoch,
 			snapshotVersion: Number(meta.snapshotVersion ?? 0),
 			chunkIndex: Number(meta.chunkIndex ?? 0),
 			isLastChunk: meta.isLastChunk === true,
@@ -485,7 +582,11 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		transformingCmdIds: string[] = []
 	) => {
 		if (!worker || !offscreenEnabled) return;
+		sceneEpoch += 1;
+		renderedSceneOperations.clear();
+		settlePendingRequests();
 		cancelPendingMainCanvasRequest();
+		flushIncrementalCommands();
 		cancelPendingIncrementFlush();
 		worker.postMessage({
 			type: "sync-scene",
@@ -498,7 +599,11 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const renderSceneFromFlatPoints = (points: FlatPoint[], pageId: number) => {
+		sceneEpoch += 1;
+		renderedSceneOperations.clear();
+		settlePendingRequests();
 		cancelPendingMainCanvasRequest();
+		flushIncrementalCommands();
 		cancelPendingIncrementFlush();
 		streamedInitPoints = points;
 		if (!worker) return;
@@ -536,6 +641,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const setInitSceneOperations = (commands: Command[], pageId: number) => {
 		if (!worker || !offscreenEnabled) return;
+		flushIncrementalCommands();
 		worker.postMessage({
 			type: "set-init-scene-operations",
 			data: {
@@ -549,9 +655,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const finishCommandStroke = (cmdId: string) => {
 		if (!worker || !offscreenEnabled || !cmdId) return;
-		if (pendingIncrements.has(cmdId)) {
-			flushIncrementalCommands();
-		}
+		flushIncrementalCommands();
 		worker.postMessage({
 			type: "finish-command-stroke",
 			data: { cmdId },
@@ -564,6 +668,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		transformingCmdIds: string[] = []
 	) => {
 		if (!worker || !offscreenEnabled) return;
+		flushIncrementalCommands();
 		worker.postMessage({
 			type: "render-dirty",
 			data: {
@@ -576,17 +681,39 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const syncCommandState = (cmd: Command) => {
 		if (!worker || !offscreenEnabled) return;
-		if (cmd.sceneOperation?.kind === "history.toggle" && pendingIncrements.size > 0) {
-			if (pendingIncrementFlushRafId !== null) cancelAnimationFrame(pendingIncrementFlushRafId);
-			flushIncrementalCommands();
-		}
+		flushIncrementalCommands();
 		worker.postMessage({
 			type: "update-command-state",
 			data: {
 				cmd: cloneCommandForStateSync(cmd),
+				epoch: sceneEpoch,
+				dispatchSeq: ++dispatchSeq,
 			},
 		});
 	};
+
+	const requestRenderWatermarks = () => new Promise<RenderWatermarks | null>((resolve) => {
+		if (!worker) { resolve(null); return; }
+		const queue = {
+			reliableBatches: pendingIncrements.length,
+			oldestReliableAgeMs: pendingIncrementsSince === null ? 0 : Math.max(0, performance.now() - pendingIncrementsSince),
+			replaceableRenderPending: pendingMainCanvasRequest !== null,
+		};
+		flushIncrementalCommands();
+		const requestId = `watermarks:${sceneEpoch}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+		const timer = setTimeout(() => { pendingWatermarks.delete(requestId); resolve(null); }, 2000);
+		pendingWatermarks.set(requestId, (value) => { clearTimeout(timer); resolve(value ? { ...value, queue } : null); });
+		worker.postMessage({ type: "get-render-watermarks", data: { requestId, epoch: sceneEpoch } });
+	});
+
+	const requestRenderIR = () => new Promise<RenderIRFrame | null>((resolve) => {
+		if (!worker || !offscreenEnabled) { resolve(null); return; }
+		flushIncrementalCommands();
+		const requestId = `render-ir:${sceneEpoch}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+		const timer = setTimeout(() => { pendingRenderIR.delete(requestId); renderIRFrame = null; resolve(null); }, 2000);
+		pendingRenderIR.set(requestId, (value) => { clearTimeout(timer); resolve(value); });
+		worker.postMessage({ type: "get-render-ir", data: { requestId, epoch: sceneEpoch, baseRevision: renderIRFrame?.revision ?? null } });
+	});
 
 	const waitForSceneOperationRender = (opId: string, timeoutMs = 800) => new Promise<void>((resolve) => {
 		if (!worker || !offscreenEnabled || renderedSceneOperations.delete(opId)) {
@@ -609,6 +736,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		transformingCmdIds: string[] = []
 	) => {
 		if (!worker || !offscreenEnabled || rects.length === 0) return;
+		flushIncrementalCommands();
 		worker.postMessage({
 			type: "render-dirty-regions",
 			data: {
@@ -625,6 +753,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 				resolve([]);
 				return;
 			}
+			flushIncrementalCommands();
 			const requestId = `command-points:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 			pendingCommandPointRequests.set(requestId, resolve);
 			worker.postMessage({
@@ -649,6 +778,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			resolve([]);
 			return;
 		}
+		flushIncrementalCommands();
 		const requestId = `erase-targets:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 		pendingEraseTargetRequests.set(requestId, resolve);
 		worker.postMessage({
@@ -667,6 +797,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 				resolve({ elementId: null, bounds: null });
 				return;
 			}
+			flushIncrementalCommands();
 			const requestId = `scene-hit:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 			pendingSceneHitRequests.set(requestId, resolve);
 			worker.postMessage({ type: "scene-hit-test", data: { x, y, requestId } });
@@ -678,6 +809,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 				resolve({ elementIds: [], bounds: null });
 				return;
 			}
+			flushIncrementalCommands();
 			const requestId = `scene-query:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 			pendingSceneQueryRequests.set(requestId, resolve);
 			worker.postMessage({ type: "scene-query-elements", data: { rect: cloneRect(rect), requestId } });
@@ -685,6 +817,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const removeCommandState = (cmdId: string) => {
 		if (!worker || !offscreenEnabled) return;
+		flushIncrementalCommands();
 		worker.postMessage({
 			type: "remove-command-state",
 			data: { cmdId },
@@ -693,6 +826,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const rerenderScene = (pageId: number, transformingCmdIds: string[] = []) => {
 		if (!worker || !offscreenEnabled) return;
+		flushIncrementalCommands();
 		worker.postMessage({
 			type: "rerender-scene",
 			data: {
@@ -708,20 +842,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			type: "merge-dirty-rects",
 			data: {
 				rects: payload.rects.map(cloneRect),
+				epoch: sceneEpoch,
 			},
 		});
 	};
 
 	const dispose = () => {
-		for (const callback of pendingInitBarriers.values()) callback(false);
-		pendingInitBarriers.clear();
-		pendingRequests.clear();
-		pendingCommandPointRequests.clear();
-		pendingEraseTargetRequests.clear();
-		pendingSceneHitRequests.clear();
-		pendingSceneQueryRequests.clear();
-		for (const callback of pendingSceneOperationRenders.values()) callback();
-		pendingSceneOperationRenders.clear();
+		sceneEpoch += 1;
+		settlePendingRequests();
 		renderedSceneOperations.clear();
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();
@@ -759,6 +887,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		renderDirtyRect,
 		renderDirtyRects,
 		syncCommandState,
+		requestRenderWatermarks,
+		requestRenderIR,
 		waitForSceneOperationRender,
 		removeCommandState,
 		rerenderScene,

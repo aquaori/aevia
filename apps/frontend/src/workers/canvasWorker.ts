@@ -9,6 +9,8 @@ import {
 } from "@collaborative-whiteboard/shared";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 import { SceneEngine } from "../scene/sceneEngine";
+import { diffRenderIR, type RenderIRFrame } from "../scene/renderIR";
+import { encodeRenderIR } from "../scene/renderIRCodec";
 import { labDrainMarks, labEnabled, labMark, labSetEnabled } from "../instrumentation/labMarks";
 import {
 	LAB_MARK_WORKER_FIRST_PAINT,
@@ -39,6 +41,7 @@ interface IncrementBatchItem {
 }
 
 interface InitRenderBinaryChunkData {
+	epoch: number;
 	snapshotVersion: number;
 	chunkIndex: number;
 	isLastChunk: boolean;
@@ -75,6 +78,10 @@ let currentTransformingIds = new Set<string>();
 const activeStrokeIds = new Set<string>();
 const sceneCommands = new Map<string, Command>();
 const sceneEngine = new SceneEngine();
+let exportedRenderFrame: RenderIRFrame | null = null;
+let exportedRenderEpoch = -1;
+let presentedRevision: number | null = null;
+let processedDispatchSeq = 0;
 let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
 const checkSceneDependencies = () => {
 	if (!sceneEngine.hasPendingDependencies() || dependencyTimer) return;
@@ -353,6 +360,7 @@ const renderFullScene = () => {
 		currentTransformingIds
 	);
 	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
+	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
 	return paintedRefs;
 };
 
@@ -538,6 +546,7 @@ const elementBounds = (ids: ReadonlySet<string>) => {
 };
 
 const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
+	const previousRevision = sceneEngine.getSceneRevision();
 	const historyImpact = operation.kind === "history.toggle"
 		? sceneEngine.getHistoryImpact(operation.payload.targetHistoryGroupId)
 		: null;
@@ -547,15 +556,15 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 	sceneEngine.applyOperation(operation);
 	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
 	checkSceneDependencies();
-	if (!mainCtx || operation.pageId !== currentPageId) return;
+	if (!mainCtx || operation.pageId !== currentPageId) return false;
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
 		renderFullScene();
-		return;
+		return true;
 	}
 	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
 	const newBounds = addedBounds ?? elementBounds(ids);
 	const dirty = mergeBounds(oldBounds, newBounds);
-	if (!dirty) return;
+	if (!dirty) return false;
 	const pixelBounds: Rect = {
 		minX: dirty.minX * viewport.width,
 		minY: dirty.minY * viewport.height,
@@ -566,6 +575,8 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 	};
 	const excludedIds = operation.kind === "element.transform" ? new Set<string>() : currentTransformingIds;
 	sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, excludedIds);
+	if (excludedIds.size === 0 && presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	return true;
 };
 
 const isIntersect = (a: Rect, b: Rect): boolean =>
@@ -660,6 +671,9 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "begin-init-stream") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
+		presentedRevision = null;
 		initStreamValid = true;
 		if (typeof data?.pageId === "number") {
 			currentPageId = data.pageId;
@@ -703,6 +717,7 @@ self.onmessage = (event: MessageEvent) => {
 		});
 		self.postMessage({
 			type: "init-render-points-decoded",
+			epoch: chunk.epoch,
 			points,
 			snapshotVersion: (data as InitRenderBinaryChunkData).snapshotVersion,
 			chunkIndex: (data as InitRenderBinaryChunkData).chunkIndex,
@@ -739,6 +754,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-increment-batch") {
+		if (typeof event.data.dispatchSeq === "number") processedDispatchSeq = event.data.dispatchSeq;
 		(data as IncrementBatchItem[]).forEach((entry) => {
 			renderIncrementalPoints(entry.cmd, entry.points);
 		});
@@ -752,11 +768,15 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "sync-scene") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
 		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
 		return;
 	}
 
 	if (type === "render-flat-points-scene") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
 		currentPageId = data.pageId as number;
 		const points = (data.points as FlatPoint[]) ?? [];
 		sceneCommands.clear();
@@ -778,6 +798,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "update-command-state") {
+		if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 		const cmd = data.cmd as Command;
 		if (cmd.type === "scene-op" && cmd.sceneOperation) {
 			if (!initRenderFinished) {
@@ -785,10 +806,10 @@ self.onmessage = (event: MessageEvent) => {
 				return;
 			}
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
-			renderSceneOperation(cmd.sceneOperation);
-			if (cmd.sceneOperation.kind === "element.transform") {
-				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId });
-			} else if (labEnabled()) {
+			const rendered = renderSceneOperation(cmd.sceneOperation);
+			if (cmd.sceneOperation.kind === "element.transform" && rendered) {
+				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId, epoch: data.epoch });
+			} else if (rendered && labEnabled()) {
 				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
 			}
 			return;
@@ -807,6 +828,29 @@ self.onmessage = (event: MessageEvent) => {
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 		}
 		sceneEngine.setLegacyCommandState(cmd);
+		return;
+	}
+
+	if (type === "get-render-watermarks") {
+		self.postMessage({ type: "render-watermarks", requestId: data.requestId, epoch: data.epoch,
+			sceneRevision: sceneEngine.getSceneRevision(), presentedRevision, processedDispatchSeq });
+		return;
+	}
+
+	if (type === "get-render-ir") {
+		const epoch = Number(data.epoch);
+		if (!mainCtx || !initRenderFinished || sceneEngine.needsResync || sceneEngine.hasPendingDependencies()) {
+			self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: null });
+			return;
+		}
+		const next = sceneEngine.getRenderIR();
+		const previous = exportedRenderEpoch === epoch ? exportedRenderFrame : null;
+		const frameBytes = encodeRenderIR(next);
+		const deltaBytes = previous && data.baseRevision === previous.revision ? encodeRenderIR(diffRenderIR(previous, next)) : null;
+		const bytes = deltaBytes && deltaBytes.byteLength < frameBytes.byteLength ? deltaBytes : frameBytes;
+		exportedRenderFrame = next;
+		exportedRenderEpoch = epoch;
+		self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: bytes.buffer }, { transfer: [bytes.buffer as ArrayBuffer] });
 		return;
 	}
 
@@ -887,11 +931,13 @@ self.onmessage = (event: MessageEvent) => {
 
 	if (type === "merge-dirty-rects") {
 		const merged = mergeRects(data.rects as Rect[]);
-		self.postMessage({ type: "merge-dirty-rects-result", rects: merged });
+		self.postMessage({ type: "merge-dirty-rects-result", rects: merged, epoch: data.epoch });
 		return;
 	}
 
 	if (type === "dispose") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
 		activeStrokeIds.clear();
 		sceneCommands.clear();
 		sceneEngine.reset(0);

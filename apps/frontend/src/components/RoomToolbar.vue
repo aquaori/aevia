@@ -24,8 +24,16 @@
 		Shapes,
 	} from "lucide-vue-next";
 	import type { EditorTool, StrokePattern } from "@collaborative-whiteboard/shared";
+	import { builtinToolRegistry } from "../scene/toolRegistry";
+	import { stickerAssets } from "../scene/stickerAssets";
 	type Tool = EditorTool;
 	type ActiveMenu = "pen" | "eraser" | "color" | "more" | null;
+	const penTools = builtinToolRegistry.list().filter((tool) => tool.inputMode === "freehand").map((tool) => ({ ...tool, id: tool.id as Tool }));
+	const moreTools = [
+		...builtinToolRegistry.list().filter((tool) => ["shape", "text"].includes(tool.inputMode)).map((tool) => ({ id: tool.id as Tool, label: tool.label, sticker: "" })),
+		...builtinToolRegistry.list().filter((tool) => tool.id === "object-eraser").map((tool) => ({ id: tool.id as Tool, label: tool.label, sticker: "" })),
+		...stickerAssets.map((asset) => ({ id: "sticker" as const, label: asset.label, sticker: asset.value })),
+	];
 	const COLORS = [
 		"#000000",
 		"#ef4444",
@@ -223,12 +231,12 @@
 						>
 							<div class="grid grid-cols-3 gap-1 mb-3">
 								<button
-									v-for="tool in ([['pen', '钢笔'], ['pencil', '铅笔'], ['highlighter', '荧光笔']] as const)"
-									:key="tool[0]"
-									@click="props.setTool(tool[0])"
+									v-for="tool in penTools"
+									:key="tool.id"
+									@click="props.setTool(tool.id)"
 									class="rounded-lg px-2 py-2 text-xs font-medium transition-colors"
-									:class="props.currentTool === tool[0] ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'"
-								>{{ tool[1] }}</button>
+									:class="props.currentTool === tool.id ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'"
+								>{{ tool.label }}</button>
 							</div>
 							<div
 								class="text-[10px] hmd:text-xs font-bold text-slate-400 mb-1.5 hmd:mb-2 flex justify-between"
@@ -347,26 +355,21 @@
 						>
 							<div class="grid grid-cols-4 gap-1">
 								<button
-								v-for="item in ([
-									['line', '直线', ''], ['arrow', '箭头', ''], ['rectangle', '矩形', ''],
-									['rounded-rectangle', '圆角矩形', ''], ['ellipse', '椭圆', ''], ['text', '文字', ''],
-									['sticky', '便签', ''], ['object-eraser', '对象擦除', ''],
-									['sticker', '星星', '✨'], ['sticker', '庆祝', '🎉'], ['sticker', '点赞', '👍'], ['sticker', '灵感', '💡']
-								] as const)"
-								:key="item[0] + item[2]"
-								@click="item[0] === 'sticker' ? props.setSticker(item[2]) : props.setTool(item[0])"
+								v-for="item in moreTools"
+								:key="item.id + item.sticker"
+								@click="item.id === 'sticker' ? props.setSticker(item.sticker) : props.setTool(item.id)"
 								class="flex flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] font-medium transition-colors"
-								:class="props.currentTool === item[0] && (item[0] !== 'sticker' || props.currentSticker === item[2]) ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'"
+								:class="props.currentTool === item.id && (item.id !== 'sticker' || props.currentSticker === item.sticker) ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'"
 							>
-								<Minus v-if="item[0] === 'line'" class="w-4 h-4" />
-								<ArrowUpRight v-else-if="item[0] === 'arrow'" class="w-4 h-4" />
-								<Square v-else-if="item[0] === 'rectangle' || item[0] === 'rounded-rectangle'" class="w-4 h-4" />
-								<Circle v-else-if="item[0] === 'ellipse'" class="w-4 h-4" />
-								<Type v-else-if="item[0] === 'text'" class="w-4 h-4" />
-								<StickyNote v-else-if="item[0] === 'sticky'" class="w-4 h-4" />
-								<span v-else-if="item[0] === 'sticker'" class="text-base leading-4">{{ item[2] }}</span>
+								<Minus v-if="item.id === 'line'" class="w-4 h-4" />
+								<ArrowUpRight v-else-if="item.id === 'arrow'" class="w-4 h-4" />
+								<Square v-else-if="item.id === 'rectangle' || item.id === 'rounded-rectangle'" class="w-4 h-4" />
+								<Circle v-else-if="item.id === 'ellipse'" class="w-4 h-4" />
+								<Type v-else-if="item.id === 'text'" class="w-4 h-4" />
+								<StickyNote v-else-if="item.id === 'sticky'" class="w-4 h-4" />
+								<span v-else-if="item.id === 'sticker'" class="text-base leading-4">{{ item.sticker }}</span>
 								<Eraser v-else class="w-4 h-4" />
-									<span>{{ item[1] }}</span>
+									<span>{{ item.label }}</span>
 								</button>
 							</div>
 							<div

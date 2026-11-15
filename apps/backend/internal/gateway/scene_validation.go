@@ -114,6 +114,13 @@ func validateScenePayload(kind string, payload map[string]any) (string, string, 
 		if !validID(descriptor["toolId"]) || elementRecipe[elementKind] != recipeID {
 			return "INVALID_SCENE_OPERATION", "Element kind or tool id is invalid.", false
 		}
+		if raw := descriptor["asset"]; raw != nil {
+			asset, ok := raw.(map[string]any)
+			key := stringValue(asset["key"])
+			if !ok || elementKind != "sticker" || intValue(asset["version"]) != 1 || (key != "emoji/sparkles" && key != "emoji/celebration" && key != "emoji/thumbs-up" && key != "emoji/idea") {
+				return "UNSUPPORTED_ASSET", "Sticker asset is not supported by this server.", false
+			}
+		}
 		if style, ok := descriptor["style"].(map[string]any); !ok || !validSceneStyle(style) {
 			return "INVALID_SCENE_OPERATION", "Element style size is invalid.", false
 		}

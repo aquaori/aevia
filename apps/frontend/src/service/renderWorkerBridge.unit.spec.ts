@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { reactive } from "vue";
 import type { Command } from "@collaborative-whiteboard/shared";
 import { cloneCommandForStateSync, createRenderWorkerBridge } from "./renderWorkerBridge";
+import { SceneCore } from "../scene/sceneCore";
+import { diffRenderIR } from "../scene/renderIR";
+import { encodeRenderIR } from "../scene/renderIRCodec";
 
 const command = (points: Command["points"]): Command => ({
 	id: "cmd-1",
@@ -61,6 +64,167 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("preserves interleaved stroke order before a scene query", async () => {
+		const messages: Array<{ type: string; data?: unknown; dispatchSeq?: number }> = [];
+		vi.stubGlobal("Worker", class {
+			postMessage(message: { type: string; data?: unknown; dispatchSeq?: number }) { messages.push(message); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const point = { x: 0.1, y: 0.2, p: 0.5, lamport: 1 };
+			const first = command([point]);
+			const second = { ...first, id: "cmd-2" };
+			bridge.renderIncrementalCommand(first, [point], 0);
+			bridge.renderIncrementalCommand(second, [point], 0);
+			bridge.renderIncrementalCommand(first, [point], 0);
+			const query = bridge.requestSceneHit(10, 20);
+			const [batch, hit] = messages.slice(-2);
+			expect([batch!.type, hit!.type]).toEqual(["render-increment-batch", "scene-hit-test"]);
+			expect((batch!.data as Array<{ cmd: Command }>).map((entry) => entry.cmd.id)).toEqual(["cmd-1", "cmd-2", "cmd-1"]);
+			expect(batch!.dispatchSeq).toBe(1);
+			bridge.dispose();
+			await query;
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("reconstructs versioned render frames from worker full and delta messages", async () => {
+		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string; epoch?: number; baseRevision?: number | null } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId?: string; epoch?: number; baseRevision?: number | null } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { worker = this; }
+			postMessage(message: { type: string; data?: { requestId?: string; epoch?: number; baseRevision?: number | null } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const core = new SceneCore();
+			const initial = core.getRenderIR();
+			const first = bridge.requestRenderIR();
+			let request = worker!.sent.at(-1)!.data!;
+			worker!.onmessage?.({ data: { type: "render-ir", requestId: request.requestId, epoch: request.epoch, buffer: encodeRenderIR(initial).buffer } });
+			expect(await first).toEqual(initial);
+			core.applyOperation({ schemaVersion: 2, opId: "a", elementId: "a", actorId: "u", roomId: "r", pageId: 0, lamport: 1, historyGroupId: "a", kind: "element.create", payload: { descriptor: { elementKind: "shape", toolId: "rectangle", recipeId: "shape", shapeKind: "rectangle", style: { color: "#000", size: 1 }, box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 } } } });
+			const next = core.getRenderIR();
+			const second = bridge.requestRenderIR();
+			request = worker!.sent.at(-1)!.data!;
+			expect(request.baseRevision).toBe(initial.revision);
+			worker!.onmessage?.({ data: { type: "render-ir", requestId: request.requestId, epoch: request.epoch, buffer: encodeRenderIR(diffRenderIR(initial, next)).buffer } });
+			expect(await second).toEqual(next);
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("reports dispatch, scene and presentation watermarks independently", async () => {
+		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string; epoch?: number } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId?: string; epoch?: number } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { worker = this; }
+			postMessage(message: { type: string; data?: { requestId?: string; epoch?: number } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			bridge.syncCommandState(command([]));
+			bridge.syncCommandState(command([]));
+			const point = { x: 0.1, y: 0.2, p: 0.5, lamport: 1 };
+			bridge.renderIncrementalCommand(command([point]), [point], 0);
+			const pending = bridge.requestRenderWatermarks();
+			const request = worker!.sent.at(-1)!.data!;
+			worker!.onmessage?.({ data: { type: "render-watermarks", requestId: request.requestId, epoch: request.epoch, processedDispatchSeq: 1, sceneRevision: 5, presentedRevision: 3 } });
+			expect(await pending).toEqual({ epoch: 0, submittedDispatchSeq: 3, processedDispatchSeq: 1, sceneRevision: 5, presentedRevision: 3, queue: { reliableBatches: 1, oldestReliableAgeMs: expect.any(Number), replaceableRenderPending: false } });
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("reports that the main-thread renderer is needed when worker creation fails", () => {
+		vi.stubGlobal("Worker", class { constructor() { throw new Error("worker unavailable"); } });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try { expect(bridge.init()).toBe(false); }
+		finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("allows main-thread fallback when canvas transfer is unavailable", () => {
+		vi.stubGlobal("Worker", class { postMessage() {} terminate() {} });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			const canvas = { transferControlToOffscreen: () => { throw new Error("transfer unavailable"); } } as unknown as HTMLCanvasElement;
+			expect(bridge.bindMainCanvas(canvas, { width: 100, height: 100, dpr: 1 })).toBe(false);
+			expect(bridge.isOffscreenEnabled()).toBe(false);
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("discards old page replies when a new snapshot begins", async () => {
+		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId?: string } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { worker = this; }
+			postMessage(message: { type: string; data?: { requestId?: string } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const onMainPoints = vi.fn();
+		const bridge = createRenderWorkerBridge({ onMainPoints });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const pending = bridge.requestSceneHit(10, 20);
+			const requestId = worker!.sent.at(-1)!.data!.requestId;
+			bridge.beginInitRenderStream(1);
+			expect(await pending).toEqual({ elementId: null, bounds: null });
+			worker!.onmessage?.({ data: { type: "scene-hit-result", requestId, elementId: "old", bounds: null } });
+			worker!.onmessage?.({ data: { type: "flat-points-result", requestId: "old", points: [{ x: 0 }] } });
+			let painted = false;
+			const paint = bridge.waitForSceneOperationRender("op-1").then(() => { painted = true; });
+			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "op-1", epoch: 0 } });
+			await Promise.resolve();
+			expect(painted).toBe(false);
+			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "op-1", epoch: 1 } });
+			await paint;
+			expect(onMainPoints).not.toHaveBeenCalled();
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("settles pending queries when the worker is disposed", async () => {
+		vi.stubGlobal("Worker", class { postMessage() {} terminate() {} });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const hit = bridge.requestSceneHit(10, 20);
+			bridge.dispose();
+			expect(await hit).toEqual({ elementId: null, bounds: null });
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("forwards queued stroke data when animation frames do not run", async () => {
+		const messages: string[] = [];
+		vi.stubGlobal("requestAnimationFrame", () => 1);
+		vi.stubGlobal("Worker", class {
+			postMessage(message: { type: string }) { messages.push(message.type); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const point = { x: 0.1, y: 0.2, p: 0.5, lamport: 1 };
+			bridge.renderIncrementalCommand(command([point]), [point], 0);
+			await Promise.resolve();
+			expect(messages).toContain("render-increment-batch");
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
 	it("waits for the worker to confirm snapshot processing", async () => {
 		let instance: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId: string } }[] };
 		vi.stubGlobal("Worker", class {
@@ -134,7 +298,7 @@ describe("worker acknowledgement isolation", () => {
 			const pending = bridge.waitForSceneOperationRender("lab-only", 50).then(() => { settled = true; });
 			await Promise.resolve();
 			expect(settled).toBe(false);
-			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "lab-only" } });
+			worker!.onmessage?.({ data: { type: "scene-operation-rendered", opId: "lab-only", epoch: 0 } });
 			await pending;
 			expect(settled).toBe(true);
 		} finally {
