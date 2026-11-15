@@ -975,13 +975,20 @@ export class SceneCore implements SceneCorePort {
 			this.hydratedThrough.has(elementId) || this.pendingAppends.has(elementId) || this.pendingTextOperations.has(elementId) || this.pendingTextDeletes.has(elementId)) return;
 		const savedElement = cloneCheckpointElement({ ...element, points: [], atomRefs: [] });
 		const atoms: RenderAtom[] = [];
+		const styles = new Map<RenderAtom["style"], RenderAtom["style"]>();
 		for (let index = 0; index < element.points.length; index += 1) {
 			savedElement.points.push({ ...element.points[index]! });
 			if (index % 128 === 127) yield;
 		}
 		for (let index = 0; index < element.atomRefs.length; index += 1) {
 			const atom = this.atoms[element.atomRefs[index]!];
-			if (atom && atom.elementRevision === element.revision) atoms.push(cloneCheckpointValue(atom));
+			// Geometry is immutable; style is copied once per shared style object so
+			// edits cannot mutate the saved prefix or require per-atom JSON cloning.
+			if (atom && atom.elementRevision === element.revision) {
+				let style = styles.get(atom.style);
+				if (!style) { style = { ...atom.style }; styles.set(atom.style, style); }
+				atoms.push({ ...atom, style });
+			}
 			if (index % 128 === 127) yield;
 		}
 		this.elementCheckpoints.set(elementId, {
@@ -1031,7 +1038,7 @@ export class SceneCore implements SceneCorePort {
 				this.elements.set(elementId, restored);
 				if (checkpoint.compiler) this.compilerStates.set(elementId, cloneCheckpointValue(checkpoint.compiler));
 				for (const atom of checkpoint.atoms) {
-					this.storeAtom(restored, { ...cloneCheckpointValue(atom), elementRevision: restored.revision });
+					this.storeAtom(restored, { ...atom, elementRevision: restored.revision });
 					if (++work % 128 === 0) yield;
 				}
 			}

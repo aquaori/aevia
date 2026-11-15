@@ -23,7 +23,14 @@ describe("SceneCore without browser rendering", () => {
 		apply({ ...create, opId: "undo-style", lamport: 201, historyGroupId: "undo-style", kind: "history.toggle", payload: { targetHistoryGroupId: "style", enabled: false } });
 		expect(checkpoints.has("stroke")).toBe(true);
 		expect(core.sceneHash()).toBe(reference.sceneHash());
-		apply({ ...create, opId: "undo-early", lamport: 202, historyGroupId: "undo-early", kind: "history.toggle", payload: { targetHistoryGroupId: "append-2", enabled: false } });
+		expect(core.getRenderIR().items.every(({ atom }) => atom.style.color === "#000")).toBe(true);
+		apply({ ...create, opId: "redo-style", lamport: 202, historyGroupId: "redo-style", kind: "history.toggle", payload: { targetHistoryGroupId: "style", enabled: true } });
+		expect(core.sceneHash()).toBe(reference.sceneHash());
+		expect(core.getRenderIR().items.every(({ atom }) => atom.style.color === "#f00")).toBe(true);
+		apply({ ...create, opId: "undo-style-again", lamport: 203, historyGroupId: "undo-style-again", kind: "history.toggle", payload: { targetHistoryGroupId: "style", enabled: false } });
+		expect(core.sceneHash()).toBe(reference.sceneHash());
+		expect(core.getRenderIR().items.every(({ atom }) => atom.style.color === "#000")).toBe(true);
+		apply({ ...create, opId: "undo-early", lamport: 204, historyGroupId: "undo-early", kind: "history.toggle", payload: { targetHistoryGroupId: "append-2", enabled: false } });
 		expect(checkpoints.has("stroke")).toBe(false);
 		expect(core.sceneHash()).toBe(reference.sceneHash());
 	});
