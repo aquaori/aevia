@@ -5,6 +5,7 @@
 		currentPageId: number;
 		totalPages: number;
 		showPageOverview: boolean;
+		canEdit: boolean;
 		prevPage: () => void;
 		nextPage: () => void;
 		openOverview: () => void;
@@ -42,6 +43,7 @@
 
 		<button
 			@click="props.nextPage"
+			:disabled="!props.canEdit && props.currentPageId === props.totalPages - 1"
 			class="p-1.5 hmd:p-2 rounded-lg transition-colors relative group"
 			:class="
 				props.currentPageId === props.totalPages - 1

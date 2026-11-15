@@ -39,9 +39,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := store.EnsureDefaultRoom(context.Background(), cfg.DefaultRoomID); err != nil {
-		logger.Error("ensure default room", "error", err)
-		os.Exit(1)
+	if !cfg.IsProduction() {
+		if err := store.EnsureDefaultRoom(context.Background(), cfg.DefaultRoomID); err != nil {
+			logger.Error("ensure default room", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	sessionEpoch, err := store.SessionEpoch(context.Background())

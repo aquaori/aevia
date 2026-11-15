@@ -8,19 +8,23 @@ type ClientInfo struct {
 	ID       ClientID
 	UserID   string
 	UserName string
+	Account  bool
 	PageID   int
 	Epoch    uint64
 	Send     chan Outbound
 	Abort    func()
+	Done     <-chan struct{}
 }
 
 type Outbound struct {
-	JSON   any
-	Text   []byte
-	Binary []byte
-	Close  bool
-	Bytes  int
-	Frozen bool
+	JSON        any
+	Text        []byte
+	Binary      []byte
+	Close       bool
+	Bytes       int
+	Frozen      bool
+	Stream      *InitStream
+	StreamReady <-chan *InitStream
 }
 
 type Envelope struct {

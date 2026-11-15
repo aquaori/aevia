@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS user_profiles (
+  user_id TEXT PRIMARY KEY,
+  nickname TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS rooms (
   room_id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -46,6 +52,66 @@ CREATE TABLE IF NOT EXISTS room_members (
   PRIMARY KEY(room_id, user_id),
   FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS room_policies (
+  room_id TEXT PRIMARY KEY,
+  default_role TEXT NOT NULL DEFAULT 'editor',
+  allow_room_code INTEGER NOT NULL DEFAULT 1,
+  guest_by_code INTEGER NOT NULL DEFAULT 1,
+  guest_by_invite INTEGER NOT NULL DEFAULT 1,
+  password_version INTEGER NOT NULL DEFAULT 0,
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS room_password_verifications (
+  room_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  PRIMARY KEY(room_id, user_id),
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS room_invites (
+  invite_id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL,
+  creator_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS room_transfers (
+  room_id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS guest_sessions (
+  room_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  kicked INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(room_id,user_id),
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS websocket_tickets (
+  ticket_hash TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS room_member_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_room_member_audit_room ON room_member_audit(room_id, id);
 
 CREATE TABLE IF NOT EXISTS room_role_capabilities (
   room_id TEXT NOT NULL,

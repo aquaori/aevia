@@ -1,0 +1,25 @@
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app */
+:root {
+  --entry-paper: oklch(97.4% 0.006 270); --entry-surface: oklch(99.9% 0.001 270);
+  --entry-ink: oklch(25% 0.021 270); --entry-muted: oklch(51% 0.019 270);
+  --entry-rule: oklch(90.7% 0.009 270); --entry-soft: oklch(96% 0.008 275);
+  --entry-accent: oklch(49% 0.15 275); --entry-accent-soft: oklch(95% 0.022 275);
+  --entry-elevation: oklch(30% 0.025 270 / .08); --entry-elevation-soft: oklch(30% 0.025 270 / .035);
+  --entry-accent-rule: oklch(89% 0.028 275); --entry-control-hover: oklch(96.4% .008 275);
+  --entry-overlay: oklch(25% .025 270 / .38); --entry-dialog-shadow: oklch(20% .03 270 / .18);
+  --entry-card-shadow: oklch(35% .025 270 / .07); --entry-card-shadow-soft: oklch(35% .025 270 / .04);
+  --entry-tab-shadow: oklch(30% .02 270 / .08); --entry-switch-off: oklch(81% .01 270);
+  --entry-danger: oklch(53% 0.2 25); --entry-danger-soft: oklch(97% 0.015 25);
+  --entry-font: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --entry-radius: 12px; --entry-control-radius: 8px;
+  --entry-ease: cubic-bezier(.2, 0, 0, 1);
+  --color-paper: var(--entry-paper); --color-paper-2: var(--entry-soft);
+  --color-ink: var(--entry-ink); --color-ink-2: var(--entry-muted);
+  --color-rule: var(--entry-rule); --color-accent: var(--entry-accent);
+  --color-focus: var(--entry-accent); --font-display: var(--entry-font); --font-body: var(--entry-font);
+  --space-3xs: .25rem; --space-2xs: .5rem; --space-xs: .75rem; --space-sm: 1rem;
+  --space-md: 1.5rem; --space-lg: 2rem; --space-xl: 3rem; --space-2xl: 4.5rem;
+  --text-xs: .75rem; --text-sm: .875rem; --text-md: 1rem; --text-lg: 1.25rem;
+  --ease-out: var(--entry-ease); --ease-in: cubic-bezier(.4, 0, 1, 1); --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --dur-short: 150ms; --dur-medium: 250ms; --radius-card: var(--entry-radius); --radius-input: var(--entry-control-radius);
+}
