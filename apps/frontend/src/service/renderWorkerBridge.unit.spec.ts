@@ -64,6 +64,32 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("preserves interleaved stroke order before a scene query", async () => {
+		const messages: Array<{ type: string; data?: unknown; dispatchSeq?: number }> = [];
+		vi.stubGlobal("Worker", class {
+			postMessage(message: { type: string; data?: unknown; dispatchSeq?: number }) { messages.push(message); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const point = { x: 0.1, y: 0.2, p: 0.5, lamport: 1 };
+			const first = command([point]);
+			const second = { ...first, id: "cmd-2" };
+			bridge.renderIncrementalCommand(first, [point], 0);
+			bridge.renderIncrementalCommand(second, [point], 0);
+			bridge.renderIncrementalCommand(first, [point], 0);
+			const query = bridge.requestSceneHit(10, 20);
+			const [batch, hit] = messages.slice(-2);
+			expect([batch!.type, hit!.type]).toEqual(["render-increment-batch", "scene-hit-test"]);
+			expect((batch!.data as Array<{ cmd: Command }>).map((entry) => entry.cmd.id)).toEqual(["cmd-1", "cmd-2", "cmd-1"]);
+			expect(batch!.dispatchSeq).toBe(1);
+			bridge.dispose();
+			await query;
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
 	it("reconstructs versioned render frames from worker full and delta messages", async () => {
 		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string; epoch?: number; baseRevision?: number | null } }[] };
 		vi.stubGlobal("Worker", class {
@@ -110,10 +136,12 @@ describe("worker acknowledgement isolation", () => {
 			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
 			bridge.syncCommandState(command([]));
 			bridge.syncCommandState(command([]));
+			const point = { x: 0.1, y: 0.2, p: 0.5, lamport: 1 };
+			bridge.renderIncrementalCommand(command([point]), [point], 0);
 			const pending = bridge.requestRenderWatermarks();
 			const request = worker!.sent.at(-1)!.data!;
 			worker!.onmessage?.({ data: { type: "render-watermarks", requestId: request.requestId, epoch: request.epoch, processedDispatchSeq: 1, sceneRevision: 5, presentedRevision: 3 } });
-			expect(await pending).toEqual({ epoch: 0, submittedDispatchSeq: 2, processedDispatchSeq: 1, sceneRevision: 5, presentedRevision: 3 });
+			expect(await pending).toEqual({ epoch: 0, submittedDispatchSeq: 3, processedDispatchSeq: 1, sceneRevision: 5, presentedRevision: 3, queue: { reliableBatches: 1, oldestReliableAgeMs: expect.any(Number), replaceableRenderPending: false } });
 		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
 	});
 

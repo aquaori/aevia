@@ -95,6 +95,7 @@ export interface ConsistencyWatermarks {
 		processedDispatchSeq: number;
 		sceneRevision: number;
 		presentedRevision: number | null;
+		queue: { reliableBatches: number; oldestReliableAgeMs: number; replaceableRenderPending: boolean };
 	} | null;
 }
 

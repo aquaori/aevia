@@ -754,6 +754,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-increment-batch") {
+		if (typeof event.data.dispatchSeq === "number") processedDispatchSeq = event.data.dispatchSeq;
 		(data as IncrementBatchItem[]).forEach((entry) => {
 			renderIncrementalPoints(entry.cmd, entry.points);
 		});
