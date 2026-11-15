@@ -109,6 +109,7 @@ interface RoomCollabTransportOptions {
 		loadPageIds: number[];
 		unloadPageIds: number[];
 		commands: Command[];
+		preservePoints?: boolean;
 	}) => void;
 	clearClearedCommands: (cmd: Command) => boolean;
 	requestCurrentPageResync?: () => boolean;
@@ -123,7 +124,23 @@ interface RoomCollabTransportOptions {
 
 export const createRoomCollabTransport = (options: RoomCollabTransportOptions) => {
 	const emitHook = useRoomSessionEmitHook();
+	const roomStartedAt = performance.now();
+	const showHistoryToast = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("historyToast") === "1";
 	const socket = ref<WebSocket | null>(null);
+	const historyReadyPages = ref<Set<number>>(new Set());
+	let historyRequestSequence = 0;
+	const historyFragments = new Map<number, { commands: Command[]; cursor?: string; snapshotVersion?: number }>();
+	const historyRequests = new Map<string, { pageId: number; fragment: { commands: Command[]; cursor?: string; snapshotVersion?: number }; startedAt: number }>();
+	const requestPageHistory = (connection: WebSocket, pageId: number) => {
+		if (connection.readyState !== WebSocket.OPEN) return;
+		for (const [id, request] of historyRequests) if (request.pageId === pageId) historyRequests.delete(id);
+		const requestId = String(++historyRequestSequence);
+		historyReadyPages.value = new Set([...historyReadyPages.value].filter((page) => page !== pageId));
+		const fragment = historyFragments.get(pageId) ?? { commands: [] };
+		historyFragments.set(pageId, fragment);
+		historyRequests.set(requestId, { pageId, fragment, startedAt: performance.now() });
+		connection.send(JSON.stringify({ type: "load-page-history", data: { requestId, pageId: statePageToProtocol(pageId), cursor: fragment.cursor, snapshotVersion: fragment.snapshotVersion } }));
+	};
 	const isIntentionalClose = ref(false);
 	const isReconnecting = ref(false);
 	const reconnectCount = ref(0);
@@ -517,6 +534,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				if (appliedSequences.size > 0) connection.close();
 				retryPendingSceneOperations();
 				initLocalCommands = [];
+				requestPageHistory(connection, options.currentPageId.value);
 			});
 		},
 		getInitLocalCommands: () => initLocalCommands,
@@ -762,6 +780,32 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				try {
 					if (typeof event.data === "string") {
 						const msg = JSON.parse(event.data);
+						if (msg.type === "page-history-meta" || msg.type === "page-history-chunk" || msg.type === "page-history-complete" || msg.type === "page-history-failed") {
+							const requestId = String(msg.data?.requestId ?? "");
+							const request = historyRequests.get(requestId);
+							if (!request || request.pageId !== Number(msg.data?.pageId)) return;
+							if (msg.type === "page-history-meta") {
+								if (!msg.data?.resumed) { request.fragment.commands = []; request.fragment.cursor = undefined; }
+								request.fragment.snapshotVersion = Number(msg.data?.snapshotVersion);
+							} else if (msg.type === "page-history-chunk") {
+								if (Array.isArray(msg.data?.commands)) request.fragment.commands.push(...msg.data.commands.map(normalizeCommandFromProtocol));
+								if (typeof msg.data?.cursor === "string") request.fragment.cursor = msg.data.cursor;
+							} else {
+								historyRequests.delete(requestId);
+								if (msg.type === "page-history-complete" && options.loadedPageIds.value.includes(request.pageId)) {
+									options.applyLoadedPageDelta({ loadedPageIds: options.loadedPageIds.value, loadPageIds: [request.pageId], unloadPageIds: [], commands: request.fragment.commands, preservePoints: true });
+									historyReadyPages.value = new Set([...historyReadyPages.value, request.pageId]);
+									if (showHistoryToast) {
+										const now = performance.now();
+										toast.success(`第 ${request.pageId + 1} 页历史已补齐（${request.fragment.commands.length} 条），补载 ${(now - request.startedAt).toFixed(0)} ms，进入房间后 ${(now - roomStartedAt).toFixed(0)} ms`);
+									}
+									historyFragments.delete(request.pageId);
+								} else if (msg.type === "page-history-failed" && options.currentPageId.value === request.pageId) {
+									setTimeout(() => { if (socket.value === connection && options.currentPageId.value === request.pageId) requestPageHistory(connection, request.pageId); }, 2000);
+								}
+							}
+							return;
+						}
                         if (msg.type === "init-meta" || msg.type === "delta-replay-meta") {
                             sceneAppendBinary = import.meta.env.VITE_SCENE_APPEND_BINARY !== "0" && Array.isArray(msg.data?.capabilities) && msg.data.capabilities.includes("scene-append-v2-binary");
 							sceneTextBoxV1 = Array.isArray(msg.data?.capabilities) && msg.data.capabilities.includes("scene-text-box-v1");
@@ -826,6 +870,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							return;
 						}
 						dispatcher.handleMessage(msg);
+						if (msg.type === "page-change-complete" || msg.type === "delta-replay-complete") requestPageHistory(connection, options.currentPageId.value);
 						if (msg.type === "ack.accepted" || msg.type === "op-rejected") {
 							const id = msg.data?.opId ?? msg.data?.cmdId;
 							if (typeof id === "string") pendingSceneOperations.delete(id);
@@ -898,6 +943,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 				resetCollabPressurePolicy();
 				clearSessionRenewTimer();
 				socket.value = null;
+				historyRequests.clear();
 				if (isIntentionalClose.value) return;
 				scheduleReconnect();
 			};
@@ -925,6 +971,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		reconnectCount,
 		MAX_RECONNECT,
 		getRecoveryRoomSeq: () => lastRoomSeq,
+		isPageHistoryReady: (pageId: number) => historyReadyPages.value.has(pageId),
 		send,
 		openMemberList,
 		connect,

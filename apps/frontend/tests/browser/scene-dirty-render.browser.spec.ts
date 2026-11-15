@@ -108,6 +108,25 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("paints a topmost pen increment identically to full replay and rejects older atoms", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(operations[0]!);
+		const ctx = createCanvasContext();
+		engine.renderFull(ctx, WIDTH, HEIGHT);
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		const before = engine.lastAtomOrder();
+		const first = engine.atomCount;
+		engine.applyOperation({ ...stroke, payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 8 } } } });
+		expect(engine.renderNewPenAtomsOnTop(ctx, first, before, WIDTH, HEIGHT)).toBe(true);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		expect(ctx.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(reference.getImageData(0, 0, WIDTH, HEIGHT).data);
+		const latest = engine.lastAtomOrder();
+		const next = engine.atomCount;
+		engine.applyOperation({ ...stroke, opId: "old-stroke", elementId: "old-stroke", lamport: 1, historyGroupId: "old-stroke", payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen" }, points: [{ x: .2, y: .2, p: .5, lamport: 1 }] } });
+		expect(engine.renderNewPenAtomsOnTop(ctx, next, latest, WIDTH, HEIGHT)).toBe(false);
+	});
 	it("renders a sliced full frame identically to the synchronous renderer", () => {
 		const engine = new SceneEngine();
 		const stroke = operations[1]!;

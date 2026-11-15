@@ -474,7 +474,7 @@
 		currentPageId,
 		username,
 		currentTool,
-		isHistoryReady: () => loadedPageIds.value.includes(currentPageId.value),
+		isHistoryReady: () => loadedPageIds.value.includes(currentPageId.value) && roomCollabTransport.isPageHistoryReady(currentPageId.value),
 		insertCommand,
 		renderCanvas,
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),

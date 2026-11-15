@@ -201,6 +201,20 @@ const operationTargets = (operation: SceneOperationEnvelopeV2) => {
 	}
 };
 
+interface ElementCheckpoint {
+	lastOrder: RenderOrderKey;
+	element: SceneElementState;
+	atoms: RenderAtom[];
+	compiler?: StrokeCompilerState;
+}
+
+const cloneCheckpointValue = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+const cloneCheckpointElement = (element: SceneElementState): SceneElementState => ({
+	...cloneCheckpointValue({ ...element, erasedIntervals: undefined, characters: undefined }),
+	erasedIntervals: new Map([...element.erasedIntervals].map(([id, intervals]) => [id, cloneCheckpointValue(intervals)])),
+	characters: new Map([...element.characters].map(([id, character]) => [id, cloneCheckpointValue(character)])),
+});
+
 export class SceneCore implements SceneCorePort {
 	private readonly measureText?: (text: string, font: string) => number;
 	constructor(measureText?: (text: string, font: string) => number) { this.measureText = measureText; }
@@ -230,6 +244,7 @@ export class SceneCore implements SceneCorePort {
 	private readonly operationIds = new Set<string>();
 	private readonly operationsByElement = new Map<string, SceneOperationEnvelopeV2[]>();
 	private readonly operationsByHistoryGroup = new Map<string, SceneOperationEnvelopeV2[]>();
+	private readonly elementCheckpoints = new Map<string, ElementCheckpoint>();
 	private readonly revisionSeed = new Map<string, number>();
 	private readonly historyEnabled = new Map<string, boolean>();
 	private readonly latestHistoryToggle = new Map<string, Extract<SceneOperationEnvelopeV2, { kind: "history.toggle" }>>();
@@ -265,6 +280,7 @@ export class SceneCore implements SceneCorePort {
 		this.operationIds.clear();
 		this.operationsByElement.clear();
 		this.operationsByHistoryGroup.clear();
+		this.elementCheckpoints.clear();
 		this.revisionSeed.clear();
 		this.historyEnabled.clear();
 		this.latestHistoryToggle.clear();
@@ -465,11 +481,12 @@ export class SceneCore implements SceneCorePort {
 			if (operation.kind === "page.clear") {
 				yield* this.rebuildV2ElementsSteps();
 			} else {
-				yield* this.rebuildElementsSteps(new Set(operationTargets(operation)));
+				yield* this.rebuildElementsSteps(new Set(operationTargets(operation)), sceneOperationOrderKey(operation));
 			}
 			return operationTargets(operation);
 		}
 		yield* this.applyOperationIncremental(operation);
+		for (const elementId of operationTargets(operation)) yield* this.maybeCheckpointElement(elementId);
 		return operationTargets(operation);
 	}
 
@@ -942,14 +959,54 @@ export class SceneCore implements SceneCorePort {
 		}
 		const affected = new Set<string>();
 		for (const candidate of groupOperations) for (const elementId of operationTargets(candidate)) affected.add(elementId);
-		yield* this.rebuildElementsSteps(affected);
+		let earliest: RenderOrderKey | null = null;
+		for (const candidate of groupOperations) {
+			const order = sceneOperationOrderKey(candidate);
+			if (!earliest || compareRenderOrder(order, earliest) < 0) earliest = order;
+		}
+		yield* this.rebuildElementsSteps(affected, earliest);
 	}
 
-	private *rebuildElementsSteps(elementIds: ReadonlySet<string>): Generator<void> {
+	private *maybeCheckpointElement(elementId: string): Generator<void> {
+		const operations = this.operationsByElement.get(elementId);
+		const count = operations?.length ?? 0;
+		const element = this.elements.get(elementId);
+		if (count < 128 || (count & (count - 1)) !== 0 || !element || this.legacyElementIds.has(elementId) ||
+			this.hydratedThrough.has(elementId) || this.pendingAppends.has(elementId) || this.pendingTextOperations.has(elementId) || this.pendingTextDeletes.has(elementId)) return;
+		const savedElement = cloneCheckpointElement({ ...element, points: [], atomRefs: [] });
+		const atoms: RenderAtom[] = [];
+		const styles = new Map<RenderAtom["style"], RenderAtom["style"]>();
+		for (let index = 0; index < element.points.length; index += 1) {
+			savedElement.points.push({ ...element.points[index]! });
+			if (index % 128 === 127) yield;
+		}
+		for (let index = 0; index < element.atomRefs.length; index += 1) {
+			const atom = this.atoms[element.atomRefs[index]!];
+			// Geometry is immutable; style is copied once per shared style object so
+			// edits cannot mutate the saved prefix or require per-atom JSON cloning.
+			if (atom && atom.elementRevision === element.revision) {
+				let style = styles.get(atom.style);
+				if (!style) { style = { ...atom.style }; styles.set(atom.style, style); }
+				atoms.push({ ...atom, style });
+			}
+			if (index % 128 === 127) yield;
+		}
+		this.elementCheckpoints.set(elementId, {
+			lastOrder: sceneOperationOrderKey(operations![count - 1]!),
+			element: savedElement,
+			atoms,
+			compiler: this.compilerStates.has(elementId) ? cloneCheckpointValue(this.compilerStates.get(elementId)!) : undefined,
+		});
+	}
+
+	private *rebuildElementsSteps(elementIds: ReadonlySet<string>, changedOrder: RenderOrderKey | null = null): Generator<void> {
 		let work = 0;
 		const wasDeferred = this.deferCompaction;
 		this.deferCompaction = true;
 		for (const elementId of elementIds) {
+			const checkpoint = this.elementCheckpoints.get(elementId);
+			const usable = checkpoint && changedOrder && compareRenderOrder(checkpoint.lastOrder, changedOrder) < 0;
+			if (checkpoint && !usable) this.elementCheckpoints.delete(elementId);
 			this.elementBoundsCache.delete(elementId);
 			this.pendingAppends.delete(elementId);
 			this.pendingTextDeletes.delete(elementId);
@@ -971,7 +1028,32 @@ export class SceneCore implements SceneCorePort {
 				this.elements.delete(elementId);
 				this.compilerStates.delete(elementId);
 			}
-			for (const candidate of this.operationsByElement.get(elementId) ?? []) {
+			if (usable) {
+				const restored = cloneCheckpointElement({ ...checkpoint.element, points: [] });
+				for (let index = 0; index < checkpoint.element.points.length; index += 1) {
+					restored.points.push({ ...checkpoint.element.points[index]! });
+					if (++work % 128 === 0) yield;
+				}
+				restored.revision = this.revisionSeed.get(elementId) ?? restored.revision;
+				this.elements.set(elementId, restored);
+				if (checkpoint.compiler) this.compilerStates.set(elementId, cloneCheckpointValue(checkpoint.compiler));
+				for (const atom of checkpoint.atoms) {
+					this.storeAtom(restored, { ...atom, elementRevision: restored.revision });
+					if (++work % 128 === 0) yield;
+				}
+			}
+			const elementOperations = this.operationsByElement.get(elementId) ?? [];
+			let start = 0;
+			if (usable) {
+				let high = elementOperations.length;
+				while (start < high) {
+					const middle = (start + high) >>> 1;
+					if (compareRenderOrder(sceneOperationOrderKey(elementOperations[middle]!), checkpoint.lastOrder) <= 0) start = middle + 1;
+					else high = middle;
+				}
+			}
+			for (let index = start; index < elementOperations.length; index += 1) {
+				const candidate = elementOperations[index]!;
 				if (candidate.kind === "history.toggle" || !this.isOperationEnabled(candidate)) continue;
 				yield* this.applyOperationToElement(candidate, elementId);
 				if (++work % 32 === 0) yield;
@@ -1366,6 +1448,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private *rebuildV2ElementsSteps(): Generator<void> {
+		this.elementCheckpoints.clear();
 		this.elementBoundsCache.clear();
 		let work = 0;
 		const wasBulkLoading = this.bulkLoading;

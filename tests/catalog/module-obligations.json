@@ -555,6 +555,20 @@
       "owner": "apps/frontend/tests/browser/worker-init-stream.browser.spec.ts"
     },
     {
+      "id": "frontend:apps/frontend/src/workers/sceneBatchRing.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/workers/sceneBatchRing.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/sceneBatchRing.unit.spec.ts"
+    },
+    {
+      "id": "frontend:apps/frontend/src/workers/workerTaskScheduler.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/workers/workerTaskScheduler.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/workerTaskScheduler.unit.spec.ts"
+    },
+    {
       "id": "go:apps/backend/cmd/aevia-backend/main.go",
       "kind": "go",
       "path": "apps/backend/cmd/aevia-backend/main.go",

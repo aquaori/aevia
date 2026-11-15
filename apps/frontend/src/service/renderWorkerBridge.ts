@@ -1,5 +1,6 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
 import type { Command, EraseTarget, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
+import { SceneBatchRing } from "../workers/sceneBatchRing";
 import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
 import { decodeRenderIR } from "../scene/renderIRCodec";
 import type {
@@ -127,6 +128,24 @@ const cloneRect = (rect: DirtyRectRequest): DirtyRectRequest => ({
 
 export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => {
 	let worker: Worker | null = null;
+	let sceneBatchRing: SceneBatchRing | null = null;
+	const pendingSceneBatch: { cmd: Command; epoch: number; dispatchSeq: number }[] = [];
+	let sceneBatchScheduled = false;
+	const flushSceneBatch = () => {
+		sceneBatchScheduled = false;
+		if (!worker || pendingSceneBatch.length === 0) return;
+		const batch = pendingSceneBatch.splice(0);
+		const encoded = new TextEncoder().encode(JSON.stringify(batch));
+		if (sceneBatchRing?.write(encoded)) {
+			worker.postMessage({ type: "scene-batch-ring", data: { length: encoded.length } });
+		} else {
+			worker.postMessage({ type: "scene-batch-transfer", data: { buffer: encoded.buffer } }, [encoded.buffer]);
+		}
+	};
+	const postWorker = (message: unknown, transfer: Transferable[] = []) => {
+		flushSceneBatch();
+		worker?.postMessage(message, transfer);
+	};
 	let sceneEpoch = 0;
 	let dispatchSeq = 0;
 	let renderIRFrame: RenderIRFrame | null = null;
@@ -202,7 +221,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		};
 
 		if (offscreenEnabled) {
-			worker.postMessage({
+			postWorker({
 				type: "render-full",
 				data,
 			});
@@ -210,7 +229,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		}
 
 		pendingMainCanvasResponseId = payload.requestId;
-		worker.postMessage({
+		postWorker({
 			type: "flat-points",
 			data,
 		});
@@ -238,7 +257,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 		pendingIncrements.length = 0;
 		pendingIncrementsSince = null;
-		worker.postMessage({
+		postWorker({
 			type: "render-increment-batch",
 			dispatchSeq: ++dispatchSeq,
 			data: batch,
@@ -292,11 +311,16 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		}
 		const activeWorker = worker;
 
+		if (globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined") {
+			sceneBatchRing = new SceneBatchRing(new SharedArrayBuffer(8 + 1024 * 1024));
+			postWorker({ type: "scene-batch-ring-init", data: { buffer: sceneBatchRing.buffer } });
+		}
+
 		// Workers cannot see the harness-injected `window.__AEVIA_LAB__`; tell the
 		// worker once whether lab mode is on. Message order guarantees this lands
 		// before any init/render traffic.
 		if (labEnabled()) {
-			worker.postMessage({ type: "lab-configure", data: { enabled: true } });
+			postWorker({ type: "lab-configure", data: { enabled: true } });
 		}
 
 		const handleWorkerFailure = () => {
@@ -453,7 +477,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		} catch {
 			return false;
 		}
-		worker.postMessage(
+		postWorker(
 			{
 				type: "init-canvas",
 				data: {
@@ -470,7 +494,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const syncViewport = (viewport: ViewportPayload) => {
 		if (!worker || !offscreenEnabled) return;
-		worker.postMessage({
+		postWorker({
 			type: "resize",
 			data: viewport,
 		});
@@ -485,7 +509,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		if (onResult) {
 			pendingRequests.set(payload.requestId, onResult);
 		}
-		worker.postMessage({
+		postWorker({
 			type: "flat-points-from-scene",
 			data: {
 				pageId: payload.pageId,
@@ -501,6 +525,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const beginInitRenderStream = (pageId?: number) => {
+		flushSceneBatch();
 		sceneEpoch += 1;
 		renderedSceneOperations.clear();
 		settlePendingRequests();
@@ -509,7 +534,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		flushIncrementalCommands();
 		cancelPendingIncrementFlush();
 		if (!worker) return;
-		worker.postMessage({
+		postWorker({
 			type: "begin-init-stream",
 			data: { pageId },
 		});
@@ -520,7 +545,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		if (!worker) return;
 
 		if (offscreenEnabled) {
-			worker.postMessage({
+			postWorker({
 				type: "append-init-points",
 				data: {
 					points,
@@ -552,7 +577,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			buffer,
 		};
 
-		worker.postMessage(
+		postWorker(
 			{
 				type: "append-init-binary-chunk",
 				data: request,
@@ -563,7 +588,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const finishInitRenderStream = () => {
 		if (!worker) return;
-		worker.postMessage({ type: "finish-init-stream" });
+		postWorker({ type: "finish-init-stream" });
 	};
 
 	const confirmInitScene = () => {
@@ -572,7 +597,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		return new Promise<boolean>((resolve) => {
 			const timeout = setTimeout(() => { pendingInitBarriers.delete(requestId); resolve(false); }, 30000);
 			pendingInitBarriers.set(requestId, (valid) => { clearTimeout(timeout); resolve(valid); });
-			worker!.postMessage({ type: "init-scene-barrier", data: { requestId } });
+			postWorker({ type: "init-scene-barrier", data: { requestId } });
 		});
 	};
 
@@ -582,13 +607,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		transformingCmdIds: string[] = []
 	) => {
 		if (!worker || !offscreenEnabled) return;
+		flushSceneBatch();
 		sceneEpoch += 1;
 		renderedSceneOperations.clear();
 		settlePendingRequests();
 		cancelPendingMainCanvasRequest();
 		flushIncrementalCommands();
 		cancelPendingIncrementFlush();
-		worker.postMessage({
+		postWorker({
 			type: "sync-scene",
 			data: {
 				commands: commands.map(cloneCommand),
@@ -599,6 +625,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const renderSceneFromFlatPoints = (points: FlatPoint[], pageId: number) => {
+		flushSceneBatch();
 		sceneEpoch += 1;
 		renderedSceneOperations.clear();
 		settlePendingRequests();
@@ -611,7 +638,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			options.onMainPoints(streamedInitPoints);
 			return;
 		}
-		worker.postMessage({
+		postWorker({
 			type: "render-flat-points-scene",
 			data: {
 				pageId,
@@ -642,7 +669,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const setInitSceneOperations = (commands: Command[], pageId: number) => {
 		if (!worker || !offscreenEnabled) return;
 		flushIncrementalCommands();
-		worker.postMessage({
+		postWorker({
 			type: "set-init-scene-operations",
 			data: {
 				pageId,
@@ -656,7 +683,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const finishCommandStroke = (cmdId: string) => {
 		if (!worker || !offscreenEnabled || !cmdId) return;
 		flushIncrementalCommands();
-		worker.postMessage({
+		postWorker({
 			type: "finish-command-stroke",
 			data: { cmdId },
 		});
@@ -669,7 +696,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	) => {
 		if (!worker || !offscreenEnabled) return;
 		flushIncrementalCommands();
-		worker.postMessage({
+		postWorker({
 			type: "render-dirty",
 			data: {
 				rect: cloneRect(rect),
@@ -682,14 +709,15 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const syncCommandState = (cmd: Command) => {
 		if (!worker || !offscreenEnabled) return;
 		flushIncrementalCommands();
-		worker.postMessage({
-			type: "update-command-state",
-			data: {
-				cmd: cloneCommandForStateSync(cmd),
-				epoch: sceneEpoch,
-				dispatchSeq: ++dispatchSeq,
-			},
-		});
+		const data = { cmd: cloneCommandForStateSync(cmd), epoch: sceneEpoch, dispatchSeq: ++dispatchSeq };
+		if (cmd.type === "scene-op" && cmd.sceneOperation?.kind === "element.append") {
+			pendingSceneBatch.push(data);
+			if (pendingSceneBatch.length >= 128) flushSceneBatch();
+			if (!sceneBatchScheduled) {
+				sceneBatchScheduled = true;
+				queueMicrotask(() => { if (sceneBatchScheduled) flushSceneBatch(); });
+			}
+		} else postWorker({ type: "update-command-state", data });
 	};
 
 	const requestRenderWatermarks = () => new Promise<RenderWatermarks | null>((resolve) => {
@@ -703,7 +731,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		const requestId = `watermarks:${sceneEpoch}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 		const timer = setTimeout(() => { pendingWatermarks.delete(requestId); resolve(null); }, 2000);
 		pendingWatermarks.set(requestId, (value) => { clearTimeout(timer); resolve(value ? { ...value, queue } : null); });
-		worker.postMessage({ type: "get-render-watermarks", data: { requestId, epoch: sceneEpoch } });
+		postWorker({ type: "get-render-watermarks", data: { requestId, epoch: sceneEpoch } });
 	});
 
 	const requestRenderIR = () => new Promise<RenderIRFrame | null>((resolve) => {
@@ -712,7 +740,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		const requestId = `render-ir:${sceneEpoch}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 		const timer = setTimeout(() => { pendingRenderIR.delete(requestId); renderIRFrame = null; resolve(null); }, 2000);
 		pendingRenderIR.set(requestId, (value) => { clearTimeout(timer); resolve(value); });
-		worker.postMessage({ type: "get-render-ir", data: { requestId, epoch: sceneEpoch, baseRevision: renderIRFrame?.revision ?? null } });
+		postWorker({ type: "get-render-ir", data: { requestId, epoch: sceneEpoch, baseRevision: renderIRFrame?.revision ?? null } });
 	});
 
 	const waitForSceneOperationRender = (opId: string, timeoutMs = 800) => new Promise<void>((resolve) => {
@@ -737,7 +765,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	) => {
 		if (!worker || !offscreenEnabled || rects.length === 0) return;
 		flushIncrementalCommands();
-		worker.postMessage({
+		postWorker({
 			type: "render-dirty-regions",
 			data: {
 				rects: rects.map(cloneRect),
@@ -756,7 +784,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			flushIncrementalCommands();
 			const requestId = `command-points:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 			pendingCommandPointRequests.set(requestId, resolve);
-			worker.postMessage({
+			postWorker({
 				type: "get-command-points",
 				data: {
 					requestId,
@@ -781,7 +809,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		flushIncrementalCommands();
 		const requestId = `erase-targets:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 		pendingEraseTargetRequests.set(requestId, resolve);
-		worker.postMessage({
+		postWorker({
 			type: "compute-erase-targets",
 			data: {
 				...payload,
@@ -800,7 +828,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			flushIncrementalCommands();
 			const requestId = `scene-hit:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 			pendingSceneHitRequests.set(requestId, resolve);
-			worker.postMessage({ type: "scene-hit-test", data: { x, y, requestId } });
+			postWorker({ type: "scene-hit-test", data: { x, y, requestId } });
 		});
 
 	const requestSceneQuery = (rect: aabbBox) =>
@@ -812,13 +840,13 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 			flushIncrementalCommands();
 			const requestId = `scene-query:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 			pendingSceneQueryRequests.set(requestId, resolve);
-			worker.postMessage({ type: "scene-query-elements", data: { rect: cloneRect(rect), requestId } });
+			postWorker({ type: "scene-query-elements", data: { rect: cloneRect(rect), requestId } });
 		});
 
 	const removeCommandState = (cmdId: string) => {
 		if (!worker || !offscreenEnabled) return;
 		flushIncrementalCommands();
-		worker.postMessage({
+		postWorker({
 			type: "remove-command-state",
 			data: { cmdId },
 		});
@@ -827,7 +855,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const rerenderScene = (pageId: number, transformingCmdIds: string[] = []) => {
 		if (!worker || !offscreenEnabled) return;
 		flushIncrementalCommands();
-		worker.postMessage({
+		postWorker({
 			type: "rerender-scene",
 			data: {
 				pageId,
@@ -838,7 +866,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const requestMergeDirtyRects = (payload: MergeDirtyRectsRequest) => {
 		if (!worker) return;
-		worker.postMessage({
+		postWorker({
 			type: "merge-dirty-rects",
 			data: {
 				rects: payload.rects.map(cloneRect),
@@ -848,6 +876,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const dispose = () => {
+		flushSceneBatch();
 		sceneEpoch += 1;
 		settlePendingRequests();
 		renderedSceneOperations.clear();
@@ -856,6 +885,9 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		worker?.postMessage({ type: "dispose" });
 		worker?.terminate();
 		worker = null;
+		sceneBatchRing = null;
+		pendingSceneBatch.length = 0;
+		sceneBatchScheduled = false;
 		offscreenEnabled = false;
 		canvasTransferred = false;
 	};

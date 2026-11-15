@@ -8,6 +8,7 @@ import { ctx } from "../../src/service/canvas";
 import { createWhiteboardSession } from "../../src/service/whiteboardSession";
 import { createRenderWorkerBridge } from "../../src/service/renderWorkerBridge";
 import { decodeRenderIR } from "../../src/scene/renderIRCodec";
+import { SceneBatchRing } from "../../src/workers/sceneBatchRing";
 
 const WIDTH = 320;
 const HEIGHT = 240;
@@ -146,6 +147,26 @@ describe("canvas worker init render stream", () => {
 	afterEach(() => {
 		worker?.terminate();
 		worker = null;
+	});
+
+	it("processes ring and transferable batches in message order", async () => {
+		worker = new Worker(new URL("../../src/workers/canvasWorker.ts", import.meta.url), { type: "module" });
+		worker.postMessage({ type: "begin-init-stream", data: { pageId: 0 } });
+		const entry = (dispatchSeq: number) => ({ cmd: { id: `op-${dispatchSeq}`, type: "scene-op", sceneOperation: {} }, epoch: 1, dispatchSeq });
+		if (globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined") {
+			const ring = new SceneBatchRing(new SharedArrayBuffer(1024));
+			worker.postMessage({ type: "scene-batch-ring-init", data: { buffer: ring.buffer } });
+			const bytes = new TextEncoder().encode(JSON.stringify([entry(1)]));
+			expect(ring.write(bytes)).toBe(true);
+			worker.postMessage({ type: "scene-batch-ring", data: { length: bytes.length } });
+		}
+		const bytes = new TextEncoder().encode(JSON.stringify([entry(2), entry(3)]));
+		worker.postMessage({ type: "scene-batch-transfer", data: { buffer: bytes.buffer } }, [bytes.buffer]);
+		worker.postMessage({ type: "update-command-state", data: entry(4) });
+		const status = await request<{ processedDispatchSeq: number }>(worker,
+			{ type: "get-render-watermarks", data: { requestId: "batch-order", epoch: 1 } },
+			(data) => data.type === "render-watermarks" && data.requestId === "batch-order", "batch order");
+		expect(status.processedDispatchSeq).toBe(4);
 	});
 
 	it("exports a transferable render frame from the live worker scene", async () => {

@@ -980,6 +980,10 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			const normalizedCommands = getChunkCommands(chunk);
 			if (normalizedCommands.length > 0) {
 				pageChangeStreamState.commands.push(...normalizedCommands);
+				for (const command of normalizedCommands) {
+					const lamport = Number(command.sceneOperation?.lamport ?? command.lamport ?? 0);
+					if (Number.isFinite(lamport)) pageChangeStreamState.lastLamport = Math.max(pageChangeStreamState.lastLamport, lamport);
+				}
 				options.setInitSceneOperations?.(normalizedCommands, pageChangeStreamState.pageId);
 			}
 		}
@@ -1379,9 +1383,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 				options.currentCommandIndex.value = options.commands.value.length - 1;
 			}
 
-			if (msg.data.lamport) {
-				useLamportStore().syncLamport(msg.data.lamport);
-			}
+			useLamportStore().syncLamport(Number(msg.data.lamport ?? cmd.sceneOperation?.lamport ?? cmd.lamport ?? 0));
 
 			if (pushType === "normal") {
 				options.insertCommand(cmd);

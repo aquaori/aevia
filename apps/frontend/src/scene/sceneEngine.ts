@@ -1,5 +1,5 @@
 // File role: Canvas adapter for the canonical scene core.
-import type { AabbBox, AffineMatrix } from "@collaborative-whiteboard/shared";
+import { compareRenderOrder, type AabbBox, type AffineMatrix, type RenderOrderKey } from "@collaborative-whiteboard/shared";
 import { renderIRItems } from "./canvasIRRenderer";
 import { SceneCore } from "./sceneCore";
 import type { DirtyRenderMetrics } from "./sceneTypes";
@@ -22,6 +22,29 @@ const canvasTextMeasurer = () => {
 
 export class SceneEngine extends SceneCore {
 	constructor() { super(canvasTextMeasurer()); }
+
+	lastAtomOrder(): RenderOrderKey | null {
+		const ref = this.order.lastRef();
+		return ref === undefined ? null : { ...this.atoms[ref]!.order };
+	}
+
+	// Only paint directly when every new pen atom sorts after all old atoms.
+	// Otherwise existing pixels may need to cover it or a layer may need recomposition.
+	renderNewPenAtomsOnTop(ctx: DrawingContext, firstRef: number, previousOrder: RenderOrderKey | null, width: number, height: number): boolean {
+		const refs: number[] = [];
+		for (let ref = firstRef; ref < this.atoms.length; ref += 1) refs.push(ref);
+		if (refs.length === 0) return false;
+		const items = Array.from(this.renderItemsForRefs(refs, new Set()));
+		if (items.length !== refs.length) return false;
+		let last = previousOrder;
+		for (const item of items) {
+			if (item.atom.toolId !== "pen" || item.eraseMasks.length > 0 || item.erasedIntervals.length > 0 ||
+				(last && compareRenderOrder(last, item.atom.order) >= 0)) return false;
+			last = item.atom.order;
+		}
+		renderIRItems(ctx, items, width, height);
+		return true;
+	}
 
 	renderFull(
 		ctx: DrawingContext,

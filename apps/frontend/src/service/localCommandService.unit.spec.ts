@@ -26,6 +26,7 @@ const createService = (command: Command | Command[]) => {
 	const requestSceneRefresh = vi.fn();
 	const renderCanvas = vi.fn();
 	const syncCommandState = vi.fn();
+	const syncWorkerScene = vi.fn();
 	const commands = ref(Array.isArray(command) ? [...command] : [command]);
 	const currentCommandIndex = ref(0);
 	const send = vi.fn(() => true);
@@ -42,19 +43,37 @@ const createService = (command: Command | Command[]) => {
 		renderCanvas,
 		requestDirtyRender,
 		syncCommandState,
+		syncWorkerScene,
 		isOffscreenMainCanvas: () => true,
 		requestSceneRefresh,
 		setTool: vi.fn(),
 		send,
 	});
 
-	return { service, commands, requestDirtyRender, requestSceneRefresh, renderCanvas, syncCommandState, send };
+	return { service, commands, requestDirtyRender, requestSceneRefresh, renderCanvas, syncCommandState, syncWorkerScene, send };
 };
 
 describe("local command history rendering", () => {
 	beforeEach(() => setActivePinia(createPinia()));
 	afterEach(() => {
 		canvasRef.value = null;
+	});
+
+	it("sends clear to the worker without rebuilding the full scene", () => {
+		const state = createService([]);
+		expect(state.service.clearCanvas().ok).toBe(true);
+		expect(state.syncCommandState).toHaveBeenCalledWith(expect.objectContaining({ sceneOperation: expect.objectContaining({ kind: "page.clear" }) }));
+		expect(state.renderCanvas).not.toHaveBeenCalled();
+	});
+
+	it("rebuilds the worker from loaded history when undoing a clear", () => {
+		const state = createService([]);
+		expect(state.service.clearCanvas().ok).toBe(true);
+		expect(state.service.undo().ok).toBe(true);
+		expect(state.syncWorkerScene).toHaveBeenCalledWith(expect.arrayContaining([
+			expect.objectContaining({ sceneOperation: expect.objectContaining({ kind: "page.clear" }) }),
+			expect.objectContaining({ sceneOperation: expect.objectContaining({ kind: "history.toggle" }) }),
+		]), 0, []);
 	});
 
 	it("represents legacy undo and redo as immutable scene operations", () => {

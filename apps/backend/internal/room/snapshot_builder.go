@@ -1,6 +1,7 @@
 package room
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"time"
@@ -118,18 +119,42 @@ func commandsForPages(
 		allowed[pageID] = true
 	}
 	out := make([]domain.Command, 0)
+	hiddenPaths := hiddenClearedPaths(commands, clearBefore)
 	for _, cmd := range commands {
 		pageID, ok := cmd.PageID()
 		if !ok || !allowed[pageID] {
 			continue
 		}
-		if !commandVisibleAfterClear(cmd, clearBefore) {
+		if !commandVisibleAfterClear(cmd, clearBefore) || isHiddenPathAppend(cmd, hiddenPaths) {
 			continue
 		}
 		out = append(out, cmd.Snapshot())
 	}
 	domain.SortCommands(out)
 	return out
+}
+
+// Appends to a path created before a clear remain hidden with that path. Sending
+// them without their filtered create leaves clients waiting for a missing parent.
+func hiddenClearedPaths(commands map[string]domain.Command, clearBefore map[int]sceneOrderKey) map[string]bool {
+	hidden := make(map[string]bool)
+	for _, cmd := range commands {
+		operation := sceneOperation(cmd)
+		if domain.String(operation["kind"]) != "element.create" {
+			continue
+		}
+		page, ok := cmd.PageID()
+		watermark, cleared := clearBefore[page]
+		if ok && cleared && compareSceneOrder(commandSceneOrder(cmd), watermark) <= 0 {
+			hidden[domain.String(operation["elementId"])] = true
+		}
+	}
+	return hidden
+}
+
+func isHiddenPathAppend(cmd domain.Command, hiddenPaths map[string]bool) bool {
+	operation := sceneOperation(cmd)
+	return domain.String(operation["kind"]) == "element.append" && hiddenPaths[domain.String(operation["elementId"])]
 }
 
 func commandVisibleAfterClear(cmd domain.Command, clearBefore map[int]sceneOrderKey) bool {
@@ -183,19 +208,22 @@ func chunkCommands(commands []domain.Command, chunkSize int) []CommandChunk {
 	if len(commands) == 0 {
 		return nil
 	}
-	chunks := make([]CommandChunk, 0, (len(commands)+chunkSize-1)/chunkSize)
-	for start := 0; start < len(commands); start += chunkSize {
-		end := start + chunkSize
-		if end > len(commands) {
-			end = len(commands)
-		}
-		chunkCommands := commands[start:end]
-		chunks = append(chunks, CommandChunk{
-			ChunkIndex: len(chunks),
-			IsLast:     end == len(commands),
-			Commands:   chunkCommands,
-		})
+	if chunkSize <= 0 {
+		chunkSize = 32
 	}
+	const maxChunkBytes = 64 * 1024
+	chunks := make([]CommandChunk, 0, (len(commands)+chunkSize-1)/chunkSize)
+	start, bytes := 0, 0
+	for index, command := range commands {
+		encoded, _ := json.Marshal(command)
+		size := len(encoded) + 1
+		if index > start && (index-start >= chunkSize || bytes+size > maxChunkBytes) {
+			chunks = append(chunks, CommandChunk{ChunkIndex: len(chunks), Commands: commands[start:index]})
+			start, bytes = index, 0
+		}
+		bytes += size
+	}
+	chunks = append(chunks, CommandChunk{ChunkIndex: len(chunks), IsLast: true, Commands: commands[start:]})
 	return chunks
 }
 

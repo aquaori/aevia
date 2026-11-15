@@ -169,6 +169,12 @@ describe("collab command handlers", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("advances the clock from a remote command when the envelope has no lamport", () => {
+		const fixture = createFixture();
+		fixture.handlers.handlePushCommand(message("push-cmd", { cmd: createIncomingCommand({ lamport: 42 }) }, "normal"));
+		expect(useLamportStore().getNextLamport()).toBe(43);
+	});
+
 	it("advances init-meta -> render chunks -> commands -> complete in order", () => {
 		const fixture = createFixture();
 
@@ -369,12 +375,13 @@ describe("collab command handlers", () => {
 				snapshotVersion: 2,
 				chunkIndex: 0,
 				isLastChunk: true,
-				commands: [createIncomingCommand()],
+				commands: [createIncomingCommand({ lamport: 42 })],
 			})
 		);
 		fixture.handlers.handlePageChangeCommandsDone(
 			message("page-change-commands-done", { requestId: 7, snapshotVersion: 2, totalChunks: 1 })
 		);
+		expect(useLamportStore().lamport).toBe(42);
 
 		expect(fixture.options.applyLoadedPageDelta).toHaveBeenCalledWith({
 			loadedPageIds: [2, 3],

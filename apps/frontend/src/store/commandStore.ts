@@ -205,6 +205,7 @@ export const useCommandStore = defineStore("command", () => {
 		loadPageIds: number[];
 		unloadPageIds: number[];
 		commands: Command[];
+		preservePoints?: boolean;
 	}) => {
 		const nextBuckets = new Map(pageCommands.value);
 
@@ -222,7 +223,7 @@ export const useCommandStore = defineStore("command", () => {
 		input.commands.forEach((command) => {
 			if (existingIds.has(command.id)) return;
 			existingIds.add(command.id);
-			stripCommandPoints(command);
+			if (!input.preservePoints) stripCommandPoints(command);
 			const bucket = nextBuckets.get(command.pageId) ?? [];
 			bucket.push(command);
 			nextBuckets.set(command.pageId, bucket);

@@ -33,4 +33,8 @@ func TestReadSnapshotPinsCommittedVersion(t *testing.T) {
 	if err != nil || len(commands) != 1 || commands[0].ID() != "first" {
 		t.Fatalf("snapshot: %+v %v", commands, err)
 	}
+	selected, err := snapshot.CommandsByID(ctx, []string{"first", "second"})
+	if err != nil || len(selected) != 1 || selected[0].ID() != "first" {
+		t.Fatalf("selected snapshot: %+v %v", selected, err)
+	}
 }

@@ -38,6 +38,8 @@ func (a *Actor) handleClientEvent(msg clientEventMessage) {
 		a.broadcastExcept(msg.ClientID, Envelope{Type: msg.Type, Data: withTrustedIdentity(client, msg.Data)}, nil)
 	case "get-member-list":
 		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "get-member-list", Data: map[string]any{"memberList": a.state.OnlineMembers()}}})
+	case "load-page-history":
+		a.loadPageHistory(client, msg.Data)
 	}
 }
 

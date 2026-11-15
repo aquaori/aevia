@@ -72,8 +72,10 @@ func (b SnapshotBuilder) SendLiveInitStream(out chan Outbound, state State, clie
 	renderPageIDs := []int{current}
 	renderPointCount := state.Index.VisiblePagePointCount(renderPageIDs, state.ClearBefore)
 	renderChunkCount := chunkCount(renderPointCount, b.cfg.InitFlatPointChunkSize)
-	commandCount := countCommandsForPages(state.Commands, loaded, state.ClearBefore)
-	commandChunkCount := chunkCount(commandCount, b.cfg.InitCommandChunkSize)
+	commands := commandsForPages(state.Commands, loaded, state.ClearBefore)
+	commandChunks := chunkCommands(commands, b.cfg.InitCommandChunkSize)
+	commandCount := len(commands)
+	commandChunkCount := len(commandChunks)
 	meta := map[string]any{
 		"pageId":        current,
 		"totalPage":     state.Room.TotalPage,
@@ -102,7 +104,7 @@ func (b SnapshotBuilder) SendLiveInitStream(out chan Outbound, state State, clie
 	}
 	renderDuration := time.Since(renderStartedAt)
 	commandsStartedAt := time.Now()
-	sendCommandStreamFromState(ch, "init", 0, snapshotVersion, meta, state.Commands, loaded, state.ClearBefore, commandChunkCount, b.cfg.InitCommandChunkSize)
+	sendCommandStream(ch, "init", 0, InitStream{SnapshotVersion: snapshotVersion, Meta: meta, CommandChunks: commandChunks})
 	if ch.failed {
 		return
 	}
@@ -305,10 +307,11 @@ func sendCommandStreamFromState(ch *streamSender, prefix string, requestID, snap
 		chunk = make([]domain.Command, 0, chunkSize)
 	}
 	allowed := pageIDSet(pageIDs)
+	hiddenPaths := hiddenClearedPaths(commands, clearBefore)
 	ordered := make([]domain.Command, 0, len(commands))
 	for _, cmd := range commands {
 		pageID, ok := cmd.PageID()
-		if !ok || !allowed[pageID] || !commandVisibleAfterClear(cmd, clearBefore) {
+		if !ok || !allowed[pageID] || !commandVisibleAfterClear(cmd, clearBefore) || isHiddenPathAppend(cmd, hiddenPaths) {
 			continue
 		}
 		ordered = append(ordered, cmd)
@@ -335,10 +338,11 @@ func sendCommandStreamFromState(ch *streamSender, prefix string, requestID, snap
 
 func countCommandsForPages(commands map[string]domain.Command, pageIDs []int, clearBefore map[int]sceneOrderKey) int {
 	allowed := pageIDSet(pageIDs)
+	hiddenPaths := hiddenClearedPaths(commands, clearBefore)
 	count := 0
 	for _, cmd := range commands {
 		pageID, ok := cmd.PageID()
-		if ok && allowed[pageID] && commandVisibleAfterClear(cmd, clearBefore) {
+		if ok && allowed[pageID] && commandVisibleAfterClear(cmd, clearBefore) && !isHiddenPathAppend(cmd, hiddenPaths) {
 			count++
 		}
 	}
