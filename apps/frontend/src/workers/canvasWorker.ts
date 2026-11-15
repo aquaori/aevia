@@ -9,6 +9,7 @@ import {
 } from "@collaborative-whiteboard/shared";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 import { SceneEngine } from "../scene/sceneEngine";
+import { sortInSteps } from "../scene/sceneCore";
 import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
 import { encodeRenderIR } from "../scene/renderIRCodec";
 import { labDrainMarks, labEnabled, labMark, labSetEnabled } from "../instrumentation/labMarks";
@@ -490,8 +491,8 @@ const applyPendingInitSceneOperations = () => {
 	for (const command of pendingInitSceneCommands) merged.set(command.id, command);
 	for (const command of liveSceneCommandsDuringInit.values()) merged.set(command.id, command);
 	const commands = Array.from(merged.values())
-		.filter((command) => command.sceneOperation && command.pageId === currentPageId)
-		.sort((left, right) => compareRenderOrder(
+		.filter((command) => command.sceneOperation && command.pageId === currentPageId);
+	const sortSteps = sortInSteps(commands, (left, right) => compareRenderOrder(
 			sceneOperationOrderKey(left.sceneOperation!),
 			sceneOperationOrderKey(right.sceneOperation!)
 		));
@@ -499,10 +500,16 @@ const applyPendingInitSceneOperations = () => {
 	liveSceneCommandsDuringInit.clear();
 	let needsFullRender = false;
 	let index = 0;
+	let sorted = false;
 	let operationSteps: Generator<void, string[]> | null = null;
 	const runSlice = () => {
 		const deadline = performance.now() + 6;
 		while (index < commands.length) {
+			if (!sorted) {
+				sorted = Boolean(sortSteps.next().done);
+				if (performance.now() >= deadline) break;
+				if (!sorted) continue;
+			}
 			if (!operationSteps) {
 				const command = commands[index]!;
 				const operation = command.sceneOperation!;
@@ -568,6 +575,8 @@ let pendingSceneBaseRevision: number | null = null;
 const flushSceneRender = () => {
 	if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
 	pendingSceneRenderFrame = null;
+	// Animation callbacks can run between slices; do not paint a half-built scene.
+	if (sceneTaskInProgress) return;
 	if (pendingSceneDirty.length === 0 || !mainCtx) return;
 	const regions = pendingSceneDirty;
 	pendingSceneDirty = [];
@@ -700,9 +709,17 @@ const handleWorkerMessage = (event: MessageEvent) => {
 		const projection = new SceneEngine();
 		const steps = projection.rebuildFromCommandsSteps(data.commands as Command[], data.pageId);
 		let exportSteps: Generator<void, FlatPoint[]> | null = null;
+		let foregroundDeferrals = 0;
 		const runProjectionSlice = () => {
 			if (generation !== projectionGeneration) return;
-			const deadline = performance.now() + 6;
+			const foregroundBusy = sceneTaskInProgress || drainingMessages;
+			if (foregroundBusy && foregroundDeferrals < 2) {
+				foregroundDeferrals += 1;
+				setTimeout(runProjectionSlice, 0);
+				return;
+			}
+			foregroundDeferrals = 0;
+			const deadline = performance.now() + (foregroundBusy ? 2 : 6);
 			while (performance.now() < deadline) {
 				if (!exportSteps) {
 					if (!steps.next().done) continue;
@@ -893,6 +910,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 				while (performance.now() < deadline) {
 					const result = steps.next();
 					if (!result.done) continue;
+					sceneTaskInProgress = false;
 					if (operation.kind === "element.transform" && result.value) {
 						self.postMessage({ type: "scene-operation-rendered", opId: operation.opId, epoch: data.epoch });
 					} else if (result.value && labEnabled()) {
@@ -900,7 +918,6 @@ const handleWorkerMessage = (event: MessageEvent) => {
 						self.postMessage({ type: "lab:operation-rendered", opId: operation.opId });
 					}
 					if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
-					sceneTaskInProgress = false;
 					drainDeferredMessages();
 					return;
 				}
@@ -1055,6 +1072,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 
 function drainDeferredMessages() {
 	if (drainingMessages || sceneTaskInProgress) return;
+	if (pendingSceneDirty.length > 0 && pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
 	drainingMessages = true;
 	const runSlice = () => {
 		const deadline = performance.now() + 6;

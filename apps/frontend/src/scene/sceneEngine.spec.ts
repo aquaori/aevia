@@ -53,6 +53,27 @@ const eraseOperation: SceneOperationEnvelopeV2 = {
 };
 
 describe("SceneEngine", () => {
+	it("can process a long stroke in steps without changing its result", () => {
+		const longPoints = Array.from({ length: 512 }, (_, index) => ({ x: index / 512, y: 0.5, p: 0.5, lamport: index + 1 }));
+		const operation = { ...createOperation, payload: { ...createOperation.payload, points: longPoints } };
+		const incremental = new SceneEngine();
+		const steps = incremental.applyOperationSteps(operation);
+		expect(steps.next().done).toBe(false);
+		while (!steps.next().done) { /* complete the operation */ }
+		const synchronous = new SceneEngine();
+		synchronous.applyOperation(operation);
+		expect(incremental.sceneHash()).toBe(synchronous.sceneHash());
+	});
+	it("updates cached bounds after adding points and moving a stroke", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation({ ...createOperation, payload: { ...createOperation.payload, points: points.slice(0, 2), isComplete: false } });
+		const before = engine.getElementBounds("element-a")!;
+		engine.applyOperation({ ...base("append-more", 4), kind: "element.append", payload: { sourceStart: 2, points: [points[2]!], isComplete: true } });
+		const extended = engine.getElementBounds("element-a")!;
+		expect(extended.maxX).toBeGreaterThan(before.maxX);
+		engine.applyOperation(transformOperation);
+		expect(engine.getElementBounds("element-a")!.minX).toBeGreaterThan(extended.minX);
+	});
 	it("keeps erased holes transparent in the transformed selection preview", () => {
 		const transforms: number[][] = [];
 		const layerContext = new Proxy({ transform: (...values: number[]) => transforms.push(values) }, {

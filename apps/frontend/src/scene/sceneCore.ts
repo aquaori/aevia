@@ -150,7 +150,7 @@ const pointOrder = (elementId: string, point: Point, sourceIndex: number): Rende
 
 // Sort bounded runs and merge them incrementally so a large background scene
 // cannot monopolize the worker for the entire sort.
-function* sortInSteps<T>(values: T[], compare: (left: T, right: T) => number): Generator<void> {
+export function* sortInSteps<T>(values: T[], compare: (left: T, right: T) => number): Generator<void> {
 	let sorted = true;
 	for (let i = 1; i < values.length; i += 1) {
 		if (compare(values[i - 1]!, values[i]!) > 0) { sorted = false; break; }
@@ -212,6 +212,7 @@ export class SceneCore implements SceneCorePort {
 	private readonly atomEpoch = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 	protected readonly atoms: RenderAtom[] = [];
 	protected readonly elements = new Map<string, SceneElementState>();
+	private readonly elementBoundsCache = new Map<string, AabbBox>();
 	private readonly compilerStates = new Map<string, StrokeCompilerState>();
 	private readonly pendingAppends = new Map<string, Array<Extract<SceneOperationEnvelopeV2, { kind: "element.append" }>>>();
 	private readonly pendingTextDeletes = new Map<string, Set<string>>();
@@ -249,6 +250,7 @@ export class SceneCore implements SceneCorePort {
 		this.atoms.length = 0;
 		this.staleAtomCount = 0;
 		this.elements.clear();
+		this.elementBoundsCache.clear();
 		this.compilerStates.clear();
 		this.pendingAppends.clear();
 		this.pendingTextDeletes.clear();
@@ -463,7 +465,7 @@ export class SceneCore implements SceneCorePort {
 			}
 			return operationTargets(operation);
 		}
-		this.applyOperationIncremental(operation);
+		yield* this.applyOperationIncremental(operation);
 		return operationTargets(operation);
 	}
 
@@ -700,6 +702,8 @@ export class SceneCore implements SceneCorePort {
 	getElementBounds(elementId: string) {
 		const element = this.elements.get(elementId);
 		if (!element) return null;
+		const cached = this.elementBoundsCache.get(elementId);
+		if (cached) return { ...cached };
 		let bounds: AabbBox | null = (element.descriptor.elementKind === "text" || element.descriptor.elementKind === "sticky") && element.descriptor.box
 			? transformBounds(element.matrix, element.descriptor.box)
 			: null;
@@ -707,7 +711,8 @@ export class SceneCore implements SceneCorePort {
 			const atom = this.atoms[ref];
 			if (atom?.elementRevision === element.revision) bounds = unionBounds(bounds, transformBounds(element.matrix, atom.bounds));
 		}
-		return bounds;
+		if (bounds) this.elementBoundsCache.set(elementId, bounds);
+		return bounds ? { ...bounds } : null;
 	}
 
 	get atomCount() {
@@ -881,6 +886,8 @@ export class SceneCore implements SceneCorePort {
 		const stored = { ...atom, ref, generation: ++this.nextAtomGeneration } as RenderAtom;
 		this.atoms.push(stored);
 		element.atomRefs.push(ref);
+		const cached = this.elementBoundsCache.get(element.id);
+		if (cached) this.elementBoundsCache.set(element.id, unionBounds(cached, transformBounds(element.matrix, stored.bounds))!);
 		this.order.insert(ref);
 		if (!this.bulkLoading) {
 			this.spatial.addAtom(element.id, ref, transformBounds(element.matrix, stored.bounds));
@@ -936,6 +943,7 @@ export class SceneCore implements SceneCorePort {
 		const wasDeferred = this.deferCompaction;
 		this.deferCompaction = true;
 		for (const elementId of elementIds) {
+			this.elementBoundsCache.delete(elementId);
 			this.pendingAppends.delete(elementId);
 			this.pendingTextDeletes.delete(elementId);
 			this.pendingTextOperations.delete(elementId);
@@ -958,7 +966,7 @@ export class SceneCore implements SceneCorePort {
 			}
 			for (const candidate of this.operationsByElement.get(elementId) ?? []) {
 				if (candidate.kind === "history.toggle" || !this.isOperationEnabled(candidate)) continue;
-				this.applyOperationToElement(candidate, elementId);
+				yield* this.applyOperationToElement(candidate, elementId);
 				if (++work % 32 === 0) yield;
 			}
 			if (++work % 32 === 0) yield;
@@ -967,15 +975,15 @@ export class SceneCore implements SceneCorePort {
 		if (this.shouldCompactIndexes()) yield* this.compactIndexesSteps();
 	}
 
-	private applyOperationToElement(operation: SceneOperationEnvelopeV2, elementId: string) {
+	private *applyOperationToElement(operation: SceneOperationEnvelopeV2, elementId: string): Generator<void> {
 		switch (operation.kind) {
 			case "element.create":
-				if (operation.elementId === elementId) this.applyCreate(elementId, operation.pageId, operation.payload, sceneOperationOrderKey(operation));
+				if (operation.elementId === elementId) yield* this.applyCreate(elementId, operation.pageId, operation.payload, sceneOperationOrderKey(operation));
 				break;
 			case "element.append": {
 				if (operation.elementId !== elementId) break;
 				const element = this.elements.get(elementId);
-				this.appendOperationPoints(element, operation);
+				yield* this.appendOperationPoints(element, operation);
 				break;
 			}
 			case "element.transform": {
@@ -1008,15 +1016,15 @@ export class SceneCore implements SceneCorePort {
 		}
 	}
 
-	private applyOperationIncremental(operation: SceneOperationEnvelopeV2) {
+	private *applyOperationIncremental(operation: SceneOperationEnvelopeV2): Generator<void> {
 		if (!this.isOperationEnabled(operation)) return;
 		switch (operation.kind) {
 			case "element.create":
-				this.applyCreate(operation.elementId, operation.pageId, operation.payload, sceneOperationOrderKey(operation));
+				yield* this.applyCreate(operation.elementId, operation.pageId, operation.payload, sceneOperationOrderKey(operation));
 				break;
 			case "element.append": {
 				const element = this.elements.get(operation.elementId);
-				this.appendOperationPoints(element, operation);
+				yield* this.appendOperationPoints(element, operation);
 				break;
 			}
 			case "element.transform":
@@ -1049,7 +1057,7 @@ export class SceneCore implements SceneCorePort {
 		}
 	}
 
-	private applyCreate(elementId: string, pageId: number, payload: ElementCreatePayload, order: RenderOrderKey) {
+	private *applyCreate(elementId: string, pageId: number, payload: ElementCreatePayload, order: RenderOrderKey): Generator<void> {
 		const hydrated = this.elements.get(elementId);
 		if (
 			hydrated &&
@@ -1075,9 +1083,13 @@ export class SceneCore implements SceneCorePort {
 		if (hydrated) return;
 		const element = this.createElement(elementId, pageId, payload.descriptor, order);
 		if (payload.descriptor.elementKind === "path") {
-			payload.points?.forEach((point, sourceIndex) => this.appendPoint(element, point, sourceIndex, { ...order, lamport: point.lamport, sourceIndex }));
+			for (let sourceIndex = 0; sourceIndex < (payload.points?.length ?? 0); sourceIndex += 1) {
+				const point = payload.points![sourceIndex]!;
+				this.appendPoint(element, point, sourceIndex, { ...order, lamport: point.lamport, sourceIndex });
+				if (sourceIndex % 128 === 127) yield;
+			}
 			if (payload.isComplete) this.finishElement(elementId);
-			this.drainPendingAppends(element);
+			yield* this.drainPendingAppends(element);
 			return;
 		}
 		if (payload.descriptor.elementKind === "shape") {
@@ -1100,10 +1112,10 @@ export class SceneCore implements SceneCorePort {
 		}
 	}
 
-	private appendOperationPoints(
+	private *appendOperationPoints(
 		element: SceneElementState | undefined,
 		operation: Extract<SceneOperationEnvelopeV2, { kind: "element.append" }>
-	) {
+	): Generator<void> {
 		if (!element || operation.payload.sourceStart > element.points.length) {
 			const pending = this.pendingAppends.get(operation.elementId) ?? [];
 			if (pending.length >= 1024) { this.needsResync = true; return; }
@@ -1118,27 +1130,29 @@ export class SceneCore implements SceneCorePort {
 			const hydrated = sourceIndex < (this.hydratedThrough.get(element.id) ?? 0);
 			const equal = (left: number, right: number) => left === right || (hydrated && left === Math.fround(right));
 			if (existing && (!equal(existing.x, point.x) || !equal(existing.y, point.y) || !equal(existing.p, point.p) || existing.lamport !== point.lamport)) { this.needsResync = true; return; }
+			if (index % 128 === 127) yield;
 		}
-		operation.payload.points.forEach((point, index) => {
+		for (let index = 0; index < operation.payload.points.length; index += 1) {
+			const point = operation.payload.points[index]!;
 			const sourceIndex = operation.payload.sourceStart + index;
-			if (sourceIndex < element.points.length) return;
-			this.appendPoint(element, point, sourceIndex, {
+			if (sourceIndex >= element.points.length) this.appendPoint(element, point, sourceIndex, {
 				...sceneOperationOrderKey(operation, sourceIndex),
 				lamport: point.lamport,
 			});
-		});
+			if (index % 128 === 127) yield;
+		}
 		if (operation.payload.isComplete) this.finishElement(element.id);
-		this.drainPendingAppends(element);
+		yield* this.drainPendingAppends(element);
 	}
 
-	private drainPendingAppends(element: SceneElementState) {
+	private *drainPendingAppends(element: SceneElementState): Generator<void> {
 		const pending = this.pendingAppends.get(element.id);
 		if (!pending) return;
 		const index = pending.findIndex((op) => op.payload.sourceStart <= element.points.length);
 		if (index < 0) return;
 		const [operation] = pending.splice(index, 1);
 		if (pending.length === 0) this.pendingAppends.delete(element.id);
-		this.appendOperationPoints(element, operation!);
+		yield* this.appendOperationPoints(element, operation!);
 	}
 
 	private storeShapeAtom(element: SceneElementState, order: RenderOrderKey) {
@@ -1194,6 +1208,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private rebuildTextAtoms(element: SceneElementState) {
+		this.elementBoundsCache.delete(element.id);
 		this.staleAtomCount += element.atomRefs.length;
 		if (this.isElementBaseVisible(element)) this.visibleAtomCount -= element.atomRefs.length;
 		element.revision += 1;
@@ -1289,12 +1304,14 @@ export class SceneCore implements SceneCorePort {
 	private applyElementMatrix(elementId: string, delta: AffineMatrix) {
 		const element = this.elements.get(elementId);
 		if (!element || delta.some((value) => !Number.isFinite(value))) return;
+		this.elementBoundsCache.delete(elementId);
 		element.matrix = multiplyMatrices(delta, element.matrix);
 		this.maxStrokeWidth = Math.max(this.maxStrokeWidth, element.descriptor.style.size * matrixScale(element.matrix));
 		this.spatial.reindexElement(elementId, (ref) => transformBounds(element.matrix, this.atoms[ref]!.bounds));
 	}
 
 	private applyElementStyle(elementId: string, style: Partial<SceneElementStyle>, textBox?: AabbBox) {
+		this.elementBoundsCache.delete(elementId);
 		const element = this.elements.get(elementId);
 		if (!element) return;
 		element.descriptor = {
@@ -1342,6 +1359,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private *rebuildV2ElementsSteps(): Generator<void> {
+		this.elementBoundsCache.clear();
 		let work = 0;
 		const wasBulkLoading = this.bulkLoading;
 		this.bulkLoading = true;
@@ -1370,7 +1388,7 @@ export class SceneCore implements SceneCorePort {
 			if (++work % 128 === 0) yield;
 		}
 		for (const operation of this.operations) {
-			if (operation.kind !== "history.toggle") this.applyOperationIncremental(operation);
+			if (operation.kind !== "history.toggle") yield* this.applyOperationIncremental(operation);
 			if (++work % 128 === 0) yield;
 		}
 		this.bulkLoading = wasBulkLoading;
@@ -1378,6 +1396,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private rebuildLegacyElement(command: Command) {
+		this.elementBoundsCache.delete(command.id);
 		const previous = this.elements.get(command.id);
 		if (previous) {
 			this.staleAtomCount += previous.atomRefs.length;
