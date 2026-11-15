@@ -207,6 +207,7 @@ export class SceneCore implements SceneCorePort {
 	private materializedRevision = 0;
 	private staleAtomCount = 0;
 	private readonly changedRenderElements = new Set<string>();
+	private readonly addedRenderAtoms = new Set<string>();
 	private renderFullRequired = true;
 	private nextAtomGeneration = 0;
 	private readonly atomEpoch = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
@@ -246,6 +247,7 @@ export class SceneCore implements SceneCorePort {
 	reset(pageId = this.pageId) {
 		this.renderFullRequired = true;
 		this.changedRenderElements.clear();
+		this.addedRenderAtoms.clear();
 		this.materializedRevision += 1;
 		this.atoms.length = 0;
 		this.staleAtomCount = 0;
@@ -349,11 +351,11 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	finishElement(elementId: string) {
-		this.changedRenderElements.add(elementId);
 		const element = this.elements.get(elementId);
 		if (!element || element.descriptor.recipeId !== "stroke") return [] as number[];
 		const state = this.compilerStates.get(elementId);
 		if (state && !state.finished && state.pointCount === 1 && (element.descriptor.toolId === "pencil" || element.descriptor.toolId === "highlighter")) {
+			this.changedRenderElements.add(elementId);
 			this.materializedRevision += 1;
 			state.finished = true;
 			return [...element.atomRefs];
@@ -442,7 +444,9 @@ export class SceneCore implements SceneCorePort {
 			const impact = this.getHistoryImpact(operation.payload.targetHistoryGroupId);
 			if (impact.pageWide) this.renderFullRequired = true;
 			else for (const id of impact.elementIds) this.changedRenderElements.add(id);
-		} else for (const id of operationTargets(operation)) this.changedRenderElements.add(id);
+		} else if (!this.canAppendWithoutRebuild(operation, true)) {
+			for (const id of operationTargets(operation)) this.changedRenderElements.add(id);
+		}
 		this.materializedRevision += 1;
 		this.operationIds.add(operation.opId);
 		const insertAt = this.insertOperationOrdered(this.operations, operation);
@@ -508,8 +512,8 @@ export class SceneCore implements SceneCorePort {
 		return operation.kind === "history.toggle" || (last !== undefined && compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(last)) < 0);
 	}
 
-	canAppendWithoutRebuild(operation: SceneOperationEnvelopeV2) {
-		if (operation.kind !== "element.append" || operation.payload.isComplete || this.operationIds.has(operation.opId)) return false;
+	canAppendWithoutRebuild(operation: SceneOperationEnvelopeV2, includeComplete = false) {
+		if (operation.kind !== "element.append" || (!includeComplete && operation.payload.isComplete) || this.operationIds.has(operation.opId)) return false;
 		const element = this.elements.get(operation.elementId);
 		const last = this.operations[this.operations.length - 1];
 		return !!element && operation.payload.sourceStart === element.points.length && !this.pendingAppends.has(operation.elementId) &&
@@ -758,6 +762,7 @@ export class SceneCore implements SceneCorePort {
 		this.order.forEach((ref) => refs.push(ref));
 		const items = structuredClone(Array.from(this.renderItemsForRefs(refs, new Set())));
 		this.changedRenderElements.clear();
+		this.addedRenderAtoms.clear();
 		this.renderFullRequired = false;
 		return { version: 1, revision: this.materializedRevision, items };
 	}
@@ -773,7 +778,7 @@ export class SceneCore implements SceneCorePort {
 		const upserted: RenderIRItem[] = [];
 		for (const item of this.renderItemsForRefs(refs, new Set())) {
 			order.push(item.id);
-			if (changed.has(item.atom.elementId)) upserted.push(item);
+			if (changed.has(item.atom.elementId) || this.addedRenderAtoms.has(item.id)) upserted.push(item);
 		}
 		const newIds = new Set(upserted.map((item) => item.id));
 		const delta: RenderIRDelta = {
@@ -783,6 +788,7 @@ export class SceneCore implements SceneCorePort {
 			dirtyBounds: [...oldItems, ...upserted].map((item) => transformBounds(item.matrix, item.atom.bounds)),
 		};
 		this.changedRenderElements.clear();
+		this.addedRenderAtoms.clear();
 		return delta;
 	}
 
@@ -885,6 +891,7 @@ export class SceneCore implements SceneCorePort {
 		const ref = this.atoms.length;
 		const stored = { ...atom, ref, generation: ++this.nextAtomGeneration } as RenderAtom;
 		this.atoms.push(stored);
+		this.addedRenderAtoms.add(`${stored.elementId.length}:${stored.elementId}${stored.atomId}`);
 		element.atomRefs.push(ref);
 		const cached = this.elementBoundsCache.get(element.id);
 		if (cached) this.elementBoundsCache.set(element.id, unionBounds(cached, transformBounds(element.matrix, stored.bounds))!);

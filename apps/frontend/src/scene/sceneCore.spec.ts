@@ -1,11 +1,42 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { SceneOperationEnvelopeV2 } from "@collaborative-whiteboard/shared";
-import { SceneCore } from "./sceneCore";
+import { SceneCore, sortInSteps } from "./sceneCore";
 import { applyRenderIRDelta } from "./renderIR";
 import { decodeRenderIR, encodeRenderIR } from "./renderIRCodec";
 
 describe("SceneCore without browser rendering", () => {
+	it("sorts large out-of-order input across multiple slices", () => {
+		const values = Array.from({ length: 5000 }, (_, index) => ({ value: (4999 - index) % 113, index }));
+		const expected = [...values].sort((a, b) => a.value - b.value);
+		const steps = sortInSteps(values, (a, b) => a.value - b.value);
+		let slices = 0;
+		while (!steps.next().done) slices += 1;
+		expect(slices).toBeGreaterThan(1);
+		expect(values).toEqual(expected);
+	});
+	it("exports only newly appended atoms in the render delta", () => {
+		const core = new SceneCore();
+		const create: SceneOperationEnvelopeV2 = {
+			schemaVersion: 2, opId: "create-long", elementId: "long", actorId: "author", roomId: "room", pageId: 0, lamport: 1, historyGroupId: "long",
+			kind: "element.create", payload: {
+				descriptor: { elementKind: "path", toolId: "pen", recipeId: "stroke", style: { color: "#000", size: 4 } },
+				points: Array.from({ length: 100 }, (_, i) => ({ x: i / 200, y: 0.5, p: 0.5, lamport: i + 1 })),
+				isComplete: false,
+			},
+		};
+		core.applyOperation(create);
+		const before = core.getRenderIR();
+		core.applyOperation({ ...create, kind: "element.append", opId: "append-long", lamport: 101, payload: { sourceStart: 100, points: [{ x: 0.51, y: 0.5, p: 0.5, lamport: 101 }], isComplete: false } });
+		const delta = core.getRenderIRDelta(before)!;
+		expect(delta.upserted).toHaveLength(1);
+		const afterAppend = applyRenderIRDelta(before, delta);
+		expect(afterAppend).toEqual(core.getRenderIR());
+		core.applyOperation({ ...create, kind: "element.append", opId: "finish-long", lamport: 102, payload: { sourceStart: 101, points: [], isComplete: true } });
+		const finish = core.getRenderIRDelta(afterAppend)!;
+		expect(finish.upserted).toHaveLength(1);
+		expect(applyRenderIRDelta(afterAppend, finish)).toEqual(core.getRenderIR());
+	});
 	it("accepts legacy stickers and rejects unknown versioned assets", () => {
 		const core = new SceneCore();
 		const create: SceneOperationEnvelopeV2 = {
