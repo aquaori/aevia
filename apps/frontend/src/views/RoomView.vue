@@ -626,6 +626,7 @@
 	const canUndo = computed(() => currentCommandIndex.value >= 0);
 	const canRedo = computed(() => currentCommandIndex.value < commands.value.length - 1);
 	const session = createWhiteboardSession({
+		getRenderIR: () => workerBridge.requestRenderIR(),
 		getConsistencyWatermarks: async () => ({
 			roomSeq: roomCollabTransport.getRecoveryRoomSeq(),
 			render: await workerBridge.requestRenderWatermarks(),

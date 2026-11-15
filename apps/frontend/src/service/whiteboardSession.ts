@@ -13,9 +13,11 @@ import type {
 } from "../utils/editorTypes";
 import type { RemoteCursor } from "../utils/type";
 import type { EditorTool } from "@collaborative-whiteboard/shared";
+import type { RenderIRFrame } from "../scene/renderIR";
 
 interface CreateWhiteboardSessionOptions {
 	getConsistencyWatermarks?: () => Promise<ConsistencyWatermarks>;
+	getRenderIR?: () => Promise<RenderIRFrame | null>;
 	state: WhiteboardSessionState;
 	canUndo: ComputedRef<boolean>;
 	canRedo: ComputedRef<boolean>;
@@ -177,6 +179,7 @@ export const createWhiteboardSession = (
 
 	return {
 		getConsistencyWatermarks: () => options.getConsistencyWatermarks?.() ?? Promise.resolve({ roomSeq: 0, render: null }),
+		getRenderIR: () => options.getRenderIR?.() ?? Promise.resolve(null),
 		state: hostState,
 		canUndo: options.canUndo,
 		canRedo: options.canRedo,

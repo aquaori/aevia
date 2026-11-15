@@ -7,6 +7,7 @@ import type { RemoteCursor } from "../../src/utils/type";
 import { ctx } from "../../src/service/canvas";
 import { createWhiteboardSession } from "../../src/service/whiteboardSession";
 import { createRenderWorkerBridge } from "../../src/service/renderWorkerBridge";
+import { decodeRenderIR } from "../../src/scene/renderIRCodec";
 
 const WIDTH = 320;
 const HEIGHT = 240;
@@ -145,6 +146,20 @@ describe("canvas worker init render stream", () => {
 	afterEach(() => {
 		worker?.terminate();
 		worker = null;
+	});
+
+	it("exports a transferable render frame from the live worker scene", async () => {
+		if (typeof OffscreenCanvas === "undefined") return;
+		worker = new Worker(new URL("../../src/workers/canvasWorker.ts", import.meta.url), { type: "module" });
+		const canvas = new OffscreenCanvas(WIDTH, HEIGHT);
+		worker.postMessage({ type: "init-canvas", data: { canvas, width: WIDTH, height: HEIGHT, dpr: 1 } }, [canvas]);
+		worker.postMessage({ type: "begin-init-stream", data: { pageId: 0 } });
+		worker.postMessage({ type: "finish-init-stream" });
+		const response = await request<{ buffer: ArrayBuffer }>(worker,
+			{ type: "get-render-ir", data: { requestId: "ir", epoch: 1, baseRevision: null } },
+			(data) => data.type === "render-ir" && data.requestId === "ir", "render-ir");
+		const frame = decodeRenderIR(new Uint8Array(response.buffer));
+		expect("items" in frame && frame.items).toEqual([]);
 	});
 
 	it("does not claim an unpainted scene has been presented", async () => {

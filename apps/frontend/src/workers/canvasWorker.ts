@@ -9,6 +9,8 @@ import {
 } from "@collaborative-whiteboard/shared";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 import { SceneEngine } from "../scene/sceneEngine";
+import { diffRenderIR, type RenderIRFrame } from "../scene/renderIR";
+import { encodeRenderIR } from "../scene/renderIRCodec";
 import { labDrainMarks, labEnabled, labMark, labSetEnabled } from "../instrumentation/labMarks";
 import {
 	LAB_MARK_WORKER_FIRST_PAINT,
@@ -76,6 +78,8 @@ let currentTransformingIds = new Set<string>();
 const activeStrokeIds = new Set<string>();
 const sceneCommands = new Map<string, Command>();
 const sceneEngine = new SceneEngine();
+let exportedRenderFrame: RenderIRFrame | null = null;
+let exportedRenderEpoch = -1;
 let presentedRevision: number | null = null;
 let processedDispatchSeq = 0;
 let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -667,6 +671,8 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "begin-init-stream") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
 		presentedRevision = null;
 		initStreamValid = true;
 		if (typeof data?.pageId === "number") {
@@ -761,11 +767,15 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "sync-scene") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
 		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
 		return;
 	}
 
 	if (type === "render-flat-points-scene") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
 		currentPageId = data.pageId as number;
 		const points = (data.points as FlatPoint[]) ?? [];
 		sceneCommands.clear();
@@ -823,6 +833,23 @@ self.onmessage = (event: MessageEvent) => {
 	if (type === "get-render-watermarks") {
 		self.postMessage({ type: "render-watermarks", requestId: data.requestId, epoch: data.epoch,
 			sceneRevision: sceneEngine.getSceneRevision(), presentedRevision, processedDispatchSeq });
+		return;
+	}
+
+	if (type === "get-render-ir") {
+		const epoch = Number(data.epoch);
+		if (!mainCtx || !initRenderFinished || sceneEngine.needsResync || sceneEngine.hasPendingDependencies()) {
+			self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: null });
+			return;
+		}
+		const next = sceneEngine.getRenderIR();
+		const previous = exportedRenderEpoch === epoch ? exportedRenderFrame : null;
+		const frameBytes = encodeRenderIR(next);
+		const deltaBytes = previous && data.baseRevision === previous.revision ? encodeRenderIR(diffRenderIR(previous, next)) : null;
+		const bytes = deltaBytes && deltaBytes.byteLength < frameBytes.byteLength ? deltaBytes : frameBytes;
+		exportedRenderFrame = next;
+		exportedRenderEpoch = epoch;
+		self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: bytes.buffer }, { transfer: [bytes.buffer as ArrayBuffer] });
 		return;
 	}
 
@@ -908,6 +935,8 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "dispose") {
+		exportedRenderFrame = null;
+		exportedRenderEpoch = -1;
 		activeStrokeIds.clear();
 		sceneCommands.clear();
 		sceneEngine.reset(0);

@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { reactive } from "vue";
 import type { Command } from "@collaborative-whiteboard/shared";
 import { cloneCommandForStateSync, createRenderWorkerBridge } from "./renderWorkerBridge";
+import { SceneCore } from "../scene/sceneCore";
+import { diffRenderIR } from "../scene/renderIR";
+import { encodeRenderIR } from "../scene/renderIRCodec";
 
 const command = (points: Command["points"]): Command => ({
 	id: "cmd-1",
@@ -61,6 +64,36 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("reconstructs versioned render frames from worker full and delta messages", async () => {
+		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string; epoch?: number; baseRevision?: number | null } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId?: string; epoch?: number; baseRevision?: number | null } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { worker = this; }
+			postMessage(message: { type: string; data?: { requestId?: string; epoch?: number; baseRevision?: number | null } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const core = new SceneCore();
+			const initial = core.getRenderIR();
+			const first = bridge.requestRenderIR();
+			let request = worker!.sent.at(-1)!.data!;
+			worker!.onmessage?.({ data: { type: "render-ir", requestId: request.requestId, epoch: request.epoch, buffer: encodeRenderIR(initial).buffer } });
+			expect(await first).toEqual(initial);
+			core.applyOperation({ schemaVersion: 2, opId: "a", elementId: "a", actorId: "u", roomId: "r", pageId: 0, lamport: 1, historyGroupId: "a", kind: "element.create", payload: { descriptor: { elementKind: "shape", toolId: "rectangle", recipeId: "shape", shapeKind: "rectangle", style: { color: "#000", size: 1 }, box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 } } } });
+			const next = core.getRenderIR();
+			const second = bridge.requestRenderIR();
+			request = worker!.sent.at(-1)!.data!;
+			expect(request.baseRevision).toBe(initial.revision);
+			worker!.onmessage?.({ data: { type: "render-ir", requestId: request.requestId, epoch: request.epoch, buffer: encodeRenderIR(diffRenderIR(initial, next)).buffer } });
+			expect(await second).toEqual(next);
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
 	it("reports dispatch, scene and presentation watermarks independently", async () => {
 		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string; epoch?: number } }[] };
 		vi.stubGlobal("Worker", class {

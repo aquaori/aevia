@@ -1,5 +1,7 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
 import type { Command, EraseTarget, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
+import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
+import { decodeRenderIR } from "../scene/renderIRCodec";
 import type {
 	InitRenderChunkCommandDictionaryEntry,
 	InitRenderChunkMetaPayload,
@@ -126,6 +128,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	let worker: Worker | null = null;
 	let sceneEpoch = 0;
 	let dispatchSeq = 0;
+	let renderIRFrame: RenderIRFrame | null = null;
 	let offscreenEnabled = false;
 	let canvasTransferred = false;
 	let pendingMainCanvasRequest: MainCanvasRenderRequest | null = null;
@@ -142,6 +145,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const pendingSceneQueryRequests = new Map<string, (result: { elementIds: string[]; bounds: aabbBox | null }) => void>();
 	const pendingSceneOperationRenders = new Map<string, () => void>();
 	const pendingWatermarks = new Map<string, (value: RenderWatermarks | null) => void>();
+	const pendingRenderIR = new Map<string, (value: RenderIRFrame | null) => void>();
 	const renderedSceneOperations = new Set<string>();
 	const pendingIncrements = new Map<string, PendingIncrement>();
 
@@ -154,6 +158,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		for (const callback of pendingSceneQueryRequests.values()) callback({ elementIds: [], bounds: null });
 		for (const callback of pendingSceneOperationRenders.values()) callback();
 		for (const callback of pendingWatermarks.values()) callback(null);
+		for (const callback of pendingRenderIR.values()) callback(null);
 		pendingInitBarriers.clear();
 		pendingRequests.clear();
 		pendingCommandPointRequests.clear();
@@ -162,6 +167,8 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		pendingSceneQueryRequests.clear();
 		pendingSceneOperationRenders.clear();
 		pendingWatermarks.clear();
+		pendingRenderIR.clear();
+		renderIRFrame = null;
 	};
 
 	const cancelPendingMainCanvasRequest = () => {
@@ -297,6 +304,22 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		worker.onmessage = (event) => {
 			if (worker !== activeWorker) return;
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
+			if (type === "render-ir") {
+				const callback = pendingRenderIR.get(requestId);
+				pendingRenderIR.delete(requestId);
+				if (!callback) return;
+				try {
+					if (event.data.epoch !== sceneEpoch || !(event.data.buffer instanceof ArrayBuffer)) throw new Error("Invalid Render IR response");
+					const decoded = decodeRenderIR(new Uint8Array(event.data.buffer));
+					if ("baseRevision" in decoded && !renderIRFrame) throw new Error("Missing Render IR baseline");
+					renderIRFrame = "baseRevision" in decoded ? applyRenderIRDelta(renderIRFrame!, decoded) : decoded;
+					callback(structuredClone(renderIRFrame));
+				} catch {
+					renderIRFrame = null;
+					callback(null);
+				}
+				return;
+			}
 			if (type === "render-watermarks") {
 				const callback = pendingWatermarks.get(requestId);
 				pendingWatermarks.delete(requestId);
@@ -669,6 +692,14 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		worker.postMessage({ type: "get-render-watermarks", data: { requestId, epoch: sceneEpoch } });
 	});
 
+	const requestRenderIR = () => new Promise<RenderIRFrame | null>((resolve) => {
+		if (!worker || !offscreenEnabled) { resolve(null); return; }
+		const requestId = `render-ir:${sceneEpoch}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+		const timer = setTimeout(() => { pendingRenderIR.delete(requestId); renderIRFrame = null; resolve(null); }, 2000);
+		pendingRenderIR.set(requestId, (value) => { clearTimeout(timer); resolve(value); });
+		worker.postMessage({ type: "get-render-ir", data: { requestId, epoch: sceneEpoch, baseRevision: renderIRFrame?.revision ?? null } });
+	});
+
 	const waitForSceneOperationRender = (opId: string, timeoutMs = 800) => new Promise<void>((resolve) => {
 		if (!worker || !offscreenEnabled || renderedSceneOperations.delete(opId)) {
 			resolve();
@@ -835,6 +866,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		renderDirtyRects,
 		syncCommandState,
 		requestRenderWatermarks,
+		requestRenderIR,
 		waitForSceneOperationRender,
 		removeCommandState,
 		rerenderScene,

@@ -3,6 +3,7 @@ import type { ComputedRef, Ref } from "vue";
 import type { Command, RemoteCursor } from "./type";
 import type { TypedEventBus } from "./editorEventBus";
 import type { EditorTool } from "@collaborative-whiteboard/shared";
+import type { RenderIRFrame } from "../scene/renderIR";
 
 export interface SelectionState {
 	x: number;
@@ -71,6 +72,7 @@ export interface EditorHost {
 
 export interface WhiteboardSession extends EditorHost {
 	getConsistencyWatermarks(): Promise<ConsistencyWatermarks>;
+	getRenderIR(): Promise<RenderIRFrame | null>;
 	mountCanvas(input: { canvas: HTMLCanvasElement; uiCanvas: HTMLCanvasElement }): void;
 	unmount(): void;
 	connect(): void;
