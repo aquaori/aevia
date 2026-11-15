@@ -1,10 +1,11 @@
-import { ref } from "vue";
+import { markRaw, ref } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRoomCollabTransport } from "./roomCollabTransport";
 
 const dispatcherState = vi.hoisted(() => ({ onSnapshot: (_version: number) => {} }));
+const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }));
 vi.mock("./roomSessionContext", () => ({ useRoomSessionEmitHook: () => () => {} }));
-vi.mock("vue-sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+vi.mock("vue-sonner", () => ({ toast: toastMock }));
 vi.mock("./sessionApi", () => ({ requestWebsocketTicket: vi.fn(async () => "ticket"), renewRoomSession: vi.fn() }));
 vi.mock("./collabMessageDispatcher", () => ({
 	createCollabMessageDispatcher: (options: { onInitSnapshotCommitted: (version: number) => void }) => {
@@ -24,13 +25,13 @@ class FakeSocket {
 	onclose: (() => void) | null = null;
 	onerror: ((error: unknown) => void) | null = null;
 	onmessage: ((event: { data: string }) => void) | null = null;
-	constructor(public url: string) { FakeSocket.instances.push(this); }
+	constructor(public url: string) { markRaw(this); FakeSocket.instances.push(this); }
 	send(data: string) { this.sent.push(data); }
 	close() { this.readyState = 3; this.onclose?.(); }
 	receive(type: string, data: object) { this.onmessage?.({ data: JSON.stringify({ type, data }) }); }
 }
 
-const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer?: () => Promise<boolean>) => createRoomCollabTransport({
+const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer?: () => Promise<boolean>, applyLoadedPageDelta = vi.fn()) => createRoomCollabTransport({
 	token: ref("token"), sessionExpiresAt: ref(Date.now() + 3600000), userId: ref("user"), roomId: ref("room"),
 	username: ref("user"), roomName: ref("room"), onlineCount: ref(1), totalPages: ref(1), loadedPageIds: ref([0]),
 	currentPageId: ref(0), currentTool: ref("pen"), reconnectFailed: ref(false), reconnectFailureMessage: ref(""),
@@ -38,11 +39,60 @@ const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer
 	memberList: ref([]), remoteCursors: ref(new Map()), remoteSelectionRects: ref(new Map()),
 	renderCanvas: vi.fn(), goToPage: vi.fn(), applyRemotePageChange: vi.fn(), setTool: vi.fn(),
 	insertCommand: vi.fn(), removeCommand: vi.fn(() => null), replaceLoadedPageWindow: vi.fn(),
-	applyLoadedPageDelta: vi.fn(), clearClearedCommands: vi.fn(() => false), confirmInitScene, recoverRenderer,
+	applyLoadedPageDelta, clearClearedCommands: vi.fn(() => false), confirmInitScene, recoverRenderer,
 });
 
 describe("snapshot recovery cursor", () => {
-	afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeSocket.instances = []; });
+	afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeSocket.instances = []; window.history.replaceState({}, "", "/"); vi.clearAllMocks(); });
+
+	it("requests pre-clear history after scene confirmation and merges it only after completion", async () => {
+		vi.stubGlobal("WebSocket", FakeSocket);
+		window.history.replaceState({}, "", "/room?historyToast=1");
+		let confirm!: (valid: boolean) => void;
+		const merge = vi.fn();
+		const transport = makeTransport(() => new Promise((resolve) => { confirm = resolve; }), undefined, merge);
+		await transport.connect();
+		const connection = FakeSocket.instances[0]!;
+		connection.receive("init-meta", { snapshotVersion: 42 });
+		dispatcherState.onSnapshot(42);
+		expect(connection.sent).toHaveLength(0);
+		confirm(true);
+		await Promise.resolve();
+		const request = JSON.parse(connection.sent[0]!);
+		expect(request.type).toBe("load-page-history");
+		expect(transport.isPageHistoryReady(0)).toBe(false);
+		connection.receive("page-history-chunk", { requestId: request.data.requestId, pageId: 0, commands: [{ id: "old", pageId: 0 }] });
+		expect(merge).not.toHaveBeenCalled();
+		connection.receive("page-history-complete", { requestId: request.data.requestId, pageId: 0 });
+		expect(merge).toHaveBeenCalledWith(expect.objectContaining({ commands: [expect.objectContaining({ id: "old" })] }));
+		expect(transport.isPageHistoryReady(0)).toBe(true);
+		expect(toastMock.success).toHaveBeenCalledWith(expect.stringContaining("历史已补齐（1 条）"));
+		transport.disconnect();
+	});
+
+	it("resumes a history fragment after a retry at the same snapshot", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const merge = vi.fn();
+		const transport = makeTransport(() => Promise.resolve(true), undefined, merge);
+		await transport.connect();
+		const connection = FakeSocket.instances[0]!;
+		connection.receive("init-meta", { snapshotVersion: 42 });
+		dispatcherState.onSnapshot(42);
+		await Promise.resolve();
+		const first = JSON.parse(connection.sent[0]!).data;
+		connection.receive("page-history-meta", { requestId: first.requestId, pageId: 0, snapshotVersion: 42, resumed: false });
+		connection.receive("page-history-chunk", { requestId: first.requestId, pageId: 0, cursor: "old-a", commands: [{ id: "old-a", pageId: 0 }] });
+		connection.receive("page-history-failed", { requestId: first.requestId, pageId: 0 });
+		vi.advanceTimersByTime(2000);
+		const second = JSON.parse(connection.sent[1]!).data;
+		expect(second).toMatchObject({ snapshotVersion: 42, cursor: "old-a" });
+		connection.receive("page-history-meta", { requestId: second.requestId, pageId: 0, snapshotVersion: 42, resumed: true });
+		connection.receive("page-history-chunk", { requestId: second.requestId, pageId: 0, cursor: "old-b", commands: [{ id: "old-b", pageId: 0 }] });
+		connection.receive("page-history-complete", { requestId: second.requestId, pageId: 0 });
+		expect(merge).toHaveBeenCalledWith(expect.objectContaining({ commands: [expect.objectContaining({ id: "old-a" }), expect.objectContaining({ id: "old-b" })] }));
+		transport.disconnect();
+	});
 
 	it("reconnects from a full snapshot and retries unconfirmed operations after renderer recovery", async () => {
 		vi.stubGlobal("WebSocket", FakeSocket);

@@ -57,6 +57,7 @@
 		{"id":"ws.mouse-leave","kind":"ws","surface":"mouseLeave","state":"uncovered","oracle":"A leaving cursor is removed for peers without changing persistent scene state.","evidence":[]},
 		{"id":"ws.box-selection","kind":"ws","surface":"box-selection","state":"uncovered","oracle":"Selection bounds are broadcast to peers but are not persisted as scene mutations.","evidence":[]},
 		{"id":"ws.member-list","kind":"ws","surface":"get-member-list","state":"uncovered","oracle":"The requester receives the current online member set and no unrelated room members.","evidence":[]},
+		{"id":"ws.load-page-history","kind":"ws","surface":"load-page-history","state":"partial","oracle":"A client receives earlier page history in resumable chunks without losing operations when the snapshot changes.","evidence":["go:TestBackgroundHistoryLoadsClearedCommands"]},
 		{"id":"scene.element-create","kind":"scene","surface":"element.create","state":"partial","oracle":"A create operation produces exactly the declared element on the declared page and is replayable.","evidence":["go:TestValidateSceneCommandAcceptsV2Create","external:harness-health"]},
 		{"id":"scene.element-append","kind":"scene","surface":"element.append","state":"uncovered","oracle":"An append adds only the declared source range and replay does not duplicate points.","evidence":[]},
 		{"id":"scene.element-transform","kind":"scene","surface":"element.transform","state":"uncovered","oracle":"A transform applies the declared matrix to all targets and leaves other elements unchanged.","evidence":[]},

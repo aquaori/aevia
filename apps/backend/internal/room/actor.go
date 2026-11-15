@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -20,12 +21,16 @@ const actorIdleTimeout = 10 * time.Minute
 var snapshotSlots = make(chan struct{}, 4)
 
 func (a *Actor) pinSnapshot() (*storage.ReadSnapshot, context.Context, context.CancelFunc, error) {
+	return a.pinSnapshotFor(15 * time.Second)
+}
+
+func (a *Actor) pinSnapshotFor(timeout time.Duration) (*storage.ReadSnapshot, context.Context, context.CancelFunc, error) {
 	select {
 	case snapshotSlots <- struct{}{}:
 	default:
 		return nil, nil, nil, ErrActorBusy
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	snapshot, seq, err := a.store.BeginReadSnapshot(ctx, a.roomID)
 	if err == nil && seq != a.state.RoomSeq {
 		err = errors.New("snapshot sequence mismatch")
@@ -44,6 +49,71 @@ func (a *Actor) pinSnapshot() (*storage.ReadSnapshot, context.Context, context.C
 func readSnapshot(snapshot *storage.ReadSnapshot, ctx context.Context, cancel context.CancelFunc) ([]domain.Command, error) {
 	defer func() { snapshot.Close(); cancel() }()
 	return snapshot.Commands(ctx)
+}
+
+// Load pre-clear history only after the client has finished its initial scene.
+// The history stream uses the pinned room sequence and shares the normal ordered
+// outbound queue with live operations, without blocking the room actor.
+func (a *Actor) loadPageHistory(client ClientInfo, data map[string]any) {
+	requestID := domain.String(data["requestId"])
+	page, ok := domain.Int(data["pageId"])
+	if requestID == "" || !ok || page != client.PageID {
+		return
+	}
+	watermark, cleared := a.state.ClearBefore[page]
+	if !cleared {
+		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "page-history-meta", Data: map[string]any{"requestId": requestID, "pageId": page, "snapshotVersion": a.state.RoomSeq, "resumed": false}}})
+		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "page-history-complete", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+		return
+	}
+	snapshot, ctx, cancel, err := a.pinSnapshotFor(2 * time.Minute)
+	if err != nil {
+		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "page-history-failed", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+		return
+	}
+	hidden := hiddenClearedPaths(a.state.Commands, map[int]sceneOrderKey{page: watermark})
+	ids := make([]string, 0)
+	for _, cmd := range a.state.Commands {
+		p, valid := cmd.PageID()
+		if valid && p == page && (!commandVisibleAfterClear(cmd, map[int]sceneOrderKey{page: watermark}) || isHiddenPathAppend(cmd, hidden)) {
+			ids = append(ids, cmd.ID())
+		}
+	}
+	sort.Strings(ids)
+	version := a.state.RoomSeq
+	requestedVersion, validVersion := domain.Int(data["snapshotVersion"])
+	cursor := domain.String(data["cursor"])
+	resumed := validVersion && uint64(requestedVersion) == version && cursor != ""
+	startIndex := 0
+	if resumed {
+		startIndex = sort.SearchStrings(ids, cursor)
+		for startIndex < len(ids) && ids[startIndex] <= cursor {
+			startIndex++
+		}
+	}
+	go func() {
+		defer func() { snapshot.Close(); cancel(); <-snapshotSlots }()
+		sender := &streamSender{out: client.Send, abort: client.Abort, done: client.Done, wait: true}
+		sendStreamOutbound(sender, Outbound{JSON: Envelope{Type: "page-history-meta", Data: map[string]any{"requestId": requestID, "pageId": page, "snapshotVersion": version, "resumed": resumed}}})
+		for start := startIndex; start < len(ids); start += 32 {
+			end := min(start+32, len(ids))
+			commands, err := snapshot.CommandsByID(ctx, ids[start:end])
+			if err != nil || len(commands) != end-start {
+				sendStreamOutbound(sender, Outbound{JSON: Envelope{Type: "page-history-failed", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+				return
+			}
+			sendStreamOutbound(sender, Outbound{JSON: Envelope{Type: "page-history-chunk", Data: map[string]any{"requestId": requestID, "pageId": page, "cursor": ids[end-1], "commands": commands}}})
+			if sender.failed {
+				return
+			}
+			select {
+			case <-client.Done:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+		sendStreamOutbound(sender, Outbound{JSON: Envelope{Type: "page-history-complete", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+	}()
 }
 
 // ErrActorStopped is returned when an operation targets a room actor whose loop
@@ -435,9 +505,32 @@ func (a *Actor) handleJoin(msg joinMessage) {
 		a.state.Clients[client.ID] = client
 		streamResult := result
 		snapshotSeq := a.state.RoomSeq
+		var initialIDs []string
+		var initialMaxLamport float64
+		var clearBefore map[int]sceneOrderKey
+		if snapshot != nil {
+			pages := pageIDSet(initPageIDs(client.PageID, a.state.Room.TotalPage, a.cfg.InitPreloadPageCount))
+			hiddenPaths := hiddenClearedPaths(a.state.Commands, a.state.ClearBefore)
+			clearBefore = make(map[int]sceneOrderKey, len(a.state.ClearBefore))
+			for page, watermark := range a.state.ClearBefore {
+				clearBefore[page] = watermark
+			}
+			for _, cmd := range a.state.Commands {
+				page, ok := cmd.PageID()
+				if ok && pages[page] && commandVisibleAfterClear(cmd, clearBefore) && !isHiddenPathAppend(cmd, hiddenPaths) {
+					initialIDs = append(initialIDs, cmd.ID())
+				}
+			}
+			initialMaxLamport = maxCommandLamport(a.state.Commands)
+		}
 		go func() {
 			if snapshot != nil {
-				commands, err := readSnapshot(snapshot, snapshotCtx, cancel)
+				commands, err := snapshot.CommandsByID(snapshotCtx, initialIDs)
+				snapshot.Close()
+				cancel()
+				if err == nil && len(commands) != len(initialIDs) {
+					err = errors.New("snapshot missing selected commands")
+				}
 				if err != nil {
 					<-snapshotSlots
 					if client.Abort != nil {
@@ -448,7 +541,9 @@ func (a *Actor) handleJoin(msg joinMessage) {
 				room := streamResult.Room
 				room.DurableSeq = snapshotSeq
 				state := NewState(room, commands)
+				state.ClearBefore = clearBefore
 				streamResult.Init = a.builder.Init(state, client.PageID)
+				streamResult.Init.Meta["maxLamport"] = initialMaxLamport
 				<-snapshotSlots
 			}
 			sendInitStream(out, streamResult.Room.Name, client, streamResult, true)

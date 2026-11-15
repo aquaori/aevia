@@ -91,11 +91,15 @@ Join distinguishes current, contiguous retained delta, and snapshot recovery aga
 
 `State.ClearBefore` is the effective per-page clear watermark. Both materialized snapshots and `SendLiveInitStream`'s direct index stream must apply it to render points and command chunks: keep the effective `page.clear` marker and operations after it, but never return commands or points before it. When `history.toggle` disables that clear group, the watermark disappears and a forced current-page reload may return the restored history again. Filtering only render points is insufficient because a client could otherwise replay pre-clear V2 commands during init or resync.
 
+Path appends after a clear must also be filtered when their path was created before the clear: the hidden create is absent from the snapshot and those appends would otherwise remain unresolved. Apply the same rule when counting and streaming commands; undoing the clear restores the history.
+
 S05 account sessions and room sessions are distinct: `storage/accounts.go` stores hashed account-session tokens, while `auth.Claims` identifies the account or guest in a room. `gateway/account_handlers.go`, `account_room_handlers.go`, `room_management.go`, `transfer_handlers.go`, and `invite_handlers.go` own account, membership, transfer and invitation HTTP flows; `storage/membership.go` and `transfers.go` persist their state. Room and guest roles are checked on the WebSocket write path, and account membership changes notify online clients. Keep stable account IDs for history ownership and same-room device replacement. `history.toggle` is authorized against the original author's history group in the room actor.
 
 Network clients obtain a room grant from `/v2/rooms/{roomId}/admission`, then exchange it for a 30-second single-use `/ws-ticket` before each WebSocket connection. Ticket consumption is stored in SQLite and room membership is rechecked at connection. Account refresh rotates the persistent account token; it is distinct from room grant renewal. Member and guest management changes are recorded transactionally in `room_member_audit` and available to the owner.
 
 For network clients, the actor pins a SQLite WAL read view at its durable room sequence; a bounded snapshot executor builds initialization and page streams off the actor while subsequent events wait in a bounded per-client queue. Keep render metadata paired with its binary frame and abort slow clients rather than blocking the room. A saturated executor or failed read aborts that client; pinned read transactions must be closed before sending. This is not an independently benchmarked latency guarantee.
+
+Initial joins select the loaded pages' visible command IDs from actor state and fetch only those records from the pinned database view. Preserve the room-wide maximum Lamport and clear watermarks from the same actor sequence. After client initialization, `load-page-history` streams the current page's pre-clear commands from another pinned view in small batches; these are not applied to the active scene while the clear remains enabled. Page-change snapshot construction still reads full history.
 
 ## Render Chunks
 

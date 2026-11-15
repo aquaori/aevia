@@ -80,8 +80,8 @@ Backend defaults from `apps/backend/internal/config/config.go`:
 - `DB_BUSY_TIMEOUT_MS=15000` (per-connection SQLite busy timeout; keeps room creation from failing with HTTP 500 while the batch writer is flushing)
 - `INIT_PRELOAD_PAGE_COUNT=2`
 - `PAGE_CACHE_RADIUS=1`
-- `INIT_COMMAND_CHUNK_SIZE=100`
-- `INIT_FLAT_POINT_CHUNK_SIZE=2000`
+- `INIT_COMMAND_CHUNK_SIZE=32` (command chunks also target at most 64 KiB of encoded commands; a single larger command remains intact)
+- `INIT_FLAT_POINT_CHUNK_SIZE=512`
 - `PAGE_CHANGE_DEBOUNCE_MS=80`
 
 ## Footguns

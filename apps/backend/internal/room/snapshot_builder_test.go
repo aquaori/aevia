@@ -1,12 +1,100 @@
 package room
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/config"
 	"collaborative-whiteboard/apps/backend/internal/domain"
 	"collaborative-whiteboard/apps/backend/internal/protocol"
 )
+
+func TestBackgroundHistoryLoadsClearedCommands(t *testing.T) {
+	cfg := testConfig(t)
+	store := newTestStore(t, cfg)
+	old := stateTestPathCommand("old", 1, 0, domain.Point{X: 0.2, Y: 0.2, P: 0.5, Lamport: 1})
+	clear := domain.NewCommand(map[string]any{"id": "clear", "type": "scene-op", "pageId": 0, "lamport": 2.0,
+		"sceneOperation": map[string]any{"opId": "clear", "elementId": "page:0", "pageId": 0, "lamport": 2.0, "historyGroupId": "clear", "kind": "page.clear", "payload": map[string]any{"before": map[string]any{"lamport": 2.0, "opId": "clear"}}}})
+	if err := store.SaveCommandAtSeq("room-1", old, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCommandAtSeq("room-1", clear, 2, true); err != nil {
+		t.Fatal(err)
+	}
+	actor := &Actor{roomID: "room-1", store: store, state: NewState(domain.Room{RoomID: "room-1", TotalPage: 1, DurableSeq: 2}, []domain.Command{old, clear})}
+	out := make(chan Outbound, 8)
+	done := make(chan struct{})
+	defer close(done)
+	actor.loadPageHistory(ClientInfo{PageID: 0, Send: out, Done: done}, map[string]any{"requestId": "r1", "pageId": 0})
+	select {
+	case event := <-out:
+		if event.JSON.(Envelope).Type != "page-history-meta" {
+			t.Fatal("missing history metadata")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("history metadata timed out")
+	}
+	select {
+	case event := <-out:
+		message := event.JSON.(Envelope)
+		commands := message.Data["commands"].([]domain.Command)
+		if message.Type != "page-history-chunk" || len(commands) != 1 || commands[0].ID() != "old" {
+			t.Fatalf("unexpected history: %+v", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("history chunk timed out")
+	}
+	select {
+	case event := <-out:
+		if event.JSON.(Envelope).Type != "page-history-complete" {
+			t.Fatal("missing completion")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("history completion timed out")
+	}
+	actor.loadPageHistory(ClientInfo{PageID: 0, Send: out, Done: done}, map[string]any{"requestId": "r2", "pageId": 0, "snapshotVersion": 2, "cursor": "old"})
+	select {
+	case event := <-out:
+		meta := event.JSON.(Envelope)
+		if meta.Type != "page-history-meta" || meta.Data["resumed"] != true {
+			t.Fatalf("expected resumed metadata: %+v", meta)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed metadata timed out")
+	}
+	select {
+	case event := <-out:
+		if event.JSON.(Envelope).Type != "page-history-complete" {
+			t.Fatal("expected resumed stream to skip old command")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed completion timed out")
+	}
+}
+
+func TestCommandChunksBoundBytesAndPreserveOrder(t *testing.T) {
+	commands := make([]domain.Command, 10)
+	for index := range commands {
+		commands[index] = domain.NewCommand(map[string]any{"id": string(rune('a' + index)), "data": strings.Repeat("x", 24000)})
+	}
+	chunks := chunkCommands(commands, 32)
+	if len(chunks) < 4 {
+		t.Fatalf("expected byte limit to split commands, got %d chunks", len(chunks))
+	}
+	var ids string
+	for index, chunk := range chunks {
+		if chunk.ChunkIndex != index || chunk.IsLast != (index == len(chunks)-1) {
+			t.Fatal("incorrect chunk metadata")
+		}
+		for _, command := range chunk.Commands {
+			ids += command.ID()
+		}
+	}
+	if ids != "abcdefghij" {
+		t.Fatalf("commands were reordered: %q", ids)
+	}
+}
 
 func TestInitSnapshotDoesNotReturnCommandsBeforeClearWatermark(t *testing.T) {
 	pathCommand := func(id string, lamport float64) domain.Command {
@@ -38,7 +126,15 @@ func TestInitSnapshotDoesNotReturnCommandsBeforeClearWatermark(t *testing.T) {
 		},
 	})
 	after := pathCommand("after", 3)
-	state := NewState(domain.Room{RoomID: "room", TotalPage: 1}, []domain.Command{before, clear, after})
+	lateAppend := domain.NewCommand(map[string]any{
+		"id": "late-append", "type": "scene-op", "userId": "user-1", "pageId": 0, "lamport": 3.0,
+		"sceneOperation": map[string]any{"opId": "late-append", "elementId": "before", "pageId": 0, "lamport": 3.0,
+			"historyGroupId": "before", "kind": "element.append", "payload": map[string]any{"sourceStart": 1, "points": []any{map[string]any{"x": 0.3, "y": 0.3, "p": 0.5, "lamport": 3.0}}}},
+	})
+	state := NewState(domain.Room{RoomID: "room", TotalPage: 1}, []domain.Command{before, clear, after, lateAppend})
+	if got := countCommandsForPages(state.Commands, []int{0}, state.ClearBefore); got != 2 {
+		t.Fatalf("expected late append of cleared path to be excluded, got %d commands", got)
+	}
 	builder := NewSnapshotBuilder(config.Config{
 		InitPreloadPageCount:   1,
 		InitCommandChunkSize:   100,
@@ -73,7 +169,7 @@ func TestInitSnapshotDoesNotReturnCommandsBeforeClearWatermark(t *testing.T) {
 		},
 	}))
 	restored := builder.Init(state, 0)
-	if len(restored.RenderChunks) != 1 || len(restored.RenderChunks[0].Points) != 2 {
+	if len(restored.RenderChunks) != 1 || len(restored.RenderChunks[0].Points) != 3 {
 		t.Fatalf("expected clear undo to restore pre-clear points, got %+v", restored.RenderChunks)
 	}
 	restoredIDs := make([]string, 0)
@@ -82,7 +178,7 @@ func TestInitSnapshotDoesNotReturnCommandsBeforeClearWatermark(t *testing.T) {
 			restoredIDs = append(restoredIDs, command.ID())
 		}
 	}
-	if len(restoredIDs) != 4 {
+	if len(restoredIDs) != 5 {
 		t.Fatalf("expected clear undo snapshot to restore full command history, got %v", restoredIDs)
 	}
 }

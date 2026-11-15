@@ -196,6 +196,10 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 				},
 			},
 		});
+		if (result.ok && targetOperation.kind === "page.clear" && !enabled) {
+			options.syncWorkerScene?.(options.commands.value, targetOperation.pageId, []);
+			if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
+		}
 		return result.ok ? { ...result, command: target } : result;
 	};
 
@@ -274,8 +278,8 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		options.insertCommand(clearCommand);
 		options.currentCommandIndex.value = options.commands.value.length - 1;
 
-		options.syncWorkerScene?.(options.commands.value, options.currentPageId.value, []);
-		options.renderCanvas();
+		options.syncCommandState?.(clearCommand);
+		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
 		options.currentCommandIndex.value =
 			options.commands.value.length === 0 ? 0 : options.commands.value.length - 1;
 
