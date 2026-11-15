@@ -544,36 +544,7 @@
 		toggleFullscreen: roomHeaderController.toggleFullscreen,
 	});
 
-	const predictedStrokeEnabled = new URLSearchParams(window.location.search).get("predict") === "1";
-	const predictionCanvasRef = ref<HTMLCanvasElement | null>(null);
-	const updatePredictedStroke = (event: PointerEvent | null) => {
-		const canvas = predictionCanvasRef.value;
-		if (!canvas || !predictedStrokeEnabled) return;
-		const context = canvas.getContext("2d");
-		if (!context) return;
-		const rect = canvas.getBoundingClientRect();
-		const dpr = window.devicePixelRatio || 1;
-		const width = Math.round(rect.width * dpr);
-		const height = Math.round(rect.height * dpr);
-		if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-		context.setTransform(dpr, 0, 0, dpr, 0, 0);
-		context.clearRect(0, 0, rect.width, rect.height);
-		if (!event || currentTool.value !== "pen") return;
-		const predictions = (event as PointerEvent & { getPredictedEvents?: () => PointerEvent[] }).getPredictedEvents?.() ?? [];
-		if (predictions.length === 0) return;
-		context.strokeStyle = currentColor.value;
-		context.lineWidth = currentSize.value * Math.max(0.2, event.pressure || 0.5);
-		context.lineCap = "round";
-		context.lineJoin = "round";
-		context.beginPath();
-		context.moveTo(event.clientX - rect.left, event.clientY - rect.top);
-		for (const point of predictions) context.lineTo(point.clientX - rect.left, point.clientY - rect.top);
-		context.stroke();
-	};
-	watch([currentTool, currentPageId], () => updatePredictedStroke(null));
-
 	roomPointerControllerRef.value = createRoomPointerController({
-		updatePredictedStroke,
 		currentTool,
 		currentColor,
 		currentSize,
@@ -905,8 +876,6 @@
 				}"
 				:style="currentTool === 'cursor' ? { cursor: canvasCursor } : undefined"
 			></canvas>
-
-			<canvas v-if="predictedStrokeEnabled" ref="predictionCanvasRef" class="absolute inset-0 w-full h-full pointer-events-none z-10"></canvas>
 
 			<!-- UI Overlay Canvas (Top Layer: Cursors, Select Box) -->
 			<canvas

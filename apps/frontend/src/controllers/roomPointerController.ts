@@ -59,7 +59,6 @@ interface PendingStrokeStart {
 }
 
 interface RoomPointerControllerOptions {
-	updatePredictedStroke?: (event: PointerEvent | null) => void;
 	currentTool: Ref<Tool>;
 	currentColor: Ref<string>;
 	currentSize: Ref<number>;
@@ -1087,7 +1086,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		}
 		if (toolDefinition && toolDefinition.inputMode !== "freehand") return;
 
-		options.updatePredictedStroke?.(e);
 		const canvasOffset = { left: e.clientX - x, top: e.clientY - y };
 		for (const pointerEvent of getCoalescedPointerEvents(e)) {
 			pendingStrokeSamples.push(
@@ -1100,7 +1098,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 	const stopDrawing = async (e: PointerEvent) => {
 		if (!options.isDrawing.value) return;
 		if (e.pointerId !== options.activePointerId.value) return;
-		options.updatePredictedStroke?.(null);
 		const toolDefinition = builtinToolRegistry.get(options.currentTool.value);
 		if (options.currentTool.value !== "cursor" && toolDefinition && toolDefinition.inputMode !== "freehand") {
 			const coordinates = options.interactionController.getCoordinates(canvasRef.value, e);
@@ -1331,7 +1328,6 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 		stopDrawing,
 		finalizeDrop,
 		cancelLocalDrawing: (cmdId?: string | null) => {
-			options.updatePredictedStroke?.(null);
 			if (cmdId && options.currentDrawingId.value !== cmdId) {
 				return;
 			}
