@@ -58,6 +58,10 @@ Canonical scene core:
 - `scene/toolRegistry.ts`: declarative built-in tools and their public primitive mappings.
 - `scene/stickerAssets.ts`: versioned built-in sticker keys; new operations retain the legacy Emoji value so old rooms and clients remain readable. Backend asset validation must stay in sync.
 
+S08 scene rebuilds and IR exports expose step generators alongside their synchronous wrappers. The worker slices initialization, history rebuilding, point batches and independent flat-point projections, and keeps scene-dependent messages ordered until an active transaction finishes. Ordinary scene redraws coalesce dirty regions; transform acknowledgements follow their paint.
+
+Scene element bounds are cached and updated as atoms are appended; invalidate the cache when changing geometry, transforms, text layout or rebuilding an element. Long create/append operations yield in batches. Background projections receive shorter, periodic slices while the foreground queue is busy; this does not let reads observe a partly rebuilt active scene.
+
 Preferred worker path:
 
 - `service/renderWorkerBridge.ts`

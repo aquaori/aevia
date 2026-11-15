@@ -108,6 +108,44 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("renders a sliced full frame identically to the synchronous renderer", () => {
+		const engine = new SceneEngine();
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		engine.applyOperation({ ...stroke, payload: { ...stroke.payload, points: Array.from({ length: 600 }, (_, i) => ({ x: 0.05 + i / 700, y: 0.5 + Math.sin(i / 40) * 0.1, p: 0.5, lamport: i + 2 })) } });
+		const expected = createCanvasContext();
+		const sliced = createCanvasContext();
+		engine.renderFull(expected, WIDTH, HEIGHT);
+		const steps = engine.renderFullSteps(sliced, WIDTH, HEIGHT);
+		let count = 0;
+		while (!steps.next().done) count += 1;
+		expect(count).toBeGreaterThan(1);
+		expect(sliced.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(expected.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
+	it("keeps existing thick strokes intact across repeated narrow dirty redraws", () => {
+		const engine = new SceneEngine();
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		engine.applyOperation({
+			...stroke,
+			payload: {
+				...stroke.payload,
+				descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 20 } },
+				points: Array.from({ length: 200 }, (_, index) => ({ x: 0.1 + index * 0.004, y: 0.5, p: 0.5, lamport: index + 2 })),
+			},
+		});
+		const context = createCanvasContext();
+		engine.renderFull(context, WIDTH, HEIGHT);
+		const before = context.getImageData(0, 0, WIDTH, HEIGHT).data;
+		for (let x = 80.3; x < 440; x += 4.7) {
+			engine.renderDirty(context, { minX: x, minY: 176.2, maxX: x + 2, maxY: 183.2, width: 2, height: 7 }, WIDTH, HEIGHT);
+		}
+		const after = context.getImageData(0, 0, WIDTH, HEIGHT).data;
+		for (let x = 80; x < 440; x += 1) {
+			const alpha = (180 * WIDTH + x) * 4 + 3;
+			if (before[alpha]! > 240) expect(after[alpha]).toBeGreaterThan(230);
+		}
+	});
 	it("renders a detached IR frame identically to the live scene", () => {
 		const engine = new SceneEngine();
 		for (const operation of operations) engine.applyOperation(operation);

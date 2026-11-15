@@ -9,7 +9,8 @@ import {
 } from "@collaborative-whiteboard/shared";
 import type { InitRenderChunkCommandDictionaryEntry } from "../service/collabDispatcherTypes";
 import { SceneEngine } from "../scene/sceneEngine";
-import { diffRenderIR, type RenderIRFrame } from "../scene/renderIR";
+import { sortInSteps } from "../scene/sceneCore";
+import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
 import { encodeRenderIR } from "../scene/renderIRCodec";
 import { labDrainMarks, labEnabled, labMark, labSetEnabled } from "../instrumentation/labMarks";
 import {
@@ -82,6 +83,7 @@ let exportedRenderFrame: RenderIRFrame | null = null;
 let exportedRenderEpoch = -1;
 let presentedRevision: number | null = null;
 let processedDispatchSeq = 0;
+let projectionGeneration = 0;
 let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
 const checkSceneDependencies = () => {
 	if (!sceneEngine.hasPendingDependencies() || dependencyTimer) return;
@@ -364,15 +366,58 @@ const renderFullScene = () => {
 	return paintedRefs;
 };
 
-const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[]) => {
+function* renderFullSceneSteps(): Generator<void> {
+	if (!mainCtx || !offscreenCanvas) return;
+	const staging = new OffscreenCanvas(offscreenCanvas.width, offscreenCanvas.height);
+	const stagingCtx = staging.getContext("2d");
+	if (!stagingCtx) { renderFullScene(); return; }
+	stagingCtx.scale(viewport.dpr, viewport.dpr);
+	stagingCtx.lineCap = "round";
+	stagingCtx.lineJoin = "round";
+	const paintedRefs = yield* sceneEngine.renderFullSteps(stagingCtx, viewport.width, viewport.height, currentTransformingIds);
+	mainCtx.save();
+	mainCtx.setTransform(1, 0, 0, 1, 0, 0);
+	mainCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+	mainCtx.drawImage(staging, 0, 0);
+	mainCtx.restore();
+	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
+	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+}
+
+const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[], renderAfter: boolean) => {
 	sceneCommands.clear();
 	activeStrokeIds.clear();
-	commands.forEach((cmd) => {
-		sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
-	});
 	currentPageId = pageId;
 	currentTransformingIds = new Set(transformingCmdIds);
-	sceneEngine.rebuildFromCommands(commands, pageId);
+	let metadataIndex = 0;
+	const steps = sceneEngine.rebuildFromCommandsSteps(commands, pageId);
+	let rebuildComplete = false;
+	let renderSteps: Generator<void> | null = null;
+	const runSlice = () => {
+		const deadline = performance.now() + 6;
+		while (performance.now() < deadline) {
+			if (metadataIndex < commands.length) {
+				const end = Math.min(metadataIndex + 128, commands.length);
+				while (metadataIndex < end) {
+					const cmd = commands[metadataIndex++]!;
+					sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
+				}
+				continue;
+			}
+			if (!rebuildComplete) {
+				if (!steps.next().done) continue;
+				rebuildComplete = true;
+				if (renderAfter) renderSteps = renderFullSceneSteps();
+			}
+			if (renderSteps && !renderSteps.next().done) continue;
+			sceneTaskInProgress = false;
+			drainDeferredMessages();
+			return;
+		}
+		sceneTaskInProgress = true;
+		setTimeout(runSlice, 0);
+	};
+	runSlice();
 };
 
 const appendInitScenePoint = (
@@ -477,44 +522,75 @@ const renderDirtyRegions = (dirtyRects: Rect[], transformingCmdIds: string[]) =>
 	);
 };
 
+// Keep scene messages ordered while long operations run in bounded slices.
+let sceneTaskInProgress = false;
+const deferredMessages: MessageEvent[] = [];
+let deferredMessageHead = 0;
+let drainingMessages = false;
+
 const applyPendingInitSceneOperations = () => {
 	if (!initRenderFinished || (pendingInitSceneCommands.length === 0 && liveSceneCommandsDuringInit.size === 0)) return;
 	const merged = new Map<string, Command>();
 	for (const command of pendingInitSceneCommands) merged.set(command.id, command);
 	for (const command of liveSceneCommandsDuringInit.values()) merged.set(command.id, command);
 	const commands = Array.from(merged.values())
-		.filter((command) => command.sceneOperation && command.pageId === currentPageId)
-		.sort((left, right) => compareRenderOrder(
+		.filter((command) => command.sceneOperation && command.pageId === currentPageId);
+	const sortSteps = sortInSteps(commands, (left, right) => compareRenderOrder(
 			sceneOperationOrderKey(left.sceneOperation!),
 			sceneOperationOrderKey(right.sceneOperation!)
 		));
 	pendingInitSceneCommands = [];
 	liveSceneCommandsDuringInit.clear();
 	let needsFullRender = false;
-	for (const command of commands) {
-		const operation = command.sceneOperation!;
-		if (operation.kind === "element.create") {
-			const hydratedThrough = operation.payload.points?.length ?? 0;
-			if (
-				operation.payload.descriptor.elementKind !== "path" ||
-				!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)
-			) {
-				needsFullRender = true;
+	let index = 0;
+	let sorted = false;
+	let operationSteps: Generator<void, string[]> | null = null;
+	let renderSteps: Generator<void> | null = null;
+	const runSlice = () => {
+		const deadline = performance.now() + 6;
+		while (index < commands.length) {
+			if (!sorted) {
+				sorted = Boolean(sortSteps.next().done);
+				if (performance.now() >= deadline) break;
+				if (!sorted) continue;
 			}
-		} else if (operation.kind === "element.append") {
-			const hydratedThrough = operation.payload.sourceStart + operation.payload.points.length;
-			if (!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) {
-				needsFullRender = true;
+			if (!operationSteps) {
+				const command = commands[index]!;
+				const operation = command.sceneOperation!;
+				if (operation.kind === "element.create") {
+					const hydratedThrough = operation.payload.points?.length ?? 0;
+					if (operation.payload.descriptor.elementKind !== "path" || !sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) needsFullRender = true;
+				} else if (operation.kind === "element.append") {
+					const hydratedThrough = operation.payload.sourceStart + operation.payload.points.length;
+					if (!sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) needsFullRender = true;
+				} else needsFullRender = true;
+				sceneCommands.set(command.id, cloneCommandMetadata(command));
+				operationSteps = sceneEngine.applyOperationSteps(operation);
 			}
-		} else {
-			needsFullRender = true;
+			if (operationSteps.next().done) { operationSteps = null; index += 1; }
+			if (performance.now() >= deadline) break;
 		}
-		sceneCommands.set(command.id, cloneCommandMetadata(command));
-		sceneEngine.applyOperation(operation);
-	}
-	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
-	checkSceneDependencies();
-	if (needsFullRender) renderFullScene();
+		if (index < commands.length) {
+			sceneTaskInProgress = true;
+			setTimeout(runSlice, 0);
+			return;
+		}
+		if (needsFullRender) {
+			renderSteps ??= renderFullSceneSteps();
+			while (!renderSteps.next().done) {
+				if (performance.now() >= deadline) {
+					sceneTaskInProgress = true;
+					setTimeout(runSlice, 0);
+					return;
+				}
+			}
+		}
+		if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
+		checkSceneDependencies();
+		sceneTaskInProgress = false;
+		drainDeferredMessages();
+	};
+	runSlice();
 };
 
 const operationElementIds = (operation: SceneOperationEnvelopeV2) => {
@@ -545,24 +621,44 @@ const elementBounds = (ids: ReadonlySet<string>) => {
 	return bounds;
 };
 
-const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
+let pendingSceneDirty: Rect[] = [];
+let pendingSceneRenderFrame: number | null = null;
+let pendingSceneBaseRevision: number | null = null;
+
+const flushSceneRender = () => {
+	if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
+	pendingSceneRenderFrame = null;
+	// Animation callbacks can run between slices; do not paint a half-built scene.
+	if (sceneTaskInProgress) return;
+	if (pendingSceneDirty.length === 0 || !mainCtx) return;
+	const regions = pendingSceneDirty;
+	pendingSceneDirty = [];
+	sceneEngine.renderDirtyRegions(mainCtx, regions, viewport.width, viewport.height, currentTransformingIds);
+	if (currentTransformingIds.size === 0 && presentedRevision === pendingSceneBaseRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	pendingSceneBaseRevision = null;
+};
+
+function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<void, boolean> {
+	if (operation.kind === "element.transform" || operation.kind === "page.clear" || sceneEngine.operationMayRebuild(operation)) flushSceneRender();
 	const previousRevision = sceneEngine.getSceneRevision();
 	const historyImpact = operation.kind === "history.toggle"
 		? sceneEngine.getHistoryImpact(operation.payload.targetHistoryGroupId)
 		: null;
 	const ids = new Set(historyImpact?.elementIds ?? operationElementIds(operation));
-	const oldBounds = elementBounds(ids);
+	const appendOnly = sceneEngine.canAppendWithoutRebuild(operation);
+	const oldBounds = appendOnly ? null : elementBounds(ids);
 	const firstNewRef = sceneEngine.atomCount;
-	sceneEngine.applyOperation(operation);
+	yield* sceneEngine.applyOperationSteps(operation);
 	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
 	checkSceneDependencies();
 	if (!mainCtx || operation.pageId !== currentPageId) return false;
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
-		renderFullScene();
+		flushSceneRender();
+		yield* renderFullSceneSteps();
 		return true;
 	}
 	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
-	const newBounds = addedBounds ?? elementBounds(ids);
+	const newBounds = addedBounds ?? (appendOnly ? null : elementBounds(ids));
 	const dirty = mergeBounds(oldBounds, newBounds);
 	if (!dirty) return false;
 	const pixelBounds: Rect = {
@@ -573,11 +669,21 @@ const renderSceneOperation = (operation: SceneOperationEnvelopeV2) => {
 		width: dirty.width * viewport.width,
 		height: dirty.height * viewport.height,
 	};
-	const excludedIds = operation.kind === "element.transform" ? new Set<string>() : currentTransformingIds;
-	sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, excludedIds);
-	if (excludedIds.size === 0 && presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	if (operation.kind === "element.transform") {
+		flushSceneRender();
+		sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, new Set());
+		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	} else {
+		if (pendingSceneDirty.length === 0) pendingSceneBaseRevision = previousRevision;
+		if (pendingSceneDirty.length < 8) pendingSceneDirty.push(pixelBounds);
+		else {
+			const combined = pendingSceneDirty.reduce<AabbBox | null>((bounds, rect) => mergeBounds(bounds, rect), pixelBounds);
+			pendingSceneDirty = combined ? [combined] : [];
+		}
+		if (pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
+	}
 	return true;
-};
+}
 
 const isIntersect = (a: Rect, b: Rect): boolean =>
 	!(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
@@ -620,8 +726,9 @@ const mergeRects = (rects: Rect[]): Rect[] => {
 	return Array.from(groups.values());
 };
 
-self.onmessage = (event: MessageEvent) => {
+const handleWorkerMessage = (event: MessageEvent) => {
 	const { type, data } = event.data;
+	if (type !== "update-command-state" || data?.cmd?.type !== "scene-op") flushSceneRender();
 
 	if (type === "lab-configure") {
 		labSetEnabled(data?.enabled === true);
@@ -651,10 +758,34 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "flat-points") {
+		const generation = ++projectionGeneration;
 		const projection = new SceneEngine();
-		projection.rebuildFromCommands(data.commands as Command[], data.pageId);
-		const points = projection.exportFlatPoints(new Set(data.transformingCmdIds ?? []));
-		self.postMessage({ type: "flat-points-result", points, requestId: data.requestId });
+		const steps = projection.rebuildFromCommandsSteps(data.commands as Command[], data.pageId);
+		let exportSteps: Generator<void, FlatPoint[]> | null = null;
+		let foregroundDeferrals = 0;
+		const runProjectionSlice = () => {
+			if (generation !== projectionGeneration) return;
+			const foregroundBusy = sceneTaskInProgress || drainingMessages;
+			if (foregroundBusy && foregroundDeferrals < 2) {
+				foregroundDeferrals += 1;
+				setTimeout(runProjectionSlice, 0);
+				return;
+			}
+			foregroundDeferrals = 0;
+			const deadline = performance.now() + (foregroundBusy ? 2 : 6);
+			while (performance.now() < deadline) {
+				if (!exportSteps) {
+					if (!steps.next().done) continue;
+					exportSteps = projection.exportFlatPointsSteps(new Set(data.transformingCmdIds ?? []));
+				}
+				const result = exportSteps.next();
+				if (!result.done) continue;
+				self.postMessage({ type: "flat-points-result", points: result.value, requestId: data.requestId });
+				return;
+			}
+			setTimeout(runProjectionSlice, 0);
+		};
+		runProjectionSlice();
 		return;
 	}
 
@@ -665,8 +796,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-full") {
-		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
-		renderFullScene();
+		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds, true);
 		return;
 	}
 
@@ -754,10 +884,29 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-increment-batch") {
-		if (typeof event.data.dispatchSeq === "number") processedDispatchSeq = event.data.dispatchSeq;
-		(data as IncrementBatchItem[]).forEach((entry) => {
-			renderIncrementalPoints(entry.cmd, entry.points);
-		});
+		const entries = data as IncrementBatchItem[];
+		let entryIndex = 0;
+		let pointIndex = 0;
+		const runSlice = () => {
+			const deadline = performance.now() + 6;
+			while (entryIndex < entries.length) {
+				const entry = entries[entryIndex]!;
+				const end = Math.min(pointIndex + 128, entry.points.length);
+				renderIncrementalPoints(entry.cmd, entry.points.slice(pointIndex, end));
+				pointIndex = end;
+				if (pointIndex >= entry.points.length) { entryIndex += 1; pointIndex = 0; }
+				if (performance.now() >= deadline) break;
+			}
+			if (entryIndex < entries.length) {
+				sceneTaskInProgress = true;
+				setTimeout(runSlice, 0);
+				return;
+			}
+			if (typeof event.data.dispatchSeq === "number") processedDispatchSeq = event.data.dispatchSeq;
+			sceneTaskInProgress = false;
+			drainDeferredMessages();
+		};
+		runSlice();
 		return;
 	}
 
@@ -770,7 +919,7 @@ self.onmessage = (event: MessageEvent) => {
 	if (type === "sync-scene") {
 		exportedRenderFrame = null;
 		exportedRenderEpoch = -1;
-		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
+		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds, false);
 		return;
 	}
 
@@ -798,20 +947,36 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "update-command-state") {
-		if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 		const cmd = data.cmd as Command;
 		if (cmd.type === "scene-op" && cmd.sceneOperation) {
 			if (!initRenderFinished) {
 				liveSceneCommandsDuringInit.set(cmd.id, cmd);
+				if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 				return;
 			}
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
-			const rendered = renderSceneOperation(cmd.sceneOperation);
-			if (cmd.sceneOperation.kind === "element.transform" && rendered) {
-				self.postMessage({ type: "scene-operation-rendered", opId: cmd.sceneOperation.opId, epoch: data.epoch });
-			} else if (rendered && labEnabled()) {
-				self.postMessage({ type: "lab:operation-rendered", opId: cmd.sceneOperation.opId });
-			}
+			const operation = cmd.sceneOperation;
+			const steps = renderSceneOperation(operation);
+			const runOperationSlice = () => {
+				const deadline = performance.now() + 6;
+				while (performance.now() < deadline) {
+					const result = steps.next();
+					if (!result.done) continue;
+					sceneTaskInProgress = false;
+					if (operation.kind === "element.transform" && result.value) {
+						self.postMessage({ type: "scene-operation-rendered", opId: operation.opId, epoch: data.epoch });
+					} else if (result.value && labEnabled()) {
+						flushSceneRender();
+						self.postMessage({ type: "lab:operation-rendered", opId: operation.opId });
+					}
+					if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
+					drainDeferredMessages();
+					return;
+				}
+				sceneTaskInProgress = true;
+				setTimeout(runOperationSlice, 0);
+			};
+			runOperationSlice();
 			return;
 		}
 		const existing = sceneCommands.get(cmd.id);
@@ -828,6 +993,7 @@ self.onmessage = (event: MessageEvent) => {
 			sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
 		}
 		sceneEngine.setLegacyCommandState(cmd);
+		if (typeof data.dispatchSeq === "number") processedDispatchSeq = data.dispatchSeq;
 		return;
 	}
 
@@ -843,12 +1009,11 @@ self.onmessage = (event: MessageEvent) => {
 			self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: null });
 			return;
 		}
-		const next = sceneEngine.getRenderIR();
 		const previous = exportedRenderEpoch === epoch ? exportedRenderFrame : null;
-		const frameBytes = encodeRenderIR(next);
-		const deltaBytes = previous && data.baseRevision === previous.revision ? encodeRenderIR(diffRenderIR(previous, next)) : null;
-		const bytes = deltaBytes && deltaBytes.byteLength < frameBytes.byteLength ? deltaBytes : frameBytes;
-		exportedRenderFrame = next;
+		const delta = previous && data.baseRevision === previous.revision ? sceneEngine.getRenderIRDelta(previous) : null;
+		const result = delta ?? sceneEngine.getRenderIR();
+		const bytes = encodeRenderIR(result);
+		exportedRenderFrame = delta && previous ? applyRenderIRDelta(previous, delta, false) : result as RenderIRFrame;
 		exportedRenderEpoch = epoch;
 		self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: bytes.buffer }, { transfer: [bytes.buffer as ArrayBuffer] });
 		return;
@@ -936,6 +1101,7 @@ self.onmessage = (event: MessageEvent) => {
 	}
 
 	if (type === "dispose") {
+		projectionGeneration += 1;
 		exportedRenderFrame = null;
 		exportedRenderEpoch = -1;
 		activeStrokeIds.clear();
@@ -954,4 +1120,43 @@ self.onmessage = (event: MessageEvent) => {
 		offscreenCanvas = null;
 		mainCtx = null;
 	}
+};
+
+function drainDeferredMessages() {
+	if (drainingMessages || sceneTaskInProgress) return;
+	if (pendingSceneDirty.length > 0 && pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
+	drainingMessages = true;
+	const runSlice = () => {
+		const deadline = performance.now() + 6;
+		while (!sceneTaskInProgress && deferredMessageHead < deferredMessages.length) {
+			handleWorkerMessage(deferredMessages[deferredMessageHead++]!);
+			if (performance.now() >= deadline) break;
+		}
+		if (sceneTaskInProgress) { drainingMessages = false; return; }
+		if (deferredMessageHead < deferredMessages.length) { setTimeout(runSlice, 0); return; }
+		deferredMessages.length = 0;
+		deferredMessageHead = 0;
+		drainingMessages = false;
+	};
+	runSlice();
+}
+
+self.onmessage = (event: MessageEvent) => {
+	// Rectangle merging does not read the scene and can serve interaction work
+	// while a large scene batch is yielding between slices.
+	if ((sceneTaskInProgress || drainingMessages) && event.data.type === "merge-dirty-rects") {
+		const data = event.data.data;
+		self.postMessage({ type: "merge-dirty-rects-result", rects: mergeRects(data.rects as Rect[]), epoch: data.epoch });
+		return;
+	}
+	if (sceneTaskInProgress || drainingMessages) {
+		const previous = deferredMessages.length > deferredMessageHead ? deferredMessages[deferredMessages.length - 1] : undefined;
+		const currentData = event.data.data;
+		const previousData = previous?.data.data;
+		if (event.data.type === "render-dirty" && previous?.data.type === "render-dirty" &&
+			currentData.pageId === previousData.pageId &&
+			JSON.stringify(currentData.transformingCmdIds) === JSON.stringify(previousData.transformingCmdIds)) {
+			previousData.rect = mergeBounds(previousData.rect as Rect, currentData.rect as Rect);
+		} else deferredMessages.push(event);
+	} else handleWorkerMessage(event);
 };

@@ -3,6 +3,7 @@ import type { AabbBox, AffineMatrix } from "@collaborative-whiteboard/shared";
 import { renderIRItems } from "./canvasIRRenderer";
 import { SceneCore } from "./sceneCore";
 import type { DirtyRenderMetrics } from "./sceneTypes";
+import type { RenderIRItem } from "./renderIR";
 
 type DrawingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 const DIRTY_PADDING = 20;
@@ -33,6 +34,37 @@ export class SceneEngine extends SceneCore {
 		const refs: number[] = [];
 		this.order.forEach((ref) => refs.push(ref));
 		return this.renderAtomRefs(ctx, refs, logicalWidth, logicalHeight, excludedElementIds);
+	}
+
+	*renderFullSteps(ctx: DrawingContext, logicalWidth: number, logicalHeight: number, excludedElementIds: ReadonlySet<string> = new Set()): Generator<void, number> {
+		this.clearContext(ctx, logicalWidth, logicalHeight);
+		let rendered = 0;
+		let refs: number[] = [];
+		let batch: RenderIRItem[] = [];
+		const flush = () => {
+			rendered += renderIRItems(ctx, batch, logicalWidth, logicalHeight);
+			batch = [];
+		};
+		for (const ref of this.order.refs()) {
+			refs.push(ref);
+			if (refs.length < 256) continue;
+			for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
+				const last = batch[batch.length - 1];
+				const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
+				if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
+				batch.push(item);
+			}
+			refs = [];
+			yield;
+		}
+		for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
+			const last = batch[batch.length - 1];
+			const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
+			if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
+			batch.push(item);
+		}
+		if (batch.length) flush();
+		return rendered;
 	}
 
 	renderAtomRefs(
@@ -89,7 +121,16 @@ export class SceneEngine extends SceneCore {
 			});
 		}
 		const regions = this.dirtyRegions.toArray().map((dirtyRect) => {
-			return { dirtyRect, ...this.queryDirtyCandidates(dirtyRect, logicalWidth, logicalHeight, excludedElementIds) };
+			// Clear, clip and candidate lookup must cover the same pixel-aligned area.
+			// Otherwise a narrow redraw can erase parts of neighbouring strokes.
+			const scaleX = ctx.canvas.width / logicalWidth;
+			const scaleY = ctx.canvas.height / logicalHeight;
+			const minX = Math.floor((dirtyRect.minX - DIRTY_PADDING) * scaleX) / scaleX;
+			const minY = Math.floor((dirtyRect.minY - DIRTY_PADDING) * scaleY) / scaleY;
+			const maxX = Math.ceil((dirtyRect.maxX + DIRTY_PADDING) * scaleX) / scaleX;
+			const maxY = Math.ceil((dirtyRect.maxY + DIRTY_PADDING) * scaleY) / scaleY;
+			const paintRect = { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+			return { dirtyRect: paintRect, ...this.queryDirtyCandidates(paintRect, logicalWidth, logicalHeight, excludedElementIds) };
 		});
 		const uniqueCandidates = new Set<number>();
 		for (const region of regions) for (const ref of region.candidateRefs) uniqueCandidates.add(ref);
@@ -112,8 +153,8 @@ export class SceneEngine extends SceneCore {
 			const dirtyRect = region.dirtyRect;
 			ctx.save();
 			ctx.beginPath();
-			ctx.clearRect(dirtyRect.minX - DIRTY_PADDING, dirtyRect.minY - DIRTY_PADDING, dirtyRect.width + DIRTY_PADDING * 2, dirtyRect.height + DIRTY_PADDING * 2);
-			ctx.rect(dirtyRect.minX - DIRTY_PADDING, dirtyRect.minY - DIRTY_PADDING, dirtyRect.width + DIRTY_PADDING * 2, dirtyRect.height + DIRTY_PADDING * 2);
+			ctx.clearRect(dirtyRect.minX, dirtyRect.minY, dirtyRect.width, dirtyRect.height);
+			ctx.rect(dirtyRect.minX, dirtyRect.minY, dirtyRect.width, dirtyRect.height);
 			ctx.clip();
 			renderedAtoms += this.renderAtomRefs(ctx, region.candidateRefs, logicalWidth, logicalHeight, excludedElementIds);
 			ctx.restore();
