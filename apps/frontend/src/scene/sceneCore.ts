@@ -30,7 +30,8 @@ import type {
 } from "./sceneTypes";
 import { SpatialGridIndex } from "./spatialGridIndex";
 import { splitGraphemes } from "./graphemes";
-import type { RenderIRFrame, RenderIRItem } from "./renderIR";
+import { resolveStickerAsset } from "./stickerAssets";
+import type { AtomHandle, RenderIRFrame, RenderIRItem, SceneCorePort } from "./renderIR";
 import {
 	compileStrokeSample,
 	finishCompiledStroke,
@@ -160,11 +161,13 @@ const operationTargets = (operation: SceneOperationEnvelopeV2) => {
 	}
 };
 
-export class SceneCore {
+export class SceneCore implements SceneCorePort {
 	private readonly measureText?: (text: string, font: string) => number;
 	constructor(measureText?: (text: string, font: string) => number) { this.measureText = measureText; }
 	private renderRevision = 0;
 	private lastRenderSignature: string | null = null;
+	private nextAtomGeneration = 0;
+	private readonly atomEpoch = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 	protected readonly atoms: RenderAtom[] = [];
 	protected readonly elements = new Map<string, SceneElementState>();
 	private readonly compilerStates = new Map<string, StrokeCompilerState>();
@@ -346,6 +349,10 @@ export class SceneCore {
 	}
 
 	applyOperation(operation: SceneOperationEnvelopeV2) {
+		if (operation.kind === "element.create" && operation.payload.descriptor.asset && !resolveStickerAsset(operation.payload.descriptor.asset.key, operation.payload.descriptor.asset.version)) {
+			this.needsResync = true;
+			return [] as string[];
+		}
 		if (this.operationIds.has(operation.opId)) return [] as string[];
 		this.operationIds.add(operation.opId);
 		let insertAt = this.operations.length;
@@ -625,23 +632,39 @@ export class SceneCore {
 
 	/** Capture a detached render view; consumers never mutate the scene core. */
 	getRenderIR(): RenderIRFrame {
-		const items: RenderIRItem[] = [];
-		const excluded = new Set<string>();
-		this.order.forEach((ref) => {
-			const atom = this.atoms[ref];
-			const element = atom ? this.elements.get(atom.elementId) : undefined;
-			if (!atom || !element || !this.isAtomVisible(atom, element, excluded)) return;
-			items.push(structuredClone({
-				id: JSON.stringify([atom.elementId, atom.atomId]), atom,
-				matrix: element.matrix, erasedIntervals: element.erasedIntervals.get(atom.atomId) ?? [], eraseMasks: element.eraseMasks,
-			}));
-		});
+		const refs: number[] = [];
+		this.order.forEach((ref) => refs.push(ref));
+		const items = structuredClone(Array.from(this.renderItemsForRefs(refs, new Set())));
 		const signature = JSON.stringify(items);
 		if (signature !== this.lastRenderSignature) {
 			this.renderRevision += 1;
 			this.lastRenderSignature = signature;
 		}
 		return { version: 1, revision: this.renderRevision, items };
+	}
+
+	protected *renderItemsForRefs(refs: readonly number[], excluded: ReadonlySet<string>): IterableIterator<RenderIRItem> {
+		for (const ref of refs) {
+			const atom = this.atoms[ref];
+			const element = atom ? this.elements.get(atom.elementId) : undefined;
+			if (!atom || !element || !this.isAtomVisible(atom, element, excluded)) continue;
+			const id = `${atom.elementId.length}:${atom.elementId}${atom.atomId}`;
+			yield {
+				id, handle: { id, generation: atom.generation ?? 0, epoch: this.atomEpoch }, atom,
+				matrix: element.matrix, erasedIntervals: element.erasedIntervals.get(atom.atomId) ?? [], eraseMasks: element.eraseMasks,
+				opacity: element.descriptor.style.opacity,
+			};
+		}
+	}
+
+	resolveAtomHandle(handle: AtomHandle): RenderIRItem | null {
+		if (handle.epoch !== this.atomEpoch) return null;
+		for (const atom of this.atoms) {
+			if (atom.generation !== handle.generation || `${atom.elementId.length}:${atom.elementId}${atom.atomId}` !== handle.id) continue;
+			const item = this.renderItemsForRefs([atom.ref], new Set()).next().value;
+			return item ? structuredClone(item) : null;
+		}
+		return null;
 	}
 
 	getStats(): SceneStats {
@@ -668,7 +691,7 @@ export class SceneCore {
 			const atom = this.atoms[ref];
 			const element = atom ? this.elements.get(atom.elementId) : undefined;
 			if (!atom || !this.isAtomVisible(atom, element, new Set())) return;
-			const geometry = { ...atom, ref: undefined, elementRevision: undefined };
+			const geometry = { ...atom, ref: undefined, generation: undefined, elementRevision: undefined };
 			rows.push(`${JSON.stringify(geometry)}|${element!.matrix.join(",")}|${JSON.stringify(element!.erasedIntervals.get(atom.atomId) ?? [])}|${JSON.stringify(element!.eraseMasks)}`);
 		});
 		let hash = 2166136261;
@@ -717,7 +740,7 @@ export class SceneCore {
 
 	private storeAtom(element: SceneElementState, atom: Omit<RenderAtom, "ref">) {
 		const ref = this.atoms.length;
-		const stored = { ...atom, ref } as RenderAtom;
+		const stored = { ...atom, ref, generation: ++this.nextAtomGeneration } as RenderAtom;
 		this.atoms.push(stored);
 		element.atomRefs.push(ref);
 		this.order.insert(ref);
@@ -979,7 +1002,7 @@ export class SceneCore {
 		const atom: Omit<BitmapAtom, "ref"> = {
 			atomId: `${element.id}:bitmap:0`, elementId: element.id, elementRevision: element.revision, pageId: element.pageId,
 			order, recipeId: "bitmap", primitive: "bitmap", toolId: element.descriptor.toolId, style: element.descriptor.style,
-			bounds: { ...box }, box: { ...box }, value: element.descriptor.sticker ?? "✨",
+			bounds: { ...box }, box: { ...box }, value: element.descriptor.asset ? resolveStickerAsset(element.descriptor.asset.key, element.descriptor.asset.version)?.value ?? "✨" : element.descriptor.sticker ?? "✨",
 		};
 		this.storeAtom(element, atom);
 	}

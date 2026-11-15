@@ -119,7 +119,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	let canvasTransferred = false;
 	let pendingMainCanvasRequest: MainCanvasRenderRequest | null = null;
 	let pendingMainCanvasRafId: number | null = null;
-	let pendingIncrementFlushRafId: number | null = null;
+	let pendingIncrementFlushScheduled = false;
 	let streamedInitPoints: FlatPoint[] = [];
 	const pendingRequests = new Map<string, (points: FlatPoint[]) => void>();
 	const pendingInitBarriers = new Map<string, (valid: boolean) => void>();
@@ -132,6 +132,23 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const renderedSceneOperations = new Set<string>();
 	const pendingIncrements = new Map<string, PendingIncrement>();
 
+	const settlePendingRequests = () => {
+		for (const callback of pendingInitBarriers.values()) callback(false);
+		for (const callback of pendingRequests.values()) callback([]);
+		for (const callback of pendingCommandPointRequests.values()) callback([]);
+		for (const callback of pendingEraseTargetRequests.values()) callback([]);
+		for (const callback of pendingSceneHitRequests.values()) callback({ elementId: null, bounds: null });
+		for (const callback of pendingSceneQueryRequests.values()) callback({ elementIds: [], bounds: null });
+		for (const callback of pendingSceneOperationRenders.values()) callback();
+		pendingInitBarriers.clear();
+		pendingRequests.clear();
+		pendingCommandPointRequests.clear();
+		pendingEraseTargetRequests.clear();
+		pendingSceneHitRequests.clear();
+		pendingSceneQueryRequests.clear();
+		pendingSceneOperationRenders.clear();
+	};
+
 	const cancelPendingMainCanvasRequest = () => {
 		pendingMainCanvasRequest = null;
 		if (pendingMainCanvasRafId !== null) {
@@ -142,10 +159,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 
 	const cancelPendingIncrementFlush = () => {
 		pendingIncrements.clear();
-		if (pendingIncrementFlushRafId !== null) {
-			cancelAnimationFrame(pendingIncrementFlushRafId);
-			pendingIncrementFlushRafId = null;
-		}
+		pendingIncrementFlushScheduled = false;
 	};
 
 	const flushMainCanvasRequest = () => {
@@ -182,7 +196,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const flushIncrementalCommands = () => {
-		pendingIncrementFlushRafId = null;
+		pendingIncrementFlushScheduled = false;
 		if (!worker || !offscreenEnabled || pendingIncrements.size === 0) return;
 
 		const batch = Array.from(pendingIncrements.values()).map((entry) => ({
@@ -203,8 +217,11 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const scheduleIncrementFlush = () => {
-		if (pendingIncrementFlushRafId !== null) return;
-		pendingIncrementFlushRafId = requestAnimationFrame(flushIncrementalCommands);
+		if (pendingIncrementFlushScheduled) return;
+		pendingIncrementFlushScheduled = true;
+		queueMicrotask(() => {
+			if (pendingIncrementFlushScheduled) flushIncrementalCommands();
+		});
 	};
 
 	const queueIncrementalCommand = (
@@ -239,6 +256,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		worker = new Worker(new URL("../workers/canvasWorker.ts", import.meta.url), {
 			type: "module",
 		});
+		const activeWorker = worker;
 
 		// Workers cannot see the harness-injected `window.__AEVIA_LAB__`; tell the
 		// worker once whether lab mode is on. Message order guarantees this lands
@@ -248,14 +266,15 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 		}
 
 		const handleWorkerFailure = () => {
-			for (const callback of pendingInitBarriers.values()) callback(false);
-			pendingInitBarriers.clear();
+			if (worker !== activeWorker) return;
+			settlePendingRequests();
 			options.onWorkerFailure?.();
 		};
 		worker.onerror = handleWorkerFailure;
 		worker.onmessageerror = handleWorkerFailure;
 
 		worker.onmessage = (event) => {
+			if (worker !== activeWorker) return;
 			const { type, points, rects, requestId, commands, targets, elementId, elementIds, bounds, opId } = event.data;
 			if (type === "scene-resync-required") { options.onSceneResyncRequired?.(); return; }
 			if (type === "init-scene-barrier-result") {
@@ -577,7 +596,6 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const syncCommandState = (cmd: Command) => {
 		if (!worker || !offscreenEnabled) return;
 		if (cmd.sceneOperation?.kind === "history.toggle" && pendingIncrements.size > 0) {
-			if (pendingIncrementFlushRafId !== null) cancelAnimationFrame(pendingIncrementFlushRafId);
 			flushIncrementalCommands();
 		}
 		worker.postMessage({
@@ -713,15 +731,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const dispose = () => {
-		for (const callback of pendingInitBarriers.values()) callback(false);
-		pendingInitBarriers.clear();
-		pendingRequests.clear();
-		pendingCommandPointRequests.clear();
-		pendingEraseTargetRequests.clear();
-		pendingSceneHitRequests.clear();
-		pendingSceneQueryRequests.clear();
-		for (const callback of pendingSceneOperationRenders.values()) callback();
-		pendingSceneOperationRenders.clear();
+		settlePendingRequests();
 		renderedSceneOperations.clear();
 		cancelPendingMainCanvasRequest();
 		cancelPendingIncrementFlush();

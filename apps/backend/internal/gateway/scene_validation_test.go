@@ -60,6 +60,25 @@ func TestValidateSceneCommandAcceptsV2Create(t *testing.T) {
 	}
 }
 
+func TestValidateStickerAssets(t *testing.T) {
+	payload := map[string]any{"descriptor": map[string]any{
+		"elementKind": "sticker", "toolId": "sticker", "recipeId": "bitmap",
+		"style": map[string]any{"color": "#000", "size": float64(4)}, "sticker": "✨",
+	}}
+	if code, _, ok := validateScenePayload("element.create", payload); !ok {
+		t.Fatalf("legacy sticker rejected: %s", code)
+	}
+	descriptor := payload["descriptor"].(map[string]any)
+	descriptor["asset"] = map[string]any{"key": "emoji/sparkles", "version": float64(1)}
+	if code, _, ok := validateScenePayload("element.create", payload); !ok {
+		t.Fatalf("known asset rejected: %s", code)
+	}
+	descriptor["asset"] = map[string]any{"key": "unknown", "version": float64(1)}
+	if code, _, ok := validateScenePayload("element.create", payload); ok || code != "UNSUPPORTED_ASSET" {
+		t.Fatalf("unknown asset: %s %v", code, ok)
+	}
+}
+
 func TestSceneOperationIDCharacterSet(t *testing.T) {
 	for _, id := range []string{"op-1", "element_1:initial:0", "page:0"} {
 		if !validID(id) {

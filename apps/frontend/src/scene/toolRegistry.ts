@@ -57,7 +57,7 @@ export const createBuiltinToolRegistry = () => {
 		{ id: "pencil", label: "铅笔", inputMode: "freehand", elementKind: "path", recipeId: "stroke", defaultStyle: { opacity: 0.78 } },
 		{ id: "highlighter", label: "荧光笔", inputMode: "freehand", elementKind: "path", recipeId: "stroke", defaultStyle: { opacity: 0.32 } },
 		{ id: "eraser", label: "路径橡皮", inputMode: "eraser" },
-		{ id: "object-eraser", label: "对象橡皮", inputMode: "eraser" },
+		{ id: "object-eraser", label: "对象擦除", inputMode: "eraser" },
 		{ id: "line", label: "直线", inputMode: "shape", elementKind: "shape", recipeId: "shape", shapeKind: "line" },
 		{ id: "arrow", label: "箭头", inputMode: "shape", elementKind: "shape", recipeId: "shape", shapeKind: "arrow" },
 		{ id: "rectangle", label: "矩形", inputMode: "shape", elementKind: "shape", recipeId: "shape", shapeKind: "rectangle" },

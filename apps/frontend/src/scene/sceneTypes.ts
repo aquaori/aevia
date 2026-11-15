@@ -13,6 +13,7 @@ export type SceneRect = AabbBox;
 
 export interface RenderAtomBase {
 	ref: number;
+	generation?: number;
 	atomId: string;
 	elementId: string;
 	elementRevision: number;

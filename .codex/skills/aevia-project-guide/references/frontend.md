@@ -46,12 +46,14 @@ Canonical scene core:
 
 - `scene/sceneCore.ts`: browser-independent operation folding, primitive compilation, history, transforms, erasure, hit testing and spatial queries. Text measurement is injected by the host.
 - `scene/sceneEngine.ts`: Canvas adapter over `SceneCore`, used by the worker and fallback paths; it supplies browser text measurement and retains the existing rendering API.
-- `scene/renderIR.ts`: detached, ordered render frames and revision-checked full-to-delta reconstruction. Canvas rendering still uses the existing direct adapter; the IR is not yet the renderer's sole input.
+- `scene/renderIR.ts`: detached ordered render frames and revision-checked full-to-delta reconstruction, with old/new dirty bounds. `scene/canvasIRRenderer.ts` consumes these render items; the live adapter feeds it visible items without cloning the entire scene on every redraw. `scene/renderIRCodec.ts` frames full/delta payloads with version, length, little-endian header and corruption check; the payload remains JSON and is not yet the worker transport.
+- Render IR atom handles carry an engine epoch and generation, survive index compaction, and cannot resolve after a reset/recreation. Handle resolution is currently linear; do not use it as a hot-path spatial index.
 - `scene/renderOrderIndex.ts`: block-ordered atom references used by full replay.
 - `scene/spatialGridIndex.ts`: 32×32 coarse grid over bounded geometry chunks.
 - `scene/dirtyRegionSet.ts`: up to eight disjoint regions, full-render thresholds, and enter/exit hysteresis.
 - `scene/primitiveRenderer.ts`: the only Canvas2D recipe executor for stroke, shape, glyph, and bitmap atoms.
 - `scene/toolRegistry.ts`: declarative built-in tools and their public primitive mappings.
+- `scene/stickerAssets.ts`: versioned built-in sticker keys; new operations retain the legacy Emoji value so old rooms and clients remain readable. Backend asset validation must stay in sync.
 
 Preferred worker path:
 
@@ -69,6 +71,8 @@ Main-thread/fallback and scheduling:
 - `service/commandDirtyRect.ts`
 
 Worker and fallback paths both use `SceneEngine`; do not add a second tool-specific renderer or command scan. Dirty-rect changes should usually inspect `sceneEngine.ts`, `spatialGridIndex.ts`, `dirtyRegionSet.ts`, `dirtyRenderQueue.ts`, `canvasWorker.ts`, and `canvas.ts` together.
+
+The render worker bridge forwards queued legacy stroke increments in a microtask rather than depending on animation frames, settles pending queries when the worker fails or is disposed, and ignores replies from a replaced worker.
 
 New drawing writes are immutable `element.create`/`element.append` scene operations. Stroke rendering compiles midpoint-based quadratic atoms once as points enter the scene, and `isComplete` commits the stable tail atom. `cmd-start/update/stop` remains only in V1 read/rejection compatibility code and must not be used for a new write path.
 

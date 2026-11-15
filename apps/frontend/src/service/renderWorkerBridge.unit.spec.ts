@@ -61,6 +61,36 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("settles pending queries when the worker is disposed", async () => {
+		vi.stubGlobal("Worker", class { postMessage() {} terminate() {} });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const hit = bridge.requestSceneHit(10, 20);
+			bridge.dispose();
+			expect(await hit).toEqual({ elementId: null, bounds: null });
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
+	it("forwards queued stroke data when animation frames do not run", async () => {
+		const messages: string[] = [];
+		vi.stubGlobal("requestAnimationFrame", () => 1);
+		vi.stubGlobal("Worker", class {
+			postMessage(message: { type: string }) { messages.push(message.type); }
+			terminate() {}
+		});
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 100, height: 100, dpr: 1 });
+			const point = { x: 0.1, y: 0.2, p: 0.5, lamport: 1 };
+			bridge.renderIncrementalCommand(command([point]), [point], 0);
+			await Promise.resolve();
+			expect(messages).toContain("render-increment-batch");
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
+
 	it("waits for the worker to confirm snapshot processing", async () => {
 		let instance: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId: string } }[] };
 		vi.stubGlobal("Worker", class {

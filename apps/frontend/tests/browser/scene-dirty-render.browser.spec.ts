@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SceneOperationEnvelopeV2 } from "@collaborative-whiteboard/shared";
 import { SceneEngine } from "../../src/scene/sceneEngine";
+import { renderIRFrame } from "../../src/scene/canvasIRRenderer";
 import { drawPrimitive } from "../../src/scene/primitiveRenderer";
 import type { ShapeAtom } from "../../src/scene/sceneTypes";
 import { IDENTITY_MATRIX } from "@collaborative-whiteboard/shared";
@@ -107,6 +108,16 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("renders a detached IR frame identically to the live scene", () => {
+		const engine = new SceneEngine();
+		for (const operation of operations) engine.applyOperation(operation);
+		engine.applyOperation(transform);
+		const live = createCanvasContext();
+		const detached = createCanvasContext();
+		engine.renderFull(live, WIDTH, HEIGHT);
+		renderIRFrame(detached, engine.getRenderIR(), WIDTH, HEIGHT);
+		expect(detached.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(live.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
 	it("renders a sticky note independently of the selected pen width", () => {
 		const box = { minX: 0.2, minY: 0.2, maxX: 0.8, maxY: 0.8, width: 0.6, height: 0.6 };
 		const atom: ShapeAtom = {
