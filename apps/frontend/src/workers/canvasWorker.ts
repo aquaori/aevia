@@ -366,15 +366,58 @@ const renderFullScene = () => {
 	return paintedRefs;
 };
 
-const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[]) => {
+function* renderFullSceneSteps(): Generator<void> {
+	if (!mainCtx || !offscreenCanvas) return;
+	const staging = new OffscreenCanvas(offscreenCanvas.width, offscreenCanvas.height);
+	const stagingCtx = staging.getContext("2d");
+	if (!stagingCtx) { renderFullScene(); return; }
+	stagingCtx.scale(viewport.dpr, viewport.dpr);
+	stagingCtx.lineCap = "round";
+	stagingCtx.lineJoin = "round";
+	const paintedRefs = yield* sceneEngine.renderFullSteps(stagingCtx, viewport.width, viewport.height, currentTransformingIds);
+	mainCtx.save();
+	mainCtx.setTransform(1, 0, 0, 1, 0, 0);
+	mainCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+	mainCtx.drawImage(staging, 0, 0);
+	mainCtx.restore();
+	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
+	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+}
+
+const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[], renderAfter: boolean) => {
 	sceneCommands.clear();
 	activeStrokeIds.clear();
-	commands.forEach((cmd) => {
-		sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
-	});
 	currentPageId = pageId;
 	currentTransformingIds = new Set(transformingCmdIds);
-	sceneEngine.rebuildFromCommands(commands, pageId);
+	let metadataIndex = 0;
+	const steps = sceneEngine.rebuildFromCommandsSteps(commands, pageId);
+	let rebuildComplete = false;
+	let renderSteps: Generator<void> | null = null;
+	const runSlice = () => {
+		const deadline = performance.now() + 6;
+		while (performance.now() < deadline) {
+			if (metadataIndex < commands.length) {
+				const end = Math.min(metadataIndex + 128, commands.length);
+				while (metadataIndex < end) {
+					const cmd = commands[metadataIndex++]!;
+					sceneCommands.set(cmd.id, cloneCommandMetadata(cmd));
+				}
+				continue;
+			}
+			if (!rebuildComplete) {
+				if (!steps.next().done) continue;
+				rebuildComplete = true;
+				if (renderAfter) renderSteps = renderFullSceneSteps();
+			}
+			if (renderSteps && !renderSteps.next().done) continue;
+			sceneTaskInProgress = false;
+			drainDeferredMessages();
+			return;
+		}
+		sceneTaskInProgress = true;
+		setTimeout(runSlice, 0);
+	};
+	runSlice();
 };
 
 const appendInitScenePoint = (
@@ -502,6 +545,7 @@ const applyPendingInitSceneOperations = () => {
 	let index = 0;
 	let sorted = false;
 	let operationSteps: Generator<void, string[]> | null = null;
+	let renderSteps: Generator<void> | null = null;
 	const runSlice = () => {
 		const deadline = performance.now() + 6;
 		while (index < commands.length) {
@@ -531,9 +575,18 @@ const applyPendingInitSceneOperations = () => {
 			setTimeout(runSlice, 0);
 			return;
 		}
+		if (needsFullRender) {
+			renderSteps ??= renderFullSceneSteps();
+			while (!renderSteps.next().done) {
+				if (performance.now() >= deadline) {
+					sceneTaskInProgress = true;
+					setTimeout(runSlice, 0);
+					return;
+				}
+			}
+		}
 		if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
 		checkSceneDependencies();
-		if (needsFullRender) renderFullScene();
 		sceneTaskInProgress = false;
 		drainDeferredMessages();
 	};
@@ -601,7 +654,7 @@ function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<v
 	if (!mainCtx || operation.pageId !== currentPageId) return false;
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
 		flushSceneRender();
-		renderFullScene();
+		yield* renderFullSceneSteps();
 		return true;
 	}
 	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
@@ -743,8 +796,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "render-full") {
-		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
-		renderFullScene();
+		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds, true);
 		return;
 	}
 
@@ -867,7 +919,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	if (type === "sync-scene") {
 		exportedRenderFrame = null;
 		exportedRenderEpoch = -1;
-		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds);
+		syncSceneCommands(data.commands as Command[], data.pageId, data.transformingCmdIds, false);
 		return;
 	}
 

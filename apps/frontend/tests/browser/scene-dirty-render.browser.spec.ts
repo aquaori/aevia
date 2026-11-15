@@ -108,6 +108,20 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("renders a sliced full frame identically to the synchronous renderer", () => {
+		const engine = new SceneEngine();
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		engine.applyOperation({ ...stroke, payload: { ...stroke.payload, points: Array.from({ length: 600 }, (_, i) => ({ x: 0.05 + i / 700, y: 0.5 + Math.sin(i / 40) * 0.1, p: 0.5, lamport: i + 2 })) } });
+		const expected = createCanvasContext();
+		const sliced = createCanvasContext();
+		engine.renderFull(expected, WIDTH, HEIGHT);
+		const steps = engine.renderFullSteps(sliced, WIDTH, HEIGHT);
+		let count = 0;
+		while (!steps.next().done) count += 1;
+		expect(count).toBeGreaterThan(1);
+		expect(sliced.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(expected.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
 	it("keeps existing thick strokes intact across repeated narrow dirty redraws", () => {
 		const engine = new SceneEngine();
 		const stroke = operations[1]!;

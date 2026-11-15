@@ -3,6 +3,7 @@ import type { AabbBox, AffineMatrix } from "@collaborative-whiteboard/shared";
 import { renderIRItems } from "./canvasIRRenderer";
 import { SceneCore } from "./sceneCore";
 import type { DirtyRenderMetrics } from "./sceneTypes";
+import type { RenderIRItem } from "./renderIR";
 
 type DrawingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 const DIRTY_PADDING = 20;
@@ -33,6 +34,37 @@ export class SceneEngine extends SceneCore {
 		const refs: number[] = [];
 		this.order.forEach((ref) => refs.push(ref));
 		return this.renderAtomRefs(ctx, refs, logicalWidth, logicalHeight, excludedElementIds);
+	}
+
+	*renderFullSteps(ctx: DrawingContext, logicalWidth: number, logicalHeight: number, excludedElementIds: ReadonlySet<string> = new Set()): Generator<void, number> {
+		this.clearContext(ctx, logicalWidth, logicalHeight);
+		let rendered = 0;
+		let refs: number[] = [];
+		let batch: RenderIRItem[] = [];
+		const flush = () => {
+			rendered += renderIRItems(ctx, batch, logicalWidth, logicalHeight);
+			batch = [];
+		};
+		for (const ref of this.order.refs()) {
+			refs.push(ref);
+			if (refs.length < 256) continue;
+			for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
+				const last = batch[batch.length - 1];
+				const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
+				if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
+				batch.push(item);
+			}
+			refs = [];
+			yield;
+		}
+		for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
+			const last = batch[batch.length - 1];
+			const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
+			if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
+			batch.push(item);
+		}
+		if (batch.length) flush();
+		return rendered;
 	}
 
 	renderAtomRefs(

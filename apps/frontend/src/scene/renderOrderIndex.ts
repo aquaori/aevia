@@ -59,6 +59,10 @@ export class RenderOrderIndex {
 		}
 	}
 
+	*refs(): IterableIterator<number> {
+		for (const block of this.blocks) yield* block;
+	}
+
 	toArray() {
 		const result: number[] = [];
 		this.forEach((ref) => result.push(ref));
