@@ -4,9 +4,15 @@ import { createRoomCollabTransport } from "./roomCollabTransport";
 
 const dispatcherState = vi.hoisted(() => ({ onSnapshot: (_version: number) => {} }));
 const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }));
+const pendingMock = vi.hoisted(() => new Map<string, unknown>());
 vi.mock("./roomSessionContext", () => ({ useRoomSessionEmitHook: () => () => {} }));
 vi.mock("vue-sonner", () => ({ toast: toastMock }));
 vi.mock("./sessionApi", () => ({ requestWebsocketTicket: vi.fn(async () => "ticket"), renewRoomSession: vi.fn() }));
+vi.mock("./pendingSceneStore", () => ({ PendingSceneStore: { open: async () => ({
+	load: async () => [...pendingMock.entries()],
+	put: async (id: string, value: unknown) => { pendingMock.set(id, value); },
+	delete: async (id: string) => { pendingMock.delete(id); },
+}) } }));
 vi.mock("./collabMessageDispatcher", () => ({
 	createCollabMessageDispatcher: (options: { onInitSnapshotCommitted: (version: number) => void }) => {
 		dispatcherState.onSnapshot = options.onInitSnapshotCommitted;
@@ -31,19 +37,46 @@ class FakeSocket {
 	receive(type: string, data: object) { this.onmessage?.({ data: JSON.stringify({ type, data }) }); }
 }
 
-const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer?: () => Promise<boolean>, applyLoadedPageDelta = vi.fn()) => createRoomCollabTransport({
-	token: ref("token"), sessionExpiresAt: ref(Date.now() + 3600000), userId: ref("user"), roomId: ref("room"),
+const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer?: () => Promise<boolean>, applyLoadedPageDelta = vi.fn(), activePageRequest?: () => number | null) => createRoomCollabTransport({
+	token: ref(`header.${btoa(JSON.stringify({ roomId: "room", roomCreatedAt: 1, userId: "user" }))}.signature`), sessionExpiresAt: ref(Date.now() + 3600000), userId: ref("user"), roomId: ref("room"),
 	username: ref("user"), roomName: ref("room"), onlineCount: ref(1), totalPages: ref(1), loadedPageIds: ref([0]),
 	currentPageId: ref(0), currentTool: ref("pen"), reconnectFailed: ref(false), reconnectFailureMessage: ref(""),
 	commands: ref([]), currentCommandIndex: ref(-1), pendingUpdates: ref(new Map()), commandMap: new Map(),
 	memberList: ref([]), remoteCursors: ref(new Map()), remoteSelectionRects: ref(new Map()),
 	renderCanvas: vi.fn(), goToPage: vi.fn(), applyRemotePageChange: vi.fn(), setTool: vi.fn(),
 	insertCommand: vi.fn(), removeCommand: vi.fn(() => null), replaceLoadedPageWindow: vi.fn(),
-	applyLoadedPageDelta, clearClearedCommands: vi.fn(() => false), confirmInitScene, recoverRenderer,
+	applyLoadedPageDelta, clearClearedCommands: vi.fn(() => false), confirmInitScene, recoverRenderer, getActivePageChangeRequestId: activePageRequest,
 });
 
 describe("snapshot recovery cursor", () => {
-	afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeSocket.instances = []; window.history.replaceState({}, "", "/"); vi.clearAllMocks(); });
+	afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeSocket.instances = []; pendingMock.clear(); window.history.replaceState({}, "", "/"); vi.clearAllMocks(); });
+
+	it("checks the worker only after the active page snapshot completes", async () => {
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const confirm = vi.fn(async () => true);
+		const transport = makeTransport(confirm, undefined, vi.fn(), () => 17);
+		await transport.connect();
+		const connection = FakeSocket.instances[0]!;
+		connection.receive("page-change-complete", { requestId: 16 });
+		expect(confirm).not.toHaveBeenCalled();
+		connection.receive("page-change-complete", { requestId: 17 });
+		expect(confirm).toHaveBeenCalledOnce();
+		transport.disconnect();
+	});
+
+	it("restores a previously unconfirmed operation and removes it after acknowledgement", async () => {
+		vi.stubGlobal("WebSocket", FakeSocket);
+		pendingMock.set("op-old", { cmd: { id: "op-old", type: "scene-op", pageId: 1, sceneOperation: { opId: "op-old" } } });
+		const transport = makeTransport(() => Promise.resolve(true));
+		await transport.connect();
+		const connection = FakeSocket.instances[0]!;
+		connection.receive("init-meta", { snapshotVersion: 42 });
+		dispatcherState.onSnapshot(42);
+		await vi.waitFor(() => expect(connection.sent.some((message) => message.includes('"op-old"'))).toBe(true));
+		connection.receive("ack.accepted", { opId: "op-old" });
+		await vi.waitFor(() => expect(pendingMock.has("op-old")).toBe(false));
+		transport.disconnect();
+	});
 
 	it("requests pre-clear history after scene confirmation and merges it only after completion", async () => {
 		vi.stubGlobal("WebSocket", FakeSocket);
@@ -115,7 +148,7 @@ describe("snapshot recovery cursor", () => {
 		second.receive("init-meta", { snapshotVersion: 43 });
 		dispatcherState.onSnapshot(43);
 		await Promise.resolve();
-		expect(second.sent.some((message) => message.includes('"op-1"'))).toBe(true);
+		await vi.waitFor(() => expect(second.sent.some((message) => message.includes('"op-1"'))).toBe(true));
 		transport.disconnect();
 	});
 

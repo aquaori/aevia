@@ -7,14 +7,15 @@ import (
 )
 
 type State struct {
-	Room        domain.Room
-	Commands    map[string]domain.Command
-	Index       *PagePointIndex
-	Clients     map[ClientID]ClientInfo
-	RoomSeq     uint64
-	ReadOnly    bool
-	Deltas      *DeltaBuffer
-	ClearBefore map[int]sceneOrderKey
+	Room               domain.Room
+	Commands           map[string]domain.Command
+	Index              *PagePointIndex
+	Clients            map[ClientID]ClientInfo
+	RoomSeq            uint64
+	ReadOnly           bool
+	Deltas             *DeltaBuffer
+	ClearBefore        map[int]sceneOrderKey
+	historyGroupOwners map[string]map[string]int
 }
 
 type sceneOrderKey struct {
@@ -58,13 +59,17 @@ func NewState(room domain.Room, commands []domain.Command) State {
 		commandMap[cmd.ID()] = cmd
 	}
 	state := State{
-		Room:        room,
-		Commands:    commandMap,
-		Index:       NewPagePointIndex(commands),
-		Clients:     make(map[ClientID]ClientInfo),
-		RoomSeq:     room.DurableSeq,
-		Deltas:      NewDeltaBuffer(30*time.Second, 64*1024*1024),
-		ClearBefore: make(map[int]sceneOrderKey),
+		Room:               room,
+		Commands:           commandMap,
+		Index:              NewPagePointIndex(commands),
+		Clients:            make(map[ClientID]ClientInfo),
+		RoomSeq:            room.DurableSeq,
+		Deltas:             NewDeltaBuffer(30*time.Second, 64*1024*1024),
+		ClearBefore:        make(map[int]sceneOrderKey),
+		historyGroupOwners: make(map[string]map[string]int),
+	}
+	for _, cmd := range commandMap {
+		state.trackHistoryGroup(cmd, 1)
 	}
 	state.rebuildClearWatermarks()
 	return state
@@ -82,10 +87,42 @@ func (s *State) NextRoomSeq() uint64 {
 
 func (s *State) UpsertCommand(cmd domain.Command) {
 	stored := cmd.Snapshot()
+	if previous, exists := s.Commands[stored.ID()]; exists {
+		s.trackHistoryGroup(previous, -1)
+	}
 	s.Commands[stored.ID()] = stored
+	s.trackHistoryGroup(stored, 1)
 	s.Index.Upsert(stored)
 	if s.affectsClearWatermark(stored) {
 		s.rebuildClearWatermarks()
+	}
+}
+
+// History groups are shared by the scene across pages, so ownership is room-wide.
+// A mixed historical group is kept as mixed and cannot be toggled by either user.
+func (s *State) trackHistoryGroup(cmd domain.Command, delta int) {
+	op := sceneOperation(cmd)
+	if len(op) == 0 || domain.String(op["kind"]) == "history.toggle" {
+		return
+	}
+	group, user := domain.String(op["historyGroupId"]), cmd.UserID()
+	if group == "" || user == "" {
+		return
+	}
+	if s.historyGroupOwners == nil {
+		s.historyGroupOwners = make(map[string]map[string]int)
+	}
+	owners := s.historyGroupOwners[group]
+	if owners == nil {
+		owners = make(map[string]int)
+		s.historyGroupOwners[group] = owners
+	}
+	owners[user] += delta
+	if owners[user] <= 0 {
+		delete(owners, user)
+	}
+	if len(owners) == 0 {
+		delete(s.historyGroupOwners, group)
 	}
 }
 
@@ -151,6 +188,7 @@ func (s *State) DeleteCommand(cmdID string) bool {
 		return false
 	}
 	delete(s.Commands, cmdID)
+	s.trackHistoryGroup(command, -1)
 	s.Index.Remove(cmdID)
 	if s.affectsClearWatermark(command) {
 		s.rebuildClearWatermarks()
@@ -186,6 +224,7 @@ func (s *State) affectsClearWatermark(cmd domain.Command) bool {
 func (s *State) Clear(pageID *int) {
 	if pageID == nil {
 		s.Commands = make(map[string]domain.Command)
+		s.historyGroupOwners = make(map[string]map[string]int)
 		s.Index.ClearAll()
 		s.ClearBefore = make(map[int]sceneOrderKey)
 		return
@@ -193,6 +232,7 @@ func (s *State) Clear(pageID *int) {
 	for cmdID, cmd := range s.Commands {
 		if cmdPageID, ok := cmd.PageID(); ok && cmdPageID == *pageID {
 			delete(s.Commands, cmdID)
+			s.trackHistoryGroup(cmd, -1)
 		}
 	}
 	s.Index.ClearPage(*pageID)

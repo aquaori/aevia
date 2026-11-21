@@ -62,13 +62,20 @@ func (a *Actor) loadPageHistory(client ClientInfo, data map[string]any) {
 	}
 	watermark, cleared := a.state.ClearBefore[page]
 	if !cleared {
-		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "page-history-meta", Data: map[string]any{"requestId": requestID, "pageId": page, "snapshotVersion": a.state.RoomSeq, "resumed": false}}})
-		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "page-history-complete", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+		version := a.state.RoomSeq
+		go func() {
+			sender := &streamSender{out: client.Send, abort: client.Abort, done: client.Done, wait: true}
+			sendStreamOutbound(sender, Outbound{JSON: Envelope{Type: "page-history-meta", Data: map[string]any{"requestId": requestID, "pageId": page, "snapshotVersion": version, "resumed": false}}})
+			sendStreamOutbound(sender, Outbound{JSON: Envelope{Type: "page-history-complete", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+		}()
 		return
 	}
 	snapshot, ctx, cancel, err := a.pinSnapshotFor(2 * time.Minute)
 	if err != nil {
-		sendOutbound(client.Send, Outbound{JSON: Envelope{Type: "page-history-failed", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+		go func() {
+			sender := &streamSender{out: client.Send, abort: client.Abort, done: client.Done, wait: true}
+			sendStreamOutbound(sender, Outbound{JSON: Envelope{Type: "page-history-failed", Data: map[string]any{"requestId": requestID, "pageId": page}}})
+		}()
 		return
 	}
 	hidden := hiddenClearedPaths(a.state.Commands, map[int]sceneOrderKey{page: watermark})
@@ -124,6 +131,9 @@ var ErrActorStopped = errors.New("room actor stopped")
 // ErrActorBusy is returned when the reliable inbox is saturated.
 var ErrActorBusy = errors.New("room actor busy")
 
+// ErrRoomAccessRevoked rejects a join whose authorization changed while queued.
+var ErrRoomAccessRevoked = errors.New("room access revoked")
+
 type Actor struct {
 	roomID              string
 	store               *storage.Store
@@ -133,6 +143,9 @@ type Actor struct {
 	realtimeWake        chan struct{}
 	realtimeMu          sync.Mutex
 	pendingRealtime     map[string]clientEventMessage
+	noticeMu            sync.Mutex
+	notices             []notifyUserMessage
+	noticeWake          chan struct{}
 	done                chan struct{}
 	release             func(*Actor)
 	writeFailures       chan error
@@ -172,6 +185,7 @@ func NewActor(ctx context.Context, store *storage.Store, cfg config.Config, room
 		realtime:        make(chan actorMessage, cfg.RoomRealtimeQueue),
 		realtimeWake:    make(chan struct{}, 1),
 		pendingRealtime: make(map[string]clientEventMessage),
+		noticeWake:      make(chan struct{}, 1),
 		done:            make(chan struct{}),
 		release:         release,
 		writeFailures:   make(chan error, 1),
@@ -218,7 +232,7 @@ func (a *Actor) Join(client ClientInfo, pageID int, lastRoomSeq uint64) (JoinRes
 	}
 	select {
 	case result := <-reply:
-		return result, nil
+		return result, result.err
 	case <-a.done:
 		return JoinResult{}, ErrActorStopped
 	}
@@ -229,7 +243,29 @@ func (a *Actor) Leave(clientID ClientID) {
 }
 
 func (a *Actor) NotifyUser(userID, typ, role string, close bool) error {
-	return a.sendReliable(notifyUserMessage{UserID: userID, Type: typ, Role: role, Close: close})
+	select {
+	case <-a.done:
+		return ErrActorStopped
+	default:
+	}
+	a.noticeMu.Lock()
+	a.notices = append(a.notices, notifyUserMessage{UserID: userID, Type: typ, Role: role, Close: close})
+	a.noticeMu.Unlock()
+	select {
+	case a.noticeWake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (a *Actor) drainNotices() {
+	a.noticeMu.Lock()
+	notices := a.notices
+	a.notices = nil
+	a.noticeMu.Unlock()
+	for _, notice := range notices {
+		a.handle(notice)
+	}
 }
 
 func (a *Actor) Event(clientID ClientID, typ string, data map[string]any, binary bool) error {
@@ -326,16 +362,21 @@ func (a *Actor) loop() {
 	for {
 		select {
 		case msg := <-a.inbox:
+			a.drainNotices()
 			if a.handle(msg) {
 				return
 			}
 			resetTimer(idleTimer, actorIdleTimeout)
 		case msg := <-a.realtime:
+			a.drainNotices()
 			if a.handle(msg) {
 				return
 			}
 		case <-a.realtimeWake:
+			a.drainNotices()
 			a.flushMergedRealtime()
+		case <-a.noticeWake:
+			a.drainNotices()
 		case err := <-a.writeFailures:
 			a.enterReadOnly("asynchronous persist failed", err)
 		case <-idleTimer.C:
@@ -464,6 +505,24 @@ func drainOutbound(ch chan Outbound) {
 
 func (a *Actor) handleJoin(msg joinMessage) {
 	client := msg.Client
+	currentRole := ""
+	if client.Done != nil {
+		if client.Account {
+			role, banned, err := a.store.MemberRole(context.Background(), a.roomID, client.UserID)
+			if err != nil || banned || role == "" {
+				msg.Reply <- JoinResult{err: ErrRoomAccessRevoked}
+				return
+			}
+			currentRole = role
+		} else {
+			role, kicked, err := a.store.GuestRole(context.Background(), a.roomID, client.UserID)
+			if err != nil || kicked {
+				msg.Reply <- JoinResult{err: ErrRoomAccessRevoked}
+				return
+			}
+			currentRole = role
+		}
+	}
 	if client.Account {
 		for id, existing := range a.state.Clients {
 			if existing.Account && existing.UserID == client.UserID {
@@ -500,6 +559,20 @@ func (a *Actor) handleJoin(msg joinMessage) {
 			}
 		}
 		out := client.Send
+		if !sendOutbound(out, Outbound{JSON: Envelope{Type: "role.current", Data: map[string]any{"role": currentRole}}}) {
+			if snapshot != nil {
+				snapshot.Close()
+				cancel()
+				<-snapshotSlots
+			}
+			if client.Abort != nil {
+				client.Abort()
+			}
+			result.InitStreamed = true
+			msg.Reply <- result
+			delete(a.state.Clients, client.ID)
+			return
+		}
 		live := make(chan Outbound, cap(out))
 		client.Send = live
 		a.state.Clients[client.ID] = client

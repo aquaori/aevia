@@ -540,7 +540,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			}
 			if (normalizedCommands.length > 0) {
 				initStreamState.commandsBuffer.push(...normalizedCommands);
-				options.setInitSceneOperations?.(normalizedCommands, initStreamState.currentPageId);
 			}
 		}
 	};

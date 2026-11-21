@@ -496,6 +496,23 @@ describe("SceneEngine", () => {
 		);
 	});
 
+	it("keeps an unchanged prefix when a middle text edit replaces the suffix", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation({ ...base("text-create", 1), elementId: "text-prefix", kind: "element.create", payload: { descriptor: {
+			elementKind: "text", toolId: "text", recipeId: "glyph", style: { color: "#000", size: 2 },
+			box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 }, text: "ABC",
+		} } });
+		engine.applyOperation({ ...base("text-edit", 2), elementId: "text-prefix", kind: "text.patch", payload: { patches: [
+			{ type: "delete", charId: "text-prefix:initial:1" }, { type: "delete", charId: "text-prefix:initial:2" },
+			{ type: "insert", charId: "new-x", afterId: "text-prefix:initial:0", grapheme: "x" },
+			{ type: "insert", charId: "new-b", afterId: "new-x", grapheme: "B" },
+			{ type: "insert", charId: "new-c", afterId: "new-b", grapheme: "C" },
+		] } });
+		const characters = engine.getTextEditorState("text-prefix")!.characters;
+		expect(characters.map((character) => character.grapheme).join("")).toBe("AxBC");
+		expect(characters[0]!.charId).toBe("text-prefix:initial:0");
+	});
+
 	it("applies and undoes immutable text style operations", () => {
 		const engine = new SceneEngine();
 		engine.applyOperation({

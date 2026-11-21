@@ -88,11 +88,12 @@ let processedDispatchSeq = 0;
 let projectionGeneration = 0;
 const taskScheduler = new WorkerTaskScheduler();
 let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
+let sceneSnapshotPending = false;
 const checkSceneDependencies = () => {
-	if (!sceneEngine.hasPendingDependencies() || dependencyTimer) return;
+	if (sceneSnapshotPending || !sceneEngine.hasPendingDependencies() || dependencyTimer) return;
 	dependencyTimer = setTimeout(() => {
 		dependencyTimer = undefined;
-		if (sceneEngine.hasPendingDependencies()) self.postMessage({ type: "scene-resync-required" });
+		if (sceneEngine.hasPendingDependencies()) self.postMessage({ type: "scene-resync-required", reason: "pending-dependencies" });
 	}, 5000);
 };
 let initRenderFinished = false;
@@ -365,7 +366,7 @@ const renderFullScene = () => {
 		currentTransformingIds
 	);
 	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
-	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
 	return paintedRefs;
 };
 
@@ -384,10 +385,11 @@ function* renderFullSceneSteps(): Generator<void> {
 	mainCtx.drawImage(staging, 0, 0);
 	mainCtx.restore();
 	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
-	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
 }
 
 const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[], renderAfter: boolean) => {
+	const quarantinedIds = sceneEngine.getQuarantinedElementIds();
 	sceneCommands.clear();
 	activeStrokeIds.clear();
 	currentPageId = pageId;
@@ -409,6 +411,7 @@ const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdI
 			if (!rebuildComplete) {
 				if (!steps.next().done) continue;
 				rebuildComplete = true;
+				sceneEngine.quarantineMissingElements(quarantinedIds);
 				if (renderAfter) renderSteps = renderFullSceneSteps();
 			}
 			if (renderSteps && !renderSteps.next().done) continue;
@@ -529,6 +532,7 @@ let sceneTaskInProgress = false;
 const deferredMessages: MessageEvent[] = [];
 let deferredMessageHead = 0;
 let drainingMessages = false;
+let activeSceneBatch: { items: unknown[]; index: number } | null = null;
 
 const applyPendingInitSceneOperations = () => {
 	if (!initRenderFinished || (pendingInitSceneCommands.length === 0 && liveSceneCommandsDuringInit.size === 0)) return;
@@ -558,6 +562,11 @@ const applyPendingInitSceneOperations = () => {
 			if (!operationSteps) {
 				const command = commands[index]!;
 				const operation = command.sceneOperation!;
+				if (sceneEngine.hasOperation(operation.opId)) {
+					index += 1;
+					if (performance.now() >= deadline) break;
+					continue;
+				}
 				if (operation.kind === "element.create") {
 					const hydratedThrough = operation.payload.points?.length ?? 0;
 					if (operation.payload.descriptor.elementKind !== "path" || !sceneEngine.hasHydratedPathRange(operation.elementId, hydratedThrough)) needsFullRender = true;
@@ -586,7 +595,7 @@ const applyPendingInitSceneOperations = () => {
 				}
 			}
 		}
-		if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
+		if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required", reason: "initial-scene-conflict" });
 		checkSceneDependencies();
 		sceneTaskInProgress = false;
 		drainDeferredMessages();
@@ -635,7 +644,7 @@ const flushSceneRender = () => {
 	const regions = pendingSceneDirty;
 	pendingSceneDirty = [];
 	sceneEngine.renderDirtyRegions(mainCtx, regions, viewport.width, viewport.height, currentTransformingIds);
-	if (currentTransformingIds.size === 0 && presentedRevision === pendingSceneBaseRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+	if (currentTransformingIds.size === 0 && presentedRevision === pendingSceneBaseRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
 	pendingSceneBaseRevision = null;
 };
 
@@ -655,7 +664,7 @@ function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<v
 	const oldBounds = appendOnly ? null : elementBounds(ids);
 	const firstNewRef = sceneEngine.atomCount;
 	yield* sceneEngine.applyOperationSteps(operation);
-	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required" });
+	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required", reason: "live-scene-conflict" });
 	checkSceneDependencies();
 	if (!mainCtx || operation.pageId !== currentPageId) return false;
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
@@ -664,7 +673,7 @@ function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<v
 		return true;
 	}
 	if (canPaintNewAtoms && sceneEngine.renderNewPenAtomsOnTop(mainCtx, firstNewRef, previousAtomOrder, viewport.width, viewport.height)) {
-		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
 		return true;
 	}
 	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
@@ -682,7 +691,7 @@ function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<v
 	if (operation.kind === "element.transform") {
 		flushSceneRender();
 		sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, new Set());
-		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies()) presentedRevision = sceneEngine.getSceneRevision();
+		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
 	} else {
 		if (pendingSceneDirty.length === 0) pendingSceneBaseRevision = previousRevision;
 		if (pendingSceneDirty.length < 8) pendingSceneDirty.push(pixelBounds);
@@ -737,17 +746,36 @@ const mergeRects = (rects: Rect[]): Rect[] => {
 };
 
 let sceneBatchRing: SceneBatchRing | null = null;
+let sceneBatchScratch = new Uint8Array(0);
+let sceneBatchDecoder = new TextDecoder();
+let sceneBatchCanDecodeShared = false;
 
 const handleWorkerMessage = (event: MessageEvent) => {
 	const { type, data } = event.data;
 	if (type === "scene-batch-ring-init") {
 		sceneBatchRing = new SceneBatchRing(data.buffer as SharedArrayBuffer);
+		try {
+			sceneBatchDecoder.decode(new Uint8Array(data.buffer as SharedArrayBuffer, 8, 1));
+			sceneBatchCanDecodeShared = true;
+		} catch {
+			sceneBatchCanDecodeShared = false;
+			sceneBatchDecoder = new TextDecoder();
+		}
 		return;
 	}
 	if (type === "scene-batch-ring" || type === "scene-batch-transfer") {
-		const bytes = type === "scene-batch-ring" ? sceneBatchRing!.read(data.length) : new Uint8Array(data.buffer);
-		const batch = JSON.parse(new TextDecoder().decode(bytes)) as unknown[];
-		deferredMessages.splice(deferredMessageHead, 0, ...batch.map(item => new MessageEvent("message", { data: { type: "update-command-state", data: item } })));
+		let text: string | undefined;
+		if (type === "scene-batch-ring" && sceneBatchCanDecodeShared) {
+			try { text = sceneBatchRing!.readText(data.length, sceneBatchDecoder); }
+			catch { sceneBatchCanDecodeShared = false; sceneBatchDecoder = new TextDecoder(); }
+		}
+		if (text === undefined) {
+			if (type === "scene-batch-ring" && sceneBatchScratch.length < data.length) sceneBatchScratch = new Uint8Array(data.length);
+			const bytes = type === "scene-batch-ring" ? sceneBatchRing!.read(data.length, sceneBatchScratch) : new Uint8Array(data.buffer);
+			text = sceneBatchDecoder.decode(bytes);
+		}
+		const batch = JSON.parse(text) as unknown[];
+		if (batch.length > 0) activeSceneBatch = { items: batch, index: 0 };
 		drainDeferredMessages();
 		return;
 	}
@@ -815,6 +843,9 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "begin-init-stream") {
+		sceneSnapshotPending = true;
+		if (dependencyTimer) clearTimeout(dependencyTimer);
+		dependencyTimer = undefined;
 		exportedRenderFrame = null;
 		exportedRenderEpoch = -1;
 		presentedRevision = null;
@@ -846,7 +877,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 		const chunk = data as InitRenderBinaryChunkData;
 		if (!validateInitRenderBinaryChunk(chunk, new DataView(chunk.buffer))) {
 			initStreamValid = false;
-			self.postMessage({ type: "scene-resync-required" });
+			self.postMessage({ type: "scene-resync-required", reason: "invalid-render-chunk" });
 			return;
 		}
 		if (mainCtx && offscreenCanvas) {
@@ -870,7 +901,14 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "init-scene-barrier") {
-		self.postMessage({ type: "init-scene-barrier-result", requestId: data.requestId, valid: initStreamValid && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() });
+		sceneSnapshotPending = false;
+		const missingElementIds = initStreamValid && !sceneEngine.needsResync ? sceneEngine.quarantineMissingElements() : [];
+		const valid = initStreamValid && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies();
+		if (valid) {
+			if (missingElementIds.length > 0) presentedRevision = null;
+			self.postMessage({ type: "scene-history-incomplete", ids: missingElementIds });
+		}
+		self.postMessage({ type: "init-scene-barrier-result", requestId: data.requestId, valid });
 		return;
 	}
 
@@ -1017,7 +1055,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 
 	if (type === "get-render-ir") {
 		const epoch = Number(data.epoch);
-		if (!mainCtx || !initRenderFinished || sceneEngine.needsResync || sceneEngine.hasPendingDependencies()) {
+		if (!mainCtx || !initRenderFinished || sceneEngine.needsResync || sceneEngine.hasPendingDependencies() || sceneEngine.hasQuarantinedElements()) {
 			self.postMessage({ type: "render-ir", requestId: data.requestId, epoch, buffer: null });
 			return;
 		}
@@ -1139,12 +1177,22 @@ function drainDeferredMessages() {
 	if (pendingSceneDirty.length > 0 && pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
 	drainingMessages = true;
 	const runSlice = (deadline = performance.now() + 4) => {
-		while (!sceneTaskInProgress && deferredMessageHead < deferredMessages.length) {
-			handleWorkerMessage(deferredMessages[deferredMessageHead++]!);
+		while (!sceneTaskInProgress && (activeSceneBatch !== null || deferredMessageHead < deferredMessages.length)) {
+			let message: MessageEvent;
+			if (activeSceneBatch) {
+				const batch = activeSceneBatch;
+				message = new MessageEvent("message", { data: { type: "update-command-state", data: batch.items[batch.index++] } });
+				if (batch.index === batch.items.length) activeSceneBatch = null;
+			} else message = deferredMessages[deferredMessageHead++]!;
+			handleWorkerMessage(message);
 			if (performance.now() >= deadline) break;
 		}
+		if (deferredMessageHead >= 1024 && deferredMessageHead * 2 >= deferredMessages.length) {
+			deferredMessages.splice(0, deferredMessageHead);
+			deferredMessageHead = 0;
+		}
 		if (sceneTaskInProgress) { drainingMessages = false; return; }
-		if (deferredMessageHead < deferredMessages.length) { taskScheduler.schedule("foreground", runSlice); return; }
+		if (activeSceneBatch || deferredMessageHead < deferredMessages.length) { taskScheduler.schedule("foreground", runSlice); return; }
 		deferredMessages.length = 0;
 		deferredMessageHead = 0;
 		drainingMessages = false;

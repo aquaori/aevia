@@ -160,13 +160,28 @@ describe("canvas worker init render stream", () => {
 			expect(ring.write(bytes)).toBe(true);
 			worker.postMessage({ type: "scene-batch-ring", data: { length: bytes.length } });
 		}
-		const bytes = new TextEncoder().encode(JSON.stringify([entry(2), entry(3)]));
+		const bytes = new TextEncoder().encode(JSON.stringify(Array.from({ length: 1300 }, (_, index) => entry(index + 2))));
 		worker.postMessage({ type: "scene-batch-transfer", data: { buffer: bytes.buffer } }, [bytes.buffer]);
-		worker.postMessage({ type: "update-command-state", data: entry(4) });
+		worker.postMessage({ type: "update-command-state", data: entry(1302) });
 		const status = await request<{ processedDispatchSeq: number }>(worker,
 			{ type: "get-render-watermarks", data: { requestId: "batch-order", epoch: 1 } },
 			(data) => data.type === "render-watermarks" && data.requestId === "batch-order", "batch order");
-		expect(status.processedDispatchSeq).toBe(4);
+		expect(status.processedDispatchSeq).toBe(1302);
+	});
+
+	it("quarantines missing text from a complete initialization and reports it", async () => {
+		worker = new Worker(new URL("../../src/workers/canvasWorker.ts", import.meta.url), { type: "module" });
+		const warnings: string[][] = [];
+		worker.addEventListener("message", (event) => { if (event.data.type === "scene-history-incomplete") warnings.push(event.data.ids); });
+		worker.postMessage({ type: "begin-init-stream", data: { pageId: 0 } });
+		worker.postMessage({ type: "finish-init-stream" });
+		worker.postMessage({ type: "set-init-scene-operations", data: { pageId: 0, commands: [{ id: "patch", pageId: 0, type: "scene-op", sceneOperation: {
+			schemaVersion: 2, opId: "patch", elementId: "missing", actorId: "author", roomId: "room", pageId: 0, lamport: 2, historyGroupId: "patch", kind: "text.patch", payload: { patches: [{ type: "insert", charId: "a", afterId: null, grapheme: "A" }] },
+		} }] } });
+		const result = await request<{ valid: boolean }>(worker, { type: "init-scene-barrier", data: { requestId: "orphan" } },
+			(data) => data.type === "init-scene-barrier-result" && data.requestId === "orphan", "orphan barrier");
+		expect(result.valid).toBe(true);
+		expect(warnings).toEqual([["missing"]]);
 	});
 
 	it("exports a transferable render frame from the live worker scene", async () => {

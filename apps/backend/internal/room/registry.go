@@ -9,14 +9,16 @@ import (
 )
 
 type Registry struct {
-	store  *storage.Store
-	cfg    config.Config
-	mu     sync.Mutex
-	actors map[string]*Actor
+	store      *storage.Store
+	cfg        config.Config
+	mu         sync.Mutex
+	actors     map[string]*Actor
+	deleting   map[string]bool
+	generation map[string]uint64
 }
 
 func NewRegistry(store *storage.Store, cfg config.Config) *Registry {
-	registry := &Registry{store: store, cfg: cfg, actors: make(map[string]*Actor)}
+	registry := &Registry{store: store, cfg: cfg, actors: make(map[string]*Actor), deleting: make(map[string]bool), generation: make(map[string]uint64)}
 	// Fire-and-forget persistence failures have no caller to return to, so route
 	// them to the owning room, which drops to read-only and tells its clients to
 	// resync rather than serving state that is not durable.
@@ -31,9 +33,17 @@ func (r *Registry) reportWriteFailure(roomID string, err error) {
 }
 
 func (r *Registry) Get(ctx context.Context, roomID string) (*Actor, error) {
-	if actor := r.lookup(roomID); actor != nil {
+	r.mu.Lock()
+	if r.deleting[roomID] {
+		r.mu.Unlock()
+		return nil, ErrActorStopped
+	}
+	if actor := r.actors[roomID]; actor != nil && !actor.Stopped() {
+		r.mu.Unlock()
 		return actor, nil
 	}
+	version := r.generation[roomID]
+	r.mu.Unlock()
 
 	actor, err := NewActor(ctx, r.store, r.cfg, roomID, r.remove)
 	if err != nil {
@@ -41,6 +51,11 @@ func (r *Registry) Get(ctx context.Context, roomID string) (*Actor, error) {
 	}
 
 	r.mu.Lock()
+	if r.deleting[roomID] || r.generation[roomID] != version {
+		r.mu.Unlock()
+		actor.Shutdown(ctx)
+		return nil, ErrActorStopped
+	}
 	// A concurrent caller may have installed a live actor while we were loading
 	// state; prefer theirs and discard ours.
 	if existing := r.actors[roomID]; existing != nil && !existing.Stopped() {
@@ -57,6 +72,36 @@ func (r *Registry) Get(ctx context.Context, roomID string) (*Actor, error) {
 	r.actors[roomID] = actor
 	r.mu.Unlock()
 	return actor, nil
+}
+
+// Delete excludes new actor loads until the old actor has stopped and its room
+// data is deleted. The generation also rejects loads already in progress.
+func (r *Registry) Delete(ctx context.Context, roomID string) error {
+	r.mu.Lock()
+	if r.deleting[roomID] {
+		r.mu.Unlock()
+		return ErrActorStopped
+	}
+	r.deleting[roomID] = true
+	r.generation[roomID]++
+	actor := r.actors[roomID]
+	delete(r.actors, roomID)
+	r.mu.Unlock()
+	defer func() { r.mu.Lock(); delete(r.deleting, roomID); r.mu.Unlock() }()
+	if actor != nil {
+		actor.Shutdown(ctx)
+		select {
+		case <-actor.done:
+		case <-ctx.Done():
+			r.mu.Lock()
+			if !actor.Stopped() {
+				r.actors[roomID] = actor
+			}
+			r.mu.Unlock()
+			return ctx.Err()
+		}
+	}
+	return r.store.DeleteRoom(ctx, roomID)
 }
 
 // lookup returns a live actor for roomID, clearing out one that has stopped.

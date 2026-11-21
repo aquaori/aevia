@@ -19,6 +19,7 @@ import {
 import { applyServerPressurePolicy, resetCollabPressurePolicy } from "./collabPressurePolicy";
 import { renewRoomSession as renewRoomSessionRequest, requestWebsocketTicket } from "./sessionApi";
 import { wsBaseUrl } from "../config/endpoints";
+import { PendingSceneStore } from "./pendingSceneStore";
 import { labEnabled, labMark } from "../instrumentation/labMarks";
 import {
 	LAB_MARK_WS_MESSAGE,
@@ -176,10 +177,26 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	let sceneTextBoxV1 = false;
 	const appliedSequences = new Set<number>();
 	const pendingSceneOperations = new Map<string, unknown>();
+	let pendingStore: PendingSceneStore | null = null;
+	let pendingStoreLoaded = false;
+	let pendingStoreFailed = false;
+	let pendingStoreTail: Promise<void> = Promise.resolve();
+	const warnPendingStore = () => {
+		if (pendingStoreFailed) return;
+		pendingStoreFailed = true;
+		toast.error("本地操作恢复记录不可用，刷新或关闭页面可能丢失尚未确认的操作。");
+	};
+	const queuePendingStore = (action: () => Promise<void>) => {
+		const current = Promise.resolve().then(action).catch(warnPendingStore);
+		pendingStoreTail = Promise.all([pendingStoreTail, current]).then(() => {});
+		return current;
+	};
 	let initLocalCommands: Command[] = [];
 	const retryPendingSceneOperations = () => {
-		if (socket.value?.readyState !== WebSocket.OPEN) return;
-		for (const data of pendingSceneOperations.values()) socket.value.send(JSON.stringify({ type: "push-cmd", data }));
+		void pendingStoreTail.then(() => {
+			if (socket.value?.readyState !== WebSocket.OPEN) return;
+			for (const data of pendingSceneOperations.values()) socket.value.send(JSON.stringify({ type: "push-cmd", data }));
+		});
 	};
 	const advanceRoomSeq = () => {
 		while (appliedSequences.delete(lastRoomSeq + 1)) lastRoomSeq += 1;
@@ -700,19 +717,22 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			return true;
 		}
 
-		if (type === "push-cmd" && sceneAppendBinary && outgoing?.cmd?.sceneOperation?.kind === "element.append") {
-			socket.value.send(encodeSceneAppendBinary(outgoing));
-		} else {
-			socket.value.send(JSON.stringify({ type, data: outgoing }));
-		}
 		if (type === "push-cmd" && outgoing?.cmd?.type === "scene-op" && outgoing.cmd.id) {
-			pendingSceneOperations.set(outgoing.cmd.id, JSON.parse(JSON.stringify(outgoing)));
+			const id = outgoing.cmd.id;
+			const operation = JSON.parse(JSON.stringify(outgoing)) as OutgoingPayload;
+			const connection = socket.value;
+			const binary = sceneAppendBinary && outgoing.cmd.sceneOperation?.kind === "element.append";
+			pendingSceneOperations.set(id, operation);
+			void queuePendingStore(async () => { if (pendingStore) await pendingStore.put(id, operation); }).then(() => {
+				if (socket.value !== connection || connection?.readyState !== WebSocket.OPEN || !pendingSceneOperations.has(id)) return;
+				connection.send(binary ? encodeSceneAppendBinary(operation) : JSON.stringify({ type, data: operation }));
+			});
 			const localCmd = (data as OutgoingPayload)?.cmd;
 			if (localCmd) {
 				dispatcher.recordPageChangeLocalCommand(localCmd);
 				if (snapshotPending) initLocalCommands.push(localCmd);
 			}
-		}
+		} else socket.value.send(JSON.stringify({ type, data: outgoing }));
 		return true;
 	};
 
@@ -757,6 +777,16 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			// The room metadata arrives only after connecting, so use the room ID
 			// in the signed grant for the initial ticket request.
 			const roomId = options.roomId.value || JSON.parse(atob(tokenStr.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"))).roomId;
+			if (!pendingStoreLoaded) {
+				try {
+					const claims = JSON.parse(atob(tokenStr.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"))) as { roomId: string; roomCreatedAt: number; userId: string };
+					pendingStore = await PendingSceneStore.open(claims.roomId, claims.roomCreatedAt, claims.userId);
+					for (const [id, operation] of await pendingStore.load()) pendingSceneOperations.set(id, operation);
+				} catch {
+					warnPendingStore();
+				}
+				pendingStoreLoaded = true;
+			}
 			const ticket = await requestWebsocketTicket(roomId, tokenStr);
 			if (isIntentionalClose.value) return;
 			const wsUrl = `${wsBaseUrl}?pageId=${statePageToProtocol(options.currentPageId.value)}${
@@ -860,6 +890,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							connection.close();
 							return;
 						}
+						if (msg.type === "role.current" && typeof msg.data?.role === "string") {
+							options.onRoomRoleChanged?.(msg.data.role);
+							return;
+						}
 						if (msg.type === "role.changed" && typeof msg.data?.role === "string") {
 							options.onRoomRoleChanged?.(msg.data.role);
 							toast.info(msg.data.role === "owner" ? "你已成为房主" : msg.data.role === "viewer" ? "房主已将你设为只读者" : "房间角色已更新为编辑者");
@@ -869,11 +903,13 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							handleResyncRequired(msg.data);
 							return;
 						}
+						const completesActivePage = msg.type === "page-change-complete" && Number(msg.data?.requestId) === options.getActivePageChangeRequestId?.();
 						dispatcher.handleMessage(msg);
+						if (completesActivePage) void options.confirmInitScene?.();
 						if (msg.type === "page-change-complete" || msg.type === "delta-replay-complete") requestPageHistory(connection, options.currentPageId.value);
 						if (msg.type === "ack.accepted" || msg.type === "op-rejected") {
 							const id = msg.data?.opId ?? msg.data?.cmdId;
-							if (typeof id === "string") pendingSceneOperations.delete(id);
+							if (typeof id === "string" && pendingSceneOperations.delete(id)) void queuePendingStore(async () => { if (pendingStore) await pendingStore.delete(id); });
 							if (msg.type === "op-rejected" && typeof id === "string") initLocalCommands = initLocalCommands.filter((command) => command.id !== id);
 						}
 						if (msg.type === "delta-replay-complete") retryPendingSceneOperations();

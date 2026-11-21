@@ -6,6 +6,56 @@ import { applyRenderIRDelta } from "./renderIR";
 import { decodeRenderIR, encodeRenderIR } from "./renderIRCodec";
 
 describe("SceneCore without browser rendering", () => {
+	it("retains orphan text through quarantine and applies it if its create arrives later", () => {
+		const core = new SceneCore();
+		const common = { schemaVersion: 2 as const, elementId: "text", actorId: "author", roomId: "room", pageId: 0 };
+		core.applyOperation({ ...common, opId: "patch", lamport: 2, historyGroupId: "patch", kind: "text.patch", payload: { patches: [{ type: "insert", charId: "a", afterId: null, grapheme: "A" }] } });
+		expect(core.hasPendingDependencies()).toBe(true);
+		expect(core.quarantineMissingElements()).toEqual(["text"]);
+		expect(core.hasPendingDependencies()).toBe(false);
+		expect(core.hasQuarantinedElements()).toBe(true);
+		core.applyOperation({ ...common, opId: "create", lamport: 1, historyGroupId: "create", kind: "element.create", payload: { descriptor: { elementKind: "text", toolId: "text", recipeId: "glyph", style: { color: "#000", size: 2 }, box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 }, text: "" } } });
+		expect(core.hasQuarantinedElements()).toBe(false);
+		expect(core.getTextEditorState("text")?.characters.map((character) => character.grapheme).join("")).toBe("A");
+	});
+	it("keeps an existing stroke's missing point range eligible for resync", () => {
+		const core = new SceneCore();
+		const common = { schemaVersion: 2 as const, elementId: "stroke", actorId: "author", roomId: "room", pageId: 0 };
+		core.applyOperation({ ...common, opId: "create", lamport: 1, historyGroupId: "create", kind: "element.create", payload: { descriptor: { elementKind: "path", toolId: "pen", recipeId: "stroke", style: { color: "#000", size: 2 } }, points: [{ x: .1, y: .2, p: .5, lamport: 1 }] } });
+		core.applyOperation({ ...common, opId: "append", lamport: 2, historyGroupId: "append", kind: "element.append", payload: { sourceStart: 3, points: [{ x: .2, y: .3, p: .5, lamport: 2 }] } });
+		expect(core.quarantineMissingElements()).toEqual([]);
+		expect(core.hasPendingDependencies()).toBe(true);
+	});
+	it("retains an orphan stroke append and applies it after its create arrives", () => {
+		const core = new SceneCore();
+		const common = { schemaVersion: 2 as const, elementId: "stroke", actorId: "author", roomId: "room", pageId: 0 };
+		core.applyOperation({ ...common, opId: "append", lamport: 2, historyGroupId: "append", kind: "element.append", payload: { sourceStart: 1, points: [{ x: .3, y: .4, p: .5, lamport: 2 }], isComplete: true } });
+		expect(core.quarantineMissingElements()).toEqual(["stroke"]);
+		expect(core.hasPendingDependencies()).toBe(false);
+		core.applyOperation({ ...common, opId: "create", lamport: 1, historyGroupId: "create", kind: "element.create", payload: { descriptor: { elementKind: "path", toolId: "pen", recipeId: "stroke", style: { color: "#000", size: 2 } }, points: [{ x: .1, y: .2, p: .5, lamport: 1 }] } });
+		expect(core.hasQuarantinedElements()).toBe(false);
+		expect(core.hasPendingDependencies()).toBe(false);
+		expect(core.getStats().visibleAtoms).toBeGreaterThan(0);
+	});
+	it("retains more than 1024 operations whose element create arrives later", () => {
+		const core = new SceneCore();
+		const common = { schemaVersion: 2 as const, actorId: "author", roomId: "room", pageId: 0 };
+		for (let i = 0; i < 1100; i++) {
+			core.applyOperation({ ...common, opId: `stroke-${i}`, elementId: "stroke", lamport: i + 1, historyGroupId: `stroke-${i}`, kind: "element.append", payload: { sourceStart: i, points: [{ x: (i % 100) / 100, y: .2, p: .5, lamport: i + 1 }], isComplete: i === 1099 } });
+			core.applyOperation({ ...common, opId: `text-${i}`, elementId: "text", lamport: i + 1, historyGroupId: `text-${i}`, kind: "text.patch", payload: { patches: [{ type: "insert", charId: `char-${i}`, afterId: i ? `char-${i - 1}` : null, grapheme: "A" }] } });
+		}
+		expect(core.needsResync).toBe(false);
+		expect(new Set(core.quarantineMissingElements())).toEqual(new Set(["stroke", "text"]));
+		const restore = core.applyOperationSteps({ ...common, opId: "stroke-create", elementId: "stroke", lamport: 1101, historyGroupId: "stroke-create", kind: "element.create", payload: { descriptor: { elementKind: "path", toolId: "pen", recipeId: "stroke", style: { color: "#000", size: 2 } }, points: [] } });
+		let slices = 0;
+		while (!restore.next().done) slices++;
+		expect(slices).toBeGreaterThan(1);
+		core.applyOperation({ ...common, opId: "text-create", elementId: "text", lamport: 1101, historyGroupId: "text-create", kind: "element.create", payload: { descriptor: { elementKind: "text", toolId: "text", recipeId: "glyph", style: { color: "#000", size: 2 }, box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 } } } });
+		expect(core.hasPendingDependencies()).toBe(false);
+		expect(core.hasQuarantinedElements()).toBe(false);
+		expect(core.getTextEditorState("text")?.characters).toHaveLength(1100);
+		expect(core.getStats().visibleAtoms).toBeGreaterThan(1000);
+	});
 	it("restores a valid element checkpoint and invalidates it when earlier history changes", () => {
 		const core = new SceneCore();
 		const reference = new SceneCore();

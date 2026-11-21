@@ -192,12 +192,13 @@ describe("collab command handlers", () => {
 
 		finishInitCommandsStream(fixture);
 		expect(fixture.options.renderCanvas).not.toHaveBeenCalled();
+		expect(fixture.options.setInitSceneOperations).not.toHaveBeenCalled();
 		fixture.handlers.handleInitComplete(message("init-complete", { snapshotVersion: 1 }));
 		expect(fixture.options.replaceLoadedPageWindow).toHaveBeenCalledWith(
 			[0],
 			expect.arrayContaining([expect.objectContaining({ id: "cmd-1" })])
 		);
-		expect(fixture.options.setInitSceneOperations).toHaveBeenCalled();
+		expect(fixture.options.setInitSceneOperations).toHaveBeenCalledOnce();
 		expect(fixture.options.renderCanvas).toHaveBeenCalledOnce();
 
 		fixture.handlers.handlePushCommand(

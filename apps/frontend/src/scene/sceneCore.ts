@@ -232,10 +232,32 @@ export class SceneCore implements SceneCorePort {
 	private readonly pendingAppends = new Map<string, Array<Extract<SceneOperationEnvelopeV2, { kind: "element.append" }>>>();
 	private readonly pendingTextDeletes = new Map<string, Set<string>>();
 	private readonly pendingTextOperations = new Map<string, Array<Extract<SceneOperationEnvelopeV2, { kind: "text.patch" }>>>();
+	private readonly quarantinedMissingElements = new Set<string>();
 	needsResync = false;
 
 	hasPendingDependencies() {
-		return this.pendingAppends.size > 0 || this.pendingTextOperations.size > 0;
+		for (const id of this.pendingAppends.keys()) if (!this.quarantinedMissingElements.has(id) || this.elements.has(id)) return true;
+		for (const id of this.pendingTextOperations.keys()) if (!this.quarantinedMissingElements.has(id) || this.elements.has(id)) return true;
+		return false;
+	}
+
+	quarantineMissingElements(ids?: readonly string[]): string[] {
+		const selected = ids ?? [...this.pendingTextOperations.keys(), ...this.pendingAppends.keys()];
+		for (const id of selected) {
+			if (!this.elements.has(id) && (this.pendingTextOperations.has(id) || this.pendingAppends.has(id))) this.quarantinedMissingElements.add(id);
+		}
+		return this.getQuarantinedElementIds();
+	}
+
+	hasQuarantinedElements() {
+		for (const id of this.quarantinedMissingElements) {
+			if (!this.elements.has(id) && (this.pendingTextOperations.has(id) || this.pendingAppends.has(id))) return true;
+		}
+		return false;
+	}
+
+	getQuarantinedElementIds(): string[] {
+		return [...this.quarantinedMissingElements].filter((id) => !this.elements.has(id) && (this.pendingTextOperations.has(id) || this.pendingAppends.has(id)));
 	}
 	private readonly legacyElementIds = new Set<string>();
 	private readonly hydratedThrough = new Map<string, number>();
@@ -272,6 +294,7 @@ export class SceneCore implements SceneCorePort {
 		this.pendingAppends.clear();
 		this.pendingTextDeletes.clear();
 		this.pendingTextOperations.clear();
+		this.quarantinedMissingElements.clear();
 		this.needsResync = false;
 		this.legacyElementIds.clear();
 		this.hydratedThrough.clear();
@@ -447,6 +470,10 @@ export class SceneCore implements SceneCorePort {
 		let result = steps.next();
 		while (!result.done) result = steps.next();
 		return result.value;
+	}
+
+	hasOperation(opId: string) {
+		return this.operationIds.has(opId);
 	}
 
 	*applyOperationSteps(operation: SceneOperationEnvelopeV2): Generator<void, string[]> {
@@ -1058,6 +1085,7 @@ export class SceneCore implements SceneCorePort {
 				yield* this.applyOperationToElement(candidate, elementId);
 				if (++work % 32 === 0) yield;
 			}
+			if (!this.pendingTextOperations.has(elementId) && !this.pendingAppends.has(elementId)) this.quarantinedMissingElements.delete(elementId);
 			if (++work % 32 === 0) yield;
 		}
 		this.deferCompaction = wasDeferred;
@@ -1147,6 +1175,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private *applyCreate(elementId: string, pageId: number, payload: ElementCreatePayload, order: RenderOrderKey): Generator<void> {
+		this.quarantinedMissingElements.delete(elementId);
 		const hydrated = this.elements.get(elementId);
 		if (
 			hydrated &&
@@ -1194,20 +1223,25 @@ export class SceneCore implements SceneCorePort {
 				const charId = `${elementId}:initial:${sourceIndex}`;
 				element.characters.set(charId, { charId, afterId: sourceIndex === 0 ? null : `${elementId}:initial:${sourceIndex - 1}`, grapheme, deleted: false, order: { ...order, sourceIndex } });
 			});
-			this.rebuildTextAtoms(element);
 			const pending = this.pendingTextOperations.get(elementId) ?? [];
 			this.pendingTextOperations.delete(elementId);
-			for (const operation of pending) this.applyTextPatches(operation);
+			for (let index = 0; index < pending.length; index++) {
+				this.applyTextPatches(pending[index]!, true);
+				if (index % 32 === 31) yield;
+			}
+			if (pending.length) this.finishTextPatches(element);
+			else this.rebuildTextAtoms(element);
 		}
 	}
 
 	private *appendOperationPoints(
 		element: SceneElementState | undefined,
-		operation: Extract<SceneOperationEnvelopeV2, { kind: "element.append" }>
+		operation: Extract<SceneOperationEnvelopeV2, { kind: "element.append" }>,
+		drain = true
 	): Generator<void> {
 		if (!element || operation.payload.sourceStart > element.points.length) {
 			const pending = this.pendingAppends.get(operation.elementId) ?? [];
-			if (pending.length >= 1024) { this.needsResync = true; return; }
+			if (element && pending.length >= 1024) { this.needsResync = true; return; }
 			pending.push(operation);
 			this.pendingAppends.set(operation.elementId, pending);
 			return;
@@ -1231,17 +1265,21 @@ export class SceneCore implements SceneCorePort {
 			if (index % 128 === 127) yield;
 		}
 		if (operation.payload.isComplete) this.finishElement(element.id);
-		yield* this.drainPendingAppends(element);
+		if (drain) yield* this.drainPendingAppends(element);
 	}
 
 	private *drainPendingAppends(element: SceneElementState): Generator<void> {
 		const pending = this.pendingAppends.get(element.id);
 		if (!pending) return;
-		const index = pending.findIndex((op) => op.payload.sourceStart <= element.points.length);
-		if (index < 0) return;
-		const [operation] = pending.splice(index, 1);
+		yield* sortInSteps(pending, (a, b) => a.payload.sourceStart - b.payload.sourceStart);
+		let processed = 0;
+		while (processed < pending.length && pending[processed]!.payload.sourceStart <= element.points.length) {
+			yield* this.appendOperationPoints(element, pending[processed++]!, false);
+			if (this.needsResync) break;
+			if (processed % 32 === 0) yield;
+		}
+		if (processed > 0) pending.splice(0, processed);
 		if (pending.length === 0) this.pendingAppends.delete(element.id);
-		yield* this.appendOperationPoints(element, operation!);
 	}
 
 	private storeShapeAtom(element: SceneElementState, order: RenderOrderKey) {
@@ -1266,12 +1304,12 @@ export class SceneCore implements SceneCorePort {
 		this.storeAtom(element, atom);
 	}
 
-	private applyTextPatches(operation: Extract<SceneOperationEnvelopeV2, { kind: "text.patch" }>) {
+	private applyTextPatches(operation: Extract<SceneOperationEnvelopeV2, { kind: "text.patch" }>, deferRender = false) {
 		const element = this.elements.get(operation.elementId);
 		if (!element) {
 			const pending = this.pendingTextOperations.get(operation.elementId) ?? [];
-			if (pending.length >= 1024) this.needsResync = true;
-			else { pending.push(operation); this.pendingTextOperations.set(operation.elementId, pending); }
+			pending.push(operation);
+			this.pendingTextOperations.set(operation.elementId, pending);
 			return;
 		}
 		operation.payload.patches.forEach((patch, index) => {
@@ -1288,6 +1326,10 @@ export class SceneCore implements SceneCorePort {
 				}
 			}
 		});
+		if (!deferRender) this.finishTextPatches(element);
+	}
+
+	private finishTextPatches(element: SceneElementState) {
 		let missingParents = 0;
 		for (const character of element.characters.values()) {
 			if (character.afterId !== null && !element.characters.has(character.afterId)) missingParents += 1;
@@ -1481,6 +1523,7 @@ export class SceneCore implements SceneCorePort {
 			if (operation.kind !== "history.toggle") yield* this.applyOperationIncremental(operation);
 			if (++work % 128 === 0) yield;
 		}
+		for (const id of this.quarantinedMissingElements) if (!this.pendingTextOperations.has(id) && !this.pendingAppends.has(id)) this.quarantinedMissingElements.delete(id);
 		this.bulkLoading = wasBulkLoading;
 		yield* this.compactIndexesSteps();
 	}

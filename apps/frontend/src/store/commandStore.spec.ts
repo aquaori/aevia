@@ -91,6 +91,19 @@ describe("commandStore ordering", () => {
 		expect(store.commands.map((cmd) => cmd.id)).toEqual(["p1-early", "p0-early", "p0-late"]);
 	});
 
+	it("keeps the lightweight count in sync with in-place inserts and page changes", () => {
+		const store = useCommandStore();
+		store.replaceLoadedPageWindow([0, 1], []);
+		expect(store.commandCount).toBe(0);
+		store.insertCommand(makeCommand("a", 1, 0));
+		store.insertCommand(makeCommand("b", 2, 1));
+		store.insertCommand(makeCommand("b", 3, 1));
+		expect(store.commandCount).toBe(2);
+		store.applyLoadedPageDelta({ loadedPageIds: [1], loadPageIds: [], unloadPageIds: [0], commands: [] });
+		expect(store.commandCount).toBe(1);
+		expect(store.commandCount).toBe(store.commands.length);
+	});
+
 	it("ignores duplicate command ids", () => {
 		const store = useCommandStore();
 		store.replaceLoadedPageWindow([0], []);

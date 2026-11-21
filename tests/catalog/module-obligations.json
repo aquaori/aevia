@@ -376,6 +376,13 @@
       "owner": "apps/frontend/src/service/pageOverviewService.spec.ts"
     },
     {
+      "id": "frontend:apps/frontend/src/service/pendingSceneStore.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/pendingSceneStore.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/roomCollabTransport.spec.ts"
+    },
+    {
       "id": "frontend:apps/frontend/src/service/realtimeBinary.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/realtimeBinary.ts",

@@ -73,6 +73,25 @@ func TestBackgroundHistoryLoadsClearedCommands(t *testing.T) {
 	}
 }
 
+func TestEmptyHistoryCompletionWaitsForOutboundCapacity(t *testing.T) {
+	actor := &Actor{state: State{}}
+	out := make(chan Outbound, 1)
+	done := make(chan struct{})
+	defer close(done)
+	actor.loadPageHistory(ClientInfo{PageID: 0, Send: out, Done: done}, map[string]any{"requestId": "history", "pageId": 0})
+	if event := <-out; event.JSON.(Envelope).Type != "page-history-meta" {
+		t.Fatal("missing history metadata")
+	}
+	select {
+	case event := <-out:
+		if event.JSON.(Envelope).Type != "page-history-complete" {
+			t.Fatal("missing history completion")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("history completion was dropped")
+	}
+}
+
 func TestCommandChunksBoundBytesAndPreserveOrder(t *testing.T) {
 	commands := make([]domain.Command, 10)
 	for index := range commands {

@@ -55,6 +55,32 @@ func (s *Server) withSession(next func(http.ResponseWriter, *http.Request)) http
 			fail(w, http.StatusUnauthorized, "Invalid token")
 			return
 		}
+		roomData, exists, err := s.store.GetRoom(r.Context(), claims.RoomID)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "无法读取房间信息")
+			return
+		}
+		if !exists || roomData.CreatedAt != claims.RoomCreatedAt {
+			fail(w, http.StatusUnauthorized, "房间会话已失效")
+			return
+		}
+		if claims.Account {
+			role, banned, err := s.store.MemberRole(r.Context(), claims.RoomID, claims.UserID)
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "无法读取成员信息")
+				return
+			}
+			if banned || role == "" {
+				fail(w, http.StatusForbidden, "房间访问权限已失效")
+				return
+			}
+		} else {
+			_, kicked, err := s.store.GuestRole(r.Context(), claims.RoomID, claims.UserID)
+			if err != nil || kicked {
+				fail(w, http.StatusForbidden, "房间访问权限已失效")
+				return
+			}
+		}
 		next(w, r.WithContext(context.WithValue(r.Context(), claimsKey, claims)))
 	}
 }

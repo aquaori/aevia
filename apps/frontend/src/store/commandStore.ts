@@ -64,6 +64,13 @@ export const useCommandStore = defineStore("command", () => {
 		revision.value += 1;
 	};
 
+	const commandCount = computed(() => {
+		void revision.value;
+		let count = 0;
+		for (const bucket of pageCommands.value.values()) count += bucket.length;
+		return count;
+	});
+
 	const commands = computed<Command[]>(() => {
 		// Depend on revision so Vue invalidates when buckets mutate in place.
 		const currentRevision = revision.value;
@@ -338,6 +345,7 @@ export const useCommandStore = defineStore("command", () => {
 
 	return {
 		commands,
+		commandCount,
 		pageCommands,
 		loadedPageIds,
 		commandMap,

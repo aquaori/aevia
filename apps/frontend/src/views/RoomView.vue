@@ -25,6 +25,7 @@
 		renderWithPoints,
 		renderSceneCommands,
 		hasPendingSceneDependencies,
+		quarantineSceneMissingElements,
 		hitTestScene,
 		querySceneElements,
 		renderIncrementPoint,
@@ -217,6 +218,7 @@
 
 	let lastIntegrityResyncAt = 0;
 	let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
+	let missingElementIds: string[] = [];
 	const requestSceneIntegrityResync = () => {
 		const now = Date.now();
 		if (now - lastIntegrityResyncAt < 5000) return;
@@ -238,6 +240,7 @@
 			points: c.points ? toRaw(c.points) : [],
 		}));
 		if (renderSceneCommands(rawCommands, currentPageId.value, transformingCmdIds.value)) requestSceneIntegrityResync();
+		quarantineSceneMissingElements(missingElementIds);
 		if (hasPendingSceneDependencies() && !dependencyTimer) {
 			dependencyTimer = setTimeout(() => {
 				dependencyTimer = undefined;
@@ -341,6 +344,11 @@
 		},
 		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects),
 		onSceneResyncRequired: requestSceneIntegrityResync,
+		onSceneHistoryIncomplete: (ids) => {
+			missingElementIds = ids;
+			quarantineSceneMissingElements(ids);
+			if (ids.length) toast.warning(`${ids.length} 个画布对象的历史记录不完整，相关内容暂时无法显示；原始记录仍保留。`);
+		},
 		onWorkerFailure: () => roomCollabTransport.handleRenderWorkerFailure(),
 	});
 
@@ -475,6 +483,8 @@
 		username,
 		currentTool,
 		isHistoryReady: () => loadedPageIds.value.includes(currentPageId.value) && roomCollabTransport.isPageHistoryReady(currentPageId.value),
+		commandMap: commandMapRef,
+		getCommandCount: () => commandStore.commandCount,
 		insertCommand,
 		renderCanvas,
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
@@ -657,7 +667,7 @@
 	});
 
 	const canUndo = computed(() => currentCommandIndex.value >= 0);
-	const canRedo = computed(() => currentCommandIndex.value < commands.value.length - 1);
+	const canRedo = computed(() => currentCommandIndex.value < commandStore.commandCount - 1);
 	const session = createWhiteboardSession({
 		getRenderIR: () => workerBridge.requestRenderIR(),
 		getConsistencyWatermarks: async () => ({

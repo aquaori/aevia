@@ -54,6 +54,7 @@ type shutdownMessage struct {
 }
 
 type JoinResult struct {
+	err          error
 	Room         domain.Room
 	Init         InitStream
 	InitStreamed bool

@@ -28,6 +28,7 @@ const createService = (command: Command | Command[]) => {
 	const syncCommandState = vi.fn();
 	const syncWorkerScene = vi.fn();
 	const commands = ref(Array.isArray(command) ? [...command] : [command]);
+	const commandMap = new Map(commands.value.map((item) => [item.id, item]));
 	const currentCommandIndex = ref(0);
 	const send = vi.fn(() => true);
 
@@ -39,7 +40,9 @@ const createService = (command: Command | Command[]) => {
 		currentPageId: ref(0),
 		username: ref("user-1"),
 		currentTool: ref<"pen" | "eraser" | "cursor">("pen"),
-		insertCommand: (item) => commands.value.push(item),
+		commandMap,
+		getCommandCount: () => commands.value.length,
+		insertCommand: (item) => { commands.value.push(item); commandMap.set(item.id, item); },
 		renderCanvas,
 		requestDirtyRender,
 		syncCommandState,
@@ -74,6 +77,8 @@ describe("local command history rendering", () => {
 			expect.objectContaining({ sceneOperation: expect.objectContaining({ kind: "page.clear" }) }),
 			expect.objectContaining({ sceneOperation: expect.objectContaining({ kind: "history.toggle" }) }),
 		]), 0, []);
+		expect(state.requestSceneRefresh).toHaveBeenCalledOnce();
+		expect(state.syncWorkerScene.mock.invocationCallOrder[0]).toBeLessThan(state.requestSceneRefresh.mock.invocationCallOrder[0]!);
 	});
 
 	it("represents legacy undo and redo as immutable scene operations", () => {

@@ -74,13 +74,7 @@ func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("roomId")
-	actor, err := s.registry.Get(r.Context(), id)
-	if err != nil {
-		fail(w, 500, "无法关闭房间")
-		return
-	}
-	actor.Shutdown(r.Context())
-	if err = s.store.DeleteRoom(r.Context(), id); err != nil {
+	if err := s.registry.Delete(r.Context(), id); err != nil {
 		fail(w, 500, "删除房间失败")
 		return
 	}
