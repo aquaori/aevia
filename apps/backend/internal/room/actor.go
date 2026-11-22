@@ -577,25 +577,19 @@ func (a *Actor) handleJoin(msg joinMessage) {
 		a.state.Clients[client.ID] = client
 		streamResult := result
 		snapshotSeq := a.state.RoomSeq
-		var initialCommands []domain.Command
-		var initialMaxLamport float64
+		var capturedCommands map[string]domain.Command
 		var clearBefore map[int]sceneOrderKey
 		if snapshot != nil {
-			pages := pageIDSet(initPageIDs(client.PageID, a.state.Room.TotalPage, a.cfg.InitPreloadPageCount))
-			hiddenPaths := hiddenClearedPaths(a.state.Commands, a.state.ClearBefore)
 			clearBefore = make(map[int]sceneOrderKey, len(a.state.ClearBefore))
 			for page, watermark := range a.state.ClearBefore {
 				clearBefore[page] = watermark
 			}
-			for _, cmd := range a.state.Commands {
-				page, ok := cmd.PageID()
-				if ok && pages[page] && commandVisibleAfterClear(cmd, clearBefore) && !isHiddenPathAppend(cmd, hiddenPaths) {
-					// State replaces stored command snapshots on mutation. Captured
-					// pointers therefore remain stable after the actor handles a write.
-					initialCommands = append(initialCommands, cmd)
-				}
+			capturedCommands = make(map[string]domain.Command, len(a.state.Commands))
+			for id, cmd := range a.state.Commands {
+				// State replaces stored snapshots on mutation, so these pointers
+				// remain stable while the actor handles subsequent writes.
+				capturedCommands[id] = cmd
 			}
-			initialMaxLamport = maxCommandLamport(a.state.Commands)
 		}
 		go func() {
 			if snapshot != nil {
@@ -603,6 +597,17 @@ func (a *Actor) handleJoin(msg joinMessage) {
 				cancel()
 				room := streamResult.Room
 				room.DurableSeq = snapshotSeq
+				pages := pageIDSet(initPageIDs(client.PageID, room.TotalPage, a.cfg.InitPreloadPageCount))
+				hiddenPaths := hiddenClearedPaths(capturedCommands, clearBefore)
+				initialCommands := make([]domain.Command, 0, len(capturedCommands))
+				for _, cmd := range capturedCommands {
+					page, ok := cmd.PageID()
+					if ok && pages[page] && commandVisibleAfterClear(cmd, clearBefore) && !isHiddenPathAppend(cmd, hiddenPaths) {
+						initialCommands = append(initialCommands, cmd)
+					}
+				}
+				initialMaxLamport := maxCommandLamport(capturedCommands)
+				capturedCommands = nil
 				state := NewState(room, initialCommands)
 				state.ClearBefore = clearBefore
 				streamResult.Init = a.builder.initDetached(state, client.PageID)
