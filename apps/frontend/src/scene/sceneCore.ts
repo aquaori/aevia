@@ -482,6 +482,7 @@ export class SceneCore implements SceneCorePort {
 			return [] as string[];
 		}
 		if (this.operationIds.has(operation.opId)) return [] as string[];
+		const orderedAppend = this.canAppendWithoutRebuild(operation, true);
 		if (operation.kind === "page.clear") this.renderFullRequired = true;
 		else if (operation.kind === "history.toggle") {
 			const impact = this.getHistoryImpact(operation.payload.targetHistoryGroupId);
@@ -504,7 +505,7 @@ export class SceneCore implements SceneCorePort {
 			}
 			return operationTargets(operation);
 		}
-		if (!tail) {
+		if (!tail && !orderedAppend) {
 			if (operation.kind === "page.clear") {
 				yield* this.rebuildV2ElementsSteps();
 			} else {
@@ -552,6 +553,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	operationMayRebuild(operation: SceneOperationEnvelopeV2) {
+		if (this.canAppendWithoutRebuild(operation, true)) return false;
 		const last = this.operations[this.operations.length - 1];
 		return operation.kind === "history.toggle" || (last !== undefined && compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(last)) < 0);
 	}
@@ -559,7 +561,8 @@ export class SceneCore implements SceneCorePort {
 	canAppendWithoutRebuild(operation: SceneOperationEnvelopeV2, includeComplete = false) {
 		if (operation.kind !== "element.append" || (!includeComplete && operation.payload.isComplete) || this.operationIds.has(operation.opId)) return false;
 		const element = this.elements.get(operation.elementId);
-		const last = this.operations[this.operations.length - 1];
+		const elementOperations = this.operationsByElement.get(operation.elementId);
+		const last = elementOperations?.[elementOperations.length - 1];
 		return !!element && operation.payload.sourceStart === element.points.length && !this.pendingAppends.has(operation.elementId) &&
 			(!last || compareRenderOrder(sceneOperationOrderKey(operation), sceneOperationOrderKey(last)) >= 0);
 	}
