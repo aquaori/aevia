@@ -620,6 +620,13 @@ describe("SpatialGridIndex", () => {
 });
 
 describe("DirtyRegionSet", () => {
+	it("merges regions that overlap only after an earlier merge expands the bounds", () => {
+		const regions = new DirtyRegionSet();
+		regions.add({ minX: 0, minY: 2, maxX: 1, maxY: 3, width: 1, height: 1 });
+		regions.add({ minX: 2, minY: 2.8, maxX: 3, maxY: 3.5, width: 1, height: 0.7 });
+		regions.add({ minX: 0.5, minY: 1.5, maxX: 2.5, maxY: 2.5, width: 2, height: 1 });
+		expect(regions.toArray()).toEqual([{ minX: 0, minY: 1.5, maxX: 3, maxY: 3.5, width: 3, height: 2 }]);
+	});
 	it("keeps a small dense update local when most of the scene is unaffected", () => {
 		const regions = new DirtyRegionSet();
 		regions.add({ minX: 8, minY: 8, maxX: 32, maxY: 32, width: 24, height: 24 });

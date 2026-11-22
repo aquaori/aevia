@@ -29,6 +29,8 @@ export class DirtyRegionSet {
 			if (!intersects(current, region)) continue;
 			current = merge(current, region);
 			this.regions.splice(index, 1);
+			// The enlarged bounds can now overlap an already inspected region.
+			index = this.regions.length;
 		}
 		this.regions.push(current);
 		if (this.regions.length > MAX_DIRTY_RECTS) this.overflowed = true;
