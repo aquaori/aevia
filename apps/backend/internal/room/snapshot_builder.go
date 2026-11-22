@@ -187,6 +187,9 @@ func commandsForPagesWithCopy(
 // Appends to a path created before a clear remain hidden with that path. Sending
 // them without their filtered create leaves clients waiting for a missing parent.
 func hiddenClearedPaths(commands map[string]domain.Command, clearBefore map[int]sceneOrderKey) map[string]bool {
+	if len(clearBefore) == 0 {
+		return nil
+	}
 	hidden := make(map[string]bool)
 	for _, cmd := range commands {
 		operation := sceneOperation(cmd)
@@ -203,6 +206,9 @@ func hiddenClearedPaths(commands map[string]domain.Command, clearBefore map[int]
 }
 
 func isHiddenPathAppend(cmd domain.Command, hiddenPaths map[string]bool) bool {
+	if len(hiddenPaths) == 0 {
+		return false
+	}
 	operation := sceneOperation(cmd)
 	return domain.String(operation["kind"]) == "element.append" && hiddenPaths[domain.String(operation["elementId"])]
 }
