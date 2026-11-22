@@ -605,6 +605,17 @@ describe("deterministic erasure", () => {
 });
 
 describe("SpatialGridIndex", () => {
+	it("extends occupied cells without duplicates and reindexes a moved element", () => {
+		const grid = new SpatialGridIndex();
+		const box = (x: number) => ({ minX: x, minY: .1, maxX: x + .001, maxY: .101, width: .001, height: .001 });
+		grid.addAtom("stroke", 0, box(.01));
+		grid.addAtom("stroke", 1, box(.05));
+		expect(grid.query(box(.01)).atomRefs).toEqual([0, 1]);
+		expect(grid.query(box(.05)).atomRefs).toEqual([0, 1]);
+		grid.reindexElement("stroke", (ref) => box(ref === 0 ? .6 : .65));
+		expect(grid.query(box(.01)).atomRefs).toEqual([]);
+		expect(grid.query(box(.6)).atomRefs).toEqual([0, 1]);
+	});
 	it("keeps a fixed local query independent of unrelated scene size", () => {
 		const grid = new SpatialGridIndex();
 		for (let index = 0; index < 100_000; index += 1) {
