@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SceneOperationEnvelopeV2 } from "@collaborative-whiteboard/shared";
 import { SceneEngine } from "../../src/scene/sceneEngine";
-import { renderIRFrame } from "../../src/scene/canvasIRRenderer";
+import { renderIRFrame, renderIRItems } from "../../src/scene/canvasIRRenderer";
 import { drawPrimitive } from "../../src/scene/primitiveRenderer";
 import type { ShapeAtom } from "../../src/scene/sceneTypes";
 import { IDENTITY_MATRIX } from "@collaborative-whiteboard/shared";
@@ -108,6 +108,77 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("preserves ordered prefix compositing for a later translucent stroke", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(operations[0]!);
+		const cached = createCanvasContext();
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		const oldOrder = engine.lastAtomOrder();
+		const firstRef = engine.atomCount;
+		engine.applyOperation(operations[1]!);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const items = engine.getRenderIR().items.filter((item) => item.atom.ref >= firstRef);
+		expect(oldOrder).not.toBeNull();
+		renderIRItems(cached, items, WIDTH, HEIGHT);
+		expect(cached.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(reference.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
+	it("preserves translucent compositing across integer-aligned cached tiles", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(operations[0]!);
+		const prefix = createCanvasContext();
+		engine.renderFull(prefix, WIDTH, HEIGHT);
+		const firstRef = engine.atomCount;
+		engine.applyOperation(operations[1]!);
+		const suffix = engine.getRenderIR().items.filter((item) => item.atom.ref >= firstRef);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const tiled = createCanvasContext();
+		for (let y = 0; y < HEIGHT; y += 128) {
+			for (let x = 0; x < WIDTH; x += 128) {
+				tiled.save();
+				tiled.beginPath();
+				tiled.rect(x, y, 128, 128);
+				tiled.clip();
+				tiled.drawImage(prefix.canvas, 0, 0);
+				renderIRItems(tiled, suffix, WIDTH, HEIGHT);
+				tiled.restore();
+			}
+		}
+		expect(tiled.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(reference.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
+	it("requires a cached prefix to be rebuilt after an element moves", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(operations[0]!);
+		const cached = createCanvasContext();
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		engine.applyOperation(transform);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const stalePixels = cached.getImageData(0, 0, WIDTH, HEIGHT).data;
+		const expectedPixels = reference.getImageData(0, 0, WIDTH, HEIGHT).data;
+		expect(stalePixels.some((value, index) => value !== expectedPixels[index])).toBe(true);
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		const rebuiltPixels = cached.getImageData(0, 0, WIDTH, HEIGHT).data;
+		expect(rebuiltPixels.every((value, index) => Math.abs(value - expectedPixels[index]!) <= 1)).toBe(true);
+	});
+	it("rejects direct painting for an older interleaved pen stroke", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation({ ...operations[0]!, lamport: 10 });
+		const cached = createCanvasContext();
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		const previousOrder = engine.lastAtomOrder();
+		const firstRef = engine.atomCount;
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		engine.applyOperation({ ...stroke, lamport: 2, payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 22 } }, points: [{ x: .01, y: .5, p: .5, lamport: 2 }, { x: .99, y: .5, p: .5, lamport: 3 }] } });
+		expect(engine.renderNewPenAtomsOnTop(cached, firstRef, previousOrder, WIDTH, HEIGHT)).toBe(false);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const stale = cached.getImageData(0, 0, WIDTH, HEIGHT).data;
+		const expected = reference.getImageData(0, 0, WIDTH, HEIGHT).data;
+		expect(stale.some((value, index) => value !== expected[index])).toBe(true);
+	});
 	it("keeps dense local redraw in full-scene paint order", () => {
 		const engine = new SceneEngine();
 		const stroke = operations[1]!;
