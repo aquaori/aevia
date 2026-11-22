@@ -3,9 +3,9 @@ import type { AabbBox } from "@collaborative-whiteboard/shared";
 
 const MAX_DIRTY_RECTS = 8;
 const FULL_AREA_RATIO = 0.35;
-const FULL_CANDIDATE_RATIO = 0.6;
+const FULL_CANDIDATE_RATIO = 0.7;
 const EXIT_FULL_AREA_RATIO = 0.25;
-const EXIT_FULL_CANDIDATE_RATIO = 0.5;
+const EXIT_FULL_CANDIDATE_RATIO = 0.6;
 
 const intersects = (left: AabbBox, right: AabbBox) =>
 	!(left.maxX < right.minX || left.minX > right.maxX || left.maxY < right.minY || left.minY > right.maxY);

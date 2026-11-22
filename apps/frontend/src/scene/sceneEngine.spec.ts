@@ -624,7 +624,9 @@ describe("DirtyRegionSet", () => {
 		const regions = new DirtyRegionSet();
 		regions.add({ minX: 8, minY: 8, maxX: 32, maxY: 32, width: 24, height: 24 });
 		expect(regions.shouldRenderFull(1000, 1000, 44, 100, false)).toBe(false);
-		expect(regions.shouldRenderFull(1000, 1000, 65, 100, false)).toBe(true);
+		expect(regions.shouldRenderFull(1000, 1000, 66, 100, false)).toBe(false);
+		expect(regions.shouldRenderFull(1000, 1000, 70, 100, false)).toBe(true);
+		expect(regions.shouldRenderFull(1000, 1000, 60, 100, true)).toBe(true);
 	});
 	it("uses separate enter and exit thresholds for dense-frame fallback", () => {
 		const regions = new DirtyRegionSet();
