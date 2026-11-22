@@ -1,6 +1,6 @@
 // File role: Canvas adapter for the canonical scene core.
 import { compareRenderOrder, type AabbBox, type AffineMatrix, type RenderOrderKey } from "@collaborative-whiteboard/shared";
-import { renderIRItems } from "./canvasIRRenderer";
+import { renderIRItems, renderIRItemsSteps } from "./canvasIRRenderer";
 import { SceneCore } from "./sceneCore";
 import type { DirtyRenderMetrics } from "./sceneTypes";
 import type { RenderIRItem } from "./renderIR";
@@ -61,33 +61,19 @@ export class SceneEngine extends SceneCore {
 
 	*renderFullSteps(ctx: DrawingContext, logicalWidth: number, logicalHeight: number, excludedElementIds: ReadonlySet<string> = new Set()): Generator<void, number> {
 		this.clearContext(ctx, logicalWidth, logicalHeight);
-		let rendered = 0;
+		return yield* renderIRItemsSteps(ctx, this.fullRenderItemsInSteps(excludedElementIds), logicalWidth, logicalHeight, null, Infinity);
+	}
+
+	private *fullRenderItemsInSteps(excludedElementIds: ReadonlySet<string>): Generator<RenderIRItem | null> {
 		let refs: number[] = [];
-		let batch: RenderIRItem[] = [];
-		const flush = () => {
-			rendered += renderIRItems(ctx, batch, logicalWidth, logicalHeight);
-			batch = [];
-		};
 		for (const ref of this.order.refs()) {
 			refs.push(ref);
 			if (refs.length < 256) continue;
-			for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
-				const last = batch[batch.length - 1];
-				const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
-				if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
-				batch.push(item);
-			}
+			yield* this.renderItemsForRefs(refs, excludedElementIds);
 			refs = [];
-			yield;
+			yield null;
 		}
-		for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
-			const last = batch[batch.length - 1];
-			const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
-			if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
-			batch.push(item);
-		}
-		if (batch.length) flush();
-		return rendered;
+		yield* this.renderItemsForRefs(refs, excludedElementIds);
 	}
 
 	renderAtomRefs(

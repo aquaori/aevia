@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SceneOperationEnvelopeV2 } from "@collaborative-whiteboard/shared";
 import { SceneEngine } from "../../src/scene/sceneEngine";
 import { renderIRFrame } from "../../src/scene/canvasIRRenderer";
@@ -136,7 +136,13 @@ describe("SceneEngine dirty rendering", () => {
 		const sliced = createCanvasContext();
 		engine.renderFull(expected, WIDTH, HEIGHT);
 		const steps = engine.renderFullSteps(sliced, WIDTH, HEIGHT);
-		let count = 0;
+		const layerPrototype = typeof OffscreenCanvasRenderingContext2D === "undefined" ? CanvasRenderingContext2D.prototype : OffscreenCanvasRenderingContext2D.prototype;
+		const drawn = vi.spyOn(layerPrototype, "quadraticCurveTo");
+		const first = steps.next();
+		expect(first.done).toBe(false);
+		expect(drawn).toHaveBeenCalled();
+		drawn.mockRestore();
+		let count = 1;
 		while (!steps.next().done) count += 1;
 		expect(count).toBeGreaterThan(1);
 		expect(sliced.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(expected.getImageData(0, 0, WIDTH, HEIGHT).data);
