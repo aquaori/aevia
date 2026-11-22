@@ -13,10 +13,10 @@ const cellBounds = (cellX: number) => ({
 describe("SpatialGridIndex", () => {
 	it("keeps earlier chunks registered when an element crosses the chunk cell limit", () => {
 		const index = new SpatialGridIndex();
-		for (let cell = 0; cell < 9; cell += 1) index.addAtom("stroke", cell, cellBounds(cell));
+		for (let cell = 0; cell < 17; cell += 1) index.addAtom("stroke", cell, cellBounds(cell));
 
 		expect(index.query(cellBounds(0)).atomRefs).toContain(0);
-		expect(index.query(cellBounds(8)).atomRefs).toContain(8);
+		expect(index.query(cellBounds(16)).atomRefs).toContain(16);
 		expect(index.stats().chunks).toBe(2);
 	});
 });
