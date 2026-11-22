@@ -108,6 +108,21 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("keeps dense local redraw in full-scene paint order", () => {
+		const engine = new SceneEngine();
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		engine.applyOperation({ ...stroke, payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 3 } }, points: Array.from({ length: 4000 }, (_, i) => ({ x: .05 + (i % 1000) / 1250, y: .25 + Math.sin(i / 40) * .1, p: .5, lamport: i + 2 })) } });
+		const dirty = createCanvasContext();
+		const full = createCanvasContext();
+		engine.renderFull(dirty, WIDTH, HEIGHT);
+		engine.renderFull(full, WIDTH, HEIGHT);
+		const rect = { minX: 0, minY: 0, maxX: 240, maxY: 180, width: 240, height: 180 };
+		const result = engine.renderDirty(dirty, rect, WIDTH, HEIGHT);
+		expect(result.mode).toBe("dirty");
+		expect(result.candidateAtoms).toBeGreaterThan(2048);
+		expect(dirty.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(full.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
 	it("paints a topmost pen increment identically to full replay and rejects older atoms", () => {
 		const engine = new SceneEngine();
 		engine.applyOperation(operations[0]!);

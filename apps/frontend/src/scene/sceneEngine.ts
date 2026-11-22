@@ -160,16 +160,29 @@ export class SceneEngine extends SceneCore {
 		let renderedAtoms = 0;
 		for (const region of regions) {
 			const dirtyRect = region.dirtyRect;
-			region.candidateRefs.sort((left, right) => compareRenderOrder(this.atoms[left]!.order, this.atoms[right]!.order));
+			const refs = this.orderDirtyCandidates(region.candidateRefs);
 			ctx.save();
 			ctx.beginPath();
 			ctx.clearRect(dirtyRect.minX, dirtyRect.minY, dirtyRect.width, dirtyRect.height);
 			ctx.rect(dirtyRect.minX, dirtyRect.minY, dirtyRect.width, dirtyRect.height);
 			ctx.clip();
-			renderedAtoms += this.renderAtomRefs(ctx, region.candidateRefs, logicalWidth, logicalHeight, excludedElementIds);
+			renderedAtoms += this.renderAtomRefs(ctx, refs, logicalWidth, logicalHeight, excludedElementIds);
 			ctx.restore();
 		}
 		return { mode: "dirty", gridCells, candidateChunks, candidateAtoms: uniqueCandidates.size, renderedAtoms };
+	}
+
+	private orderDirtyCandidates(refs: number[]) {
+		// Dense regions benefit from scanning the existing order rather than
+		// comparing many candidates; sparse regions should not scan the scene.
+		if (refs.length >= 2048 && refs.length >= this.atoms.length * 0.25) {
+			const selected = new Set(refs);
+			const ordered: number[] = [];
+			for (const ref of this.order.refs()) if (selected.has(ref)) ordered.push(ref);
+			return ordered;
+		}
+		refs.sort((left, right) => compareRenderOrder(this.atoms[left]!.order, this.atoms[right]!.order));
+		return refs;
 	}
 
 	private clearContext(ctx: DrawingContext, _width: number, _height: number) {
