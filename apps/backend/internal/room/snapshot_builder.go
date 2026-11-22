@@ -18,6 +18,23 @@ func NewSnapshotBuilder(cfg config.Config) SnapshotBuilder {
 	return SnapshotBuilder{cfg: cfg}
 }
 
+// newInitSnapshotState contains only the detached data consumed by Init. The
+// actor already captured clear watermarks at the same room sequence, so this
+// read-only state must not rebuild them from the filtered command subset.
+func newInitSnapshotState(room domain.Room, commands []domain.Command, clearBefore map[int]sceneOrderKey) State {
+	commandMap := make(map[string]domain.Command, len(commands))
+	for _, cmd := range commands {
+		commandMap[cmd.ID()] = cmd
+	}
+	return State{
+		Room:        room,
+		RoomSeq:     room.DurableSeq,
+		Commands:    commandMap,
+		Index:       NewPagePointIndex(commands),
+		ClearBefore: clearBefore,
+	}
+}
+
 func (b SnapshotBuilder) Init(state State, pageID int) InitStream {
 	return b.init(state, pageID, true)
 }

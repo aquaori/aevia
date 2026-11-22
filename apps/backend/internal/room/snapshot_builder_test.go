@@ -3,6 +3,7 @@ package room
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,25 @@ import (
 	"collaborative-whiteboard/apps/backend/internal/domain"
 	"collaborative-whiteboard/apps/backend/internal/protocol"
 )
+
+func TestInitSnapshotStateMatchesFullState(t *testing.T) {
+	room := domain.Room{RoomID: "room", TotalPage: 1, DurableSeq: 12}
+	commands := []domain.Command{
+		stateTestPathCommand("old", 1, 0, domain.Point{X: 0.2, Y: 0.2, P: 0.5, Lamport: 1}),
+		stateTestPathCommand("new", 3, 0, domain.Point{X: 0.8, Y: 0.8, P: 0.5, Lamport: 3}),
+	}
+	watermarks := map[int]sceneOrderKey{0: {Lamport: 2, OpID: "clear"}}
+	full := NewState(room, commands)
+	full.ClearBefore = watermarks
+	minimal := newInitSnapshotState(room, commands, watermarks)
+	builder := NewSnapshotBuilder(config.Config{InitPreloadPageCount: 1, InitCommandChunkSize: 32, InitFlatPointChunkSize: 512})
+	want, got := builder.initDetached(full, 0), builder.initDetached(minimal, 0)
+	want.CommandChunks, got.CommandChunks = want.prepareCommands(), got.prepareCommands()
+	if want.SnapshotVersion != got.SnapshotVersion || !reflect.DeepEqual(want.Meta, got.Meta) ||
+		!reflect.DeepEqual(want.RenderChunks, got.RenderChunks) || !reflect.DeepEqual(want.CommandChunks, got.CommandChunks) {
+		t.Fatal("minimal initialization snapshot differs from full state")
+	}
+}
 
 func TestDetachedInitUsesIndependentSnapshotCommands(t *testing.T) {
 	live := domain.NewCommand(map[string]any{

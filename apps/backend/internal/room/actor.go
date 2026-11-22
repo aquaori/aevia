@@ -608,8 +608,7 @@ func (a *Actor) handleJoin(msg joinMessage) {
 				}
 				initialMaxLamport := maxCommandLamport(capturedCommands)
 				capturedCommands = nil
-				state := NewState(room, initialCommands)
-				state.ClearBefore = clearBefore
+				state := newInitSnapshotState(room, initialCommands, clearBefore)
 				streamResult.Init = a.builder.initDetached(state, client.PageID)
 				streamResult.Init.Meta["maxLamport"] = initialMaxLamport
 				<-snapshotSlots

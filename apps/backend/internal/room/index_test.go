@@ -67,6 +67,25 @@ func TestPagePointIndexRebuildsSameLengthUpdates(t *testing.T) {
 	}
 }
 
+func TestPagePointIndexPreservesLegacyAndSceneIDCollisionRemoval(t *testing.T) {
+	create := domain.NewCommand(map[string]any{
+		"id": "scene-create", "type": "scene-op", "userId": "user-1", "pageId": 0,
+		"sceneOperation": map[string]any{
+			"opId": "scene-create", "elementId": "stroke", "pageId": 0, "kind": "element.create",
+			"payload": map[string]any{
+				"descriptor": map[string]any{"elementKind": "path", "recipeId": "stroke", "toolId": "pen", "style": map[string]any{"color": "#000", "size": 3.0}},
+				"points":     []any{map[string]any{"x": 0.1, "y": 0.2, "p": 0.5, "lamport": 1.0}},
+			},
+		},
+	})
+	legacy := stateTestPathCommand("stroke", 2, 0, domain.Point{X: 0.8, Y: 0.8, P: 0.5, Lamport: 2})
+	idx := NewPagePointIndex([]domain.Command{create, legacy})
+	points := idx.PagePoints([]int{0})
+	if len(points) != 1 || points[0].X != 0.8 {
+		t.Fatalf("expected legacy command to replace colliding scene path, got %+v", points)
+	}
+}
+
 func TestPagePointIndexProjectsV2PathFragmentsIntoOrderedPointStream(t *testing.T) {
 	create := domain.NewCommand(map[string]any{
 		"id": "create-op", "type": "scene-op", "userId": "user-1", "pageId": 0,
