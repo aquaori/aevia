@@ -543,11 +543,10 @@ func (a *Actor) handleJoin(msg joinMessage) {
 		// Pin a durable read view at the actor sequence; build and send outside
 		// the actor while later events wait in the bounded per-client queue.
 		var snapshot *storage.ReadSnapshot
-		var snapshotCtx context.Context
 		var cancel context.CancelFunc
 		if resume == "snapshot" {
 			var err error
-			snapshot, snapshotCtx, cancel, err = a.pinSnapshot()
+			snapshot, _, cancel, err = a.pinSnapshot()
 			if err != nil {
 				if client.Abort != nil {
 					client.Abort()
@@ -578,7 +577,7 @@ func (a *Actor) handleJoin(msg joinMessage) {
 		a.state.Clients[client.ID] = client
 		streamResult := result
 		snapshotSeq := a.state.RoomSeq
-		var initialIDs []string
+		var initialCommands []domain.Command
 		var initialMaxLamport float64
 		var clearBefore map[int]sceneOrderKey
 		if snapshot != nil {
@@ -591,35 +590,27 @@ func (a *Actor) handleJoin(msg joinMessage) {
 			for _, cmd := range a.state.Commands {
 				page, ok := cmd.PageID()
 				if ok && pages[page] && commandVisibleAfterClear(cmd, clearBefore) && !isHiddenPathAppend(cmd, hiddenPaths) {
-					initialIDs = append(initialIDs, cmd.ID())
+					// State replaces stored command snapshots on mutation. Captured
+					// pointers therefore remain stable after the actor handles a write.
+					initialCommands = append(initialCommands, cmd)
 				}
 			}
 			initialMaxLamport = maxCommandLamport(a.state.Commands)
 		}
 		go func() {
 			if snapshot != nil {
-				commands, err := snapshot.CommandsByID(snapshotCtx, initialIDs)
 				snapshot.Close()
 				cancel()
-				if err == nil && len(commands) != len(initialIDs) {
-					err = errors.New("snapshot missing selected commands")
-				}
-				if err != nil {
-					<-snapshotSlots
-					if client.Abort != nil {
-						client.Abort()
-					}
-					return
-				}
 				room := streamResult.Room
 				room.DurableSeq = snapshotSeq
-				state := NewState(room, commands)
+				state := NewState(room, initialCommands)
 				state.ClearBefore = clearBefore
-				streamResult.Init = a.builder.Init(state, client.PageID)
+				streamResult.Init = a.builder.initDetached(state, client.PageID)
 				streamResult.Init.Meta["maxLamport"] = initialMaxLamport
 				<-snapshotSlots
 			}
 			sendInitStream(out, streamResult.Room.Name, client, streamResult, true)
+			streamResult.Init = InitStream{}
 			for {
 				select {
 				case event := <-live:

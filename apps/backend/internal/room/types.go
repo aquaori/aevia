@@ -1,6 +1,10 @@
 package room
 
-import "collaborative-whiteboard/apps/backend/internal/domain"
+import (
+	"encoding/json"
+
+	"collaborative-whiteboard/apps/backend/internal/domain"
+)
 
 type ClientID string
 
@@ -38,6 +42,7 @@ type InitStream struct {
 	Meta            map[string]any
 	RenderChunks    []RenderChunk
 	CommandChunks   []CommandChunk
+	prepareCommands func() []CommandChunk
 }
 
 type RenderChunk struct {
@@ -52,6 +57,7 @@ type CommandChunk struct {
 	ChunkIndex int
 	IsLast     bool
 	Commands   []domain.Command
+	encoded    []json.RawMessage
 }
 
 type PageChangeRequest struct {

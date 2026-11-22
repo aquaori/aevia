@@ -613,7 +613,8 @@ export class SceneCore implements SceneCorePort {
 		dirtyRect: AabbBox,
 		logicalWidth: number,
 		logicalHeight: number,
-		excludedElementIds: ReadonlySet<string> = new Set()
+		excludedElementIds: ReadonlySet<string> = new Set(),
+		ordered = true
 	) {
 		const normalized = this.pixelRectToNormalized(dirtyRect, logicalWidth, logicalHeight);
 		const query = this.spatial.query(normalized);
@@ -626,7 +627,7 @@ export class SceneCore implements SceneCorePort {
 				intersects(transformBounds(element!.matrix, atom.bounds), normalized)
 			);
 		});
-		candidateRefs.sort((left, right) => compareRenderOrder(this.atoms[left]!.order, this.atoms[right]!.order));
+		if (ordered) candidateRefs.sort((left, right) => compareRenderOrder(this.atoms[left]!.order, this.atoms[right]!.order));
 		return {
 			candidateRefs,
 			gridCells: query.gridCells,

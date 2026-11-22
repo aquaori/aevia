@@ -153,7 +153,7 @@ export class SceneEngine extends SceneCore {
 			const maxX = Math.ceil((dirtyRect.maxX + DIRTY_PADDING) * scaleX) / scaleX;
 			const maxY = Math.ceil((dirtyRect.maxY + DIRTY_PADDING) * scaleY) / scaleY;
 			const paintRect = { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
-			return { dirtyRect: paintRect, ...this.queryDirtyCandidates(paintRect, logicalWidth, logicalHeight, excludedElementIds) };
+			return { dirtyRect: paintRect, ...this.queryDirtyCandidates(paintRect, logicalWidth, logicalHeight, excludedElementIds, false) };
 		});
 		const uniqueCandidates = new Set<number>();
 		for (const region of regions) for (const ref of region.candidateRefs) uniqueCandidates.add(ref);
@@ -174,6 +174,7 @@ export class SceneEngine extends SceneCore {
 		let renderedAtoms = 0;
 		for (const region of regions) {
 			const dirtyRect = region.dirtyRect;
+			region.candidateRefs.sort((left, right) => compareRenderOrder(this.atoms[left]!.order, this.atoms[right]!.order));
 			ctx.save();
 			ctx.beginPath();
 			ctx.clearRect(dirtyRect.minX, dirtyRect.minY, dirtyRect.width, dirtyRect.height);

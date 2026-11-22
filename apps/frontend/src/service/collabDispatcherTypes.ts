@@ -111,6 +111,7 @@ export interface CollabMessageDispatcherOptions {
 	notifyRemoteTextPatch?: (elementId: string) => void;
 	onInitConnectionState: () => void;
 	onInitSnapshotCommitted?: (snapshotVersion: number) => void;
+	onLegacyPageChangeCommitted?: () => void;
 	getInitLocalCommands?: () => Command[];
 	onInitStreamInvalid?: () => void;
 	emitHook?: <K extends keyof EditorHookMap>(event: K, payload: EditorHookMap[K]) => void;

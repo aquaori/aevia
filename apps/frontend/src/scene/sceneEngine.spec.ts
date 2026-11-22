@@ -620,6 +620,12 @@ describe("SpatialGridIndex", () => {
 });
 
 describe("DirtyRegionSet", () => {
+	it("keeps a small dense update local when most of the scene is unaffected", () => {
+		const regions = new DirtyRegionSet();
+		regions.add({ minX: 8, minY: 8, maxX: 32, maxY: 32, width: 24, height: 24 });
+		expect(regions.shouldRenderFull(1000, 1000, 44, 100, false)).toBe(false);
+		expect(regions.shouldRenderFull(1000, 1000, 65, 100, false)).toBe(true);
+	});
 	it("uses separate enter and exit thresholds for dense-frame fallback", () => {
 		const regions = new DirtyRegionSet();
 		regions.add({ minX: 0, minY: 0, maxX: 360, maxY: 1000, width: 360, height: 1000 });

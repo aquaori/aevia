@@ -44,6 +44,10 @@ func sendInitStream(out chan Outbound, roomName string, client ClientInfo, resul
 	}
 	renderDuration := time.Since(renderStartedAt)
 	commandsStartedAt := time.Now()
+	if result.Init.prepareCommands != nil {
+		result.Init.CommandChunks = result.Init.prepareCommands()
+		result.Init.prepareCommands = nil
+	}
 	sendCommandStream(ch, "init", 0, result.Init)
 	if ch.failed {
 		return
@@ -222,7 +226,20 @@ func sendCommandStream(ch *streamSender, prefix string, requestID int, stream In
 		if ch.failed {
 			return
 		}
-		chunkData := map[string]any{"snapshotVersion": stream.SnapshotVersion, "chunkIndex": chunk.ChunkIndex, "isLastChunk": chunk.IsLast, "commands": chunk.Commands}
+		var commands any = chunk.Commands
+		if len(chunk.encoded) == len(chunk.Commands) {
+			valid := true
+			for _, encoded := range chunk.encoded {
+				if encoded == nil {
+					valid = false
+					break
+				}
+			}
+			if valid {
+				commands = chunk.encoded
+			}
+		}
+		chunkData := map[string]any{"snapshotVersion": stream.SnapshotVersion, "chunkIndex": chunk.ChunkIndex, "isLastChunk": chunk.IsLast, "commands": commands}
 		if requestID > 0 {
 			chunkData["requestId"] = requestID
 		}

@@ -517,6 +517,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 		getActivePageChangeRequestId: options.getActivePageChangeRequestId,
 		getActivePageChangeTargetId: options.getActivePageChangeTargetId,
 		clearActivePageChangeRequest: options.clearActivePageChangeRequest,
+		onLegacyPageChangeCommitted: () => { void options.confirmInitScene?.(); },
 		setTool: options.setTool,
 		insertCommand: options.insertCommand,
 		removeCommand: options.removeCommand,

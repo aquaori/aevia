@@ -3,7 +3,30 @@ package room
 import (
 	"testing"
 	"time"
+
+	"collaborative-whiteboard/apps/backend/internal/domain"
 )
+
+func TestInitDefersCommandPreparationUntilAfterRenderStream(t *testing.T) {
+	queue := make(chan Outbound, 16)
+	preparedAfter := 0
+	stream := InitStream{SnapshotVersion: 1, Meta: map[string]any{"pageId": 0, "loadedPageIds": []int{0}},
+		prepareCommands: func() []CommandChunk {
+			preparedAfter = len(queue)
+			return chunkCommands([]domain.Command{domain.NewCommand(map[string]any{"id": "a", "pageId": 0})}, 32)
+		},
+	}
+	sendInitStream(queue, "room", ClientInfo{Send: queue}, JoinResult{Room: domain.Room{RoomID: "room"}, Init: stream}, false)
+	if preparedAfter != 3 {
+		t.Fatalf("command preparation started after %d messages, want init meta and complete render stream", preparedAfter)
+	}
+	want := []string{"init-meta", "init-render-meta", "init-render-done", "init-commands-meta", "init-commands-chunk", "init-commands-done", "init-complete"}
+	for _, kind := range want {
+		if got := (<-queue).JSON.(Envelope).Type; got != kind {
+			t.Fatalf("got %q, want %q", got, kind)
+		}
+	}
+}
 
 func TestPageStreamAbortsWhenQueueFills(t *testing.T) {
 	queue := make(chan Outbound, 1)
