@@ -108,6 +108,29 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("rebuilds moved content without clipping antialiased tile edges", () => {
+		const engine = new SceneEngine(); engine.applyOperation(operations[0]!);
+		const ctx = createCanvasContext(); engine.renderFull(ctx, WIDTH, HEIGHT);
+		const oldBounds = pixelRect(engine.getElementBounds("background-shape")!);
+		engine.applyOperation(transform); const newBounds = pixelRect(engine.getElementBounds("background-shape")!);
+		const ref = createCanvasContext(); engine.renderFull(ref, WIDTH, HEIGHT);
+		for (let y = 0; y < HEIGHT; y += 64) for (let x = 0; x < WIDTH; x += 64) {
+			if (![oldBounds, newBounds].some((b) => x <= b.maxX + 24 && x + 64 >= b.minX - 24 && y <= b.maxY + 24 && y + 64 >= b.minY - 24)) continue;
+			const staging = createCanvasContext();
+			engine.renderFull(staging, WIDTH, HEIGHT);
+			const tileWidth = Math.min(64, WIDTH - x), tileHeight = Math.min(64, HEIGHT - y);
+			ctx.clearRect(x, y, tileWidth, tileHeight);
+			ctx.drawImage(staging.canvas, x, y, tileWidth, tileHeight, x, y, tileWidth, tileHeight);
+		}
+		const a = ctx.getImageData(0, 0, WIDTH, HEIGHT).data, b = ref.getImageData(0, 0, WIDTH, HEIGHT).data;
+		let max = 0, at = 0;
+		for (let i = 0; i < a.length; i += 4) {
+			let diff = Math.abs(a[i + 3]! - b[i + 3]!);
+			for (let channel = 0; channel < 3; channel++) diff = Math.max(diff, Math.abs(a[i + channel]! * a[i + 3]! - b[i + channel]! * b[i + 3]!) / 255);
+			if (diff > max) { max = diff; at = i / 4; }
+		}
+		expect(max, `maximum premultiplied difference at ${at % WIDTH},${Math.floor(at / WIDTH)}`).toBeLessThanOrEqual(2);
+	});
 	it("preserves ordered prefix compositing for a later translucent stroke", () => {
 		const engine = new SceneEngine();
 		engine.applyOperation(operations[0]!);
