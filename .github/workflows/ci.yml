@@ -22,8 +22,6 @@ on:
         description: Commit confirmed in CI hub
         required: false
         type: string
-  schedule:
-    - cron: "0 19 * * *"
 
 permissions:
   contents: read
