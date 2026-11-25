@@ -161,6 +161,7 @@ export const openRoomPage = async (
 	}, { token: user.token, userName: user.userName, userId: user.userId, expiresAt: user.expiresAt ?? null });
 	await page.goto(`${config.frontendUrl}/room`);
 	await page.locator("canvas").first().waitFor({ timeout: 30000 });
+	await page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 30000 });
 	await installCanvasObserver(page);
 
 	return {
