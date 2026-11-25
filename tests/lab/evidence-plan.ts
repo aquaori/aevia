@@ -410,6 +410,54 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 	return { steps: selectedSteps, artifacts: artifacts.filter(artifact => selectedIds.has(artifact.stepId)) };
 };
 
+export const externalCaseFamilyOf = (id: string): string => {
+	const definition = Object.values(EXTERNAL_CASES).find(item => item.id === id || (item.id === "full-render" && /^full-render-\d+$/.test(id)));
+	if (!definition) throw new Error(`Unknown external case: ${id}`);
+	return id.startsWith("boundary-") ? id : id === EXTERNAL_CASES.networkRecovery.id ? "resilience" :
+		id.startsWith("full-render-") || id === EXTERNAL_CASES.remoteFirstPixelPerformance.id || id === EXTERNAL_CASES.localFirstPixelPerformance.id ? "standard" : "correctness";
+};
+
+export const buildExternalSelectionPlans = (
+	ctx: LabPlanContext,
+	caseIds: string[],
+	caseKeys?: string[],
+	stepPrefix = "external-focused",
+): LabEvidencePlan => {
+	const steps: LabEvidenceStep[] = [];
+	const artifacts: ExpectedArtifact[] = [];
+	const families = new Map<string, string[]>();
+	for (const id of caseIds) {
+		const family = externalCaseFamilyOf(id);
+		families.set(family, [...(families.get(family) ?? []), id]);
+	}
+	for (const [family, ids] of families) {
+		const correctness = family === "correctness";
+		const suite = correctness ? "correctness-full" : "performance-external";
+		const caseSet = family.startsWith("boundary-") ? "boundary" : family;
+		const stepId = correctness ? stepPrefix : `${stepPrefix}-${family}`;
+		const reportDir = correctness ? "" : family;
+		const tag = correctness ? suite : `${suite}-${caseSet}`;
+		const keys = caseKeys?.filter(key => ids.includes(key.split("|")[0]!)) ?? [];
+		const scales = ids.filter(id => /^full-render-\d+$/.test(id)).map(id => Number(id.slice("full-render-".length)));
+		const selectionFlags = `${keys.length ? ` --case-keys=${q(ctx, keys.join(","))}` : ""}${scales.length ? ` --scales=${scales.join(",")}` : ""}`;
+		steps.push({
+			id: stepId,
+			title: `Focused external case (${ids.length})`,
+			description: "Running selected cases in their owning suite.",
+			command: externalRun(ctx, suite, ` --case-ids=${ids.join(",")}${selectionFlags}${correctness ? "" : ` --case-set=${caseSet} --matrix=${caseSet === "standard"}${caseSet === "boundary" ? boundaryScalesFlag(boundaryScaleList()) : ""}`}`, reportDir),
+			cwd: ctx.frontendDir,
+			requiresServices: true,
+			freshServices: caseSet === "boundary",
+			timeoutMs: 900000,
+			env: ctx.externalEnv,
+		});
+		const prefix = `external/${reportDir ? reportDir + "/" : ""}${tag}`;
+		artifacts.push({ id: stepId, stepId, kind: "external", path: `${prefix}-external-results.json`, expectedCases: ids, expectedCaseKeys: keys.length ? keys : undefined });
+		artifacts.push({ id: `${stepId}-gate`, stepId, kind: "lab-gate", path: `${prefix}-lab-gate.json` });
+	}
+	return { steps, artifacts };
+};
+
 export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResult): LabEvidencePlan => {
 	const steps: LabEvidenceStep[] = [];
 	const artifacts: ExpectedArtifact[] = [];
@@ -473,33 +521,9 @@ export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResul
 	});
 	const external = selection.selections.find((item) => item.kind === "external");
 	if (external && external.caseIds.length > 0) {
-		const families = new Map<string, string[]>();
-		for (const id of external.caseIds) {
-			const definition = Object.values(EXTERNAL_CASES).find(item => item.id === id || (item.id === "full-render" && /^full-render-\d+$/.test(id)));
-			if (!definition) throw new Error(`Unknown external case: ${id}`);
-			const family = id.startsWith("boundary-") ? id : id === EXTERNAL_CASES.networkRecovery.id ? "resilience" :
-				id.startsWith("full-render-") || id === EXTERNAL_CASES.remoteFirstPixelPerformance.id || id === EXTERNAL_CASES.localFirstPixelPerformance.id ? "standard" : "correctness";
-			families.set(family, [...(families.get(family) ?? []), id]);
-		}
-		for (const [family, ids] of families) {
-			const correctness = family === "correctness";
-			const suite = correctness ? "correctness-full" : "performance-external";
-			const caseSet = family.startsWith("boundary-") ? "boundary" : family;
-			const stepId = correctness ? "external-focused" : `external-focused-${family}`;
-			const reportDir = correctness ? "" : family;
-			const tag = correctness ? suite : `${suite}-${caseSet}`;
-			const keys = external.caseKeys?.filter(key => ids.includes(key.split("|")[0]!)) ?? [];
-			const scales = ids.filter(id => /^full-render-\d+$/.test(id)).map(id => Number(id.slice("full-render-".length)));
-			const selectionFlags = `${keys.length ? ` --case-keys=${q(ctx, keys.join(","))}` : ""}${scales.length ? ` --scales=${scales.join(",")}` : ""}`;
-			steps.push({
-				id: stepId, title: `Focused external case (${ids.length})`, description: "Running selected cases in their owning suite.",
-				command: externalRun(ctx, suite, ` --case-ids=${ids.join(",")}${selectionFlags}${correctness ? "" : ` --case-set=${caseSet} --matrix=${caseSet === "standard"}${caseSet === "boundary" ? boundaryScalesFlag(boundaryScaleList()) : ""}`}`, reportDir),
-				cwd: ctx.frontendDir, requiresServices: true, freshServices: caseSet === "boundary", timeoutMs: 900000, env: ctx.externalEnv
-			});
-			const prefix = `external/${reportDir ? reportDir + "/" : ""}${tag}`;
-			artifacts.push({ id: stepId, stepId, kind: "external", path: `${prefix}-external-results.json`, expectedCases: ids, expectedCaseKeys: keys.length ? keys : undefined });
-			artifacts.push({ id: `${stepId}-gate`, stepId, kind: "lab-gate", path: `${prefix}-lab-gate.json` });
-		}
+		const extPlan = buildExternalSelectionPlans(ctx, external.caseIds, external.caseKeys, "external-focused");
+		steps.push(...extPlan.steps);
+		artifacts.push(...extPlan.artifacts);
 	}
 
 	steps.push(sourceCheckStep());

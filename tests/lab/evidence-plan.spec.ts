@@ -1,6 +1,7 @@
 // File role: deterministic checks for the lab evidence plans behind smoke/nightly/single modes.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	buildExternalSelectionPlans,
 	buildLabEvidencePlan,
 	buildNightlyPlan,
 	buildSinglePlan,
@@ -67,6 +68,19 @@ describe("lab evidence plans", () => {
 		const externalCases = plan.artifacts.filter(item => item.kind === "external").flatMap(item => item.expectedCases ?? []);
 		expect(externalCases).toContain("late-joiner-visual-consistency");
 		expect(externalCases.filter(id => id === "harness-health")).toHaveLength(1);
+	});
+
+	it("routes non-correctness external cases to their owning performance suites", () => {
+		const plan = buildExternalSelectionPlans(
+			context(),
+			["undo-redo-convergence", "resilience-network-recovery"],
+			undefined,
+			"external-extra",
+		);
+		expect(stepIds(plan)).toEqual(["external-extra", "external-extra-resilience"]);
+		expect(plan.steps[0]?.command).toContain("--suite=correctness-full");
+		expect(plan.steps[1]?.command).toContain("--suite=performance-external");
+		expect(plan.steps[1]?.command).toContain("--case-set=resilience");
 	});
 
 	it("builds a smoke plan with gate evidence and isolated services", () => {

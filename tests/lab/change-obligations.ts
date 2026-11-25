@@ -645,11 +645,15 @@ export const analyzeChangeObligations = (input: AnalyzeChangeObligationsInput = 
 					],
 				});
 			}
-			// Trigger historical obligations from base catalog for regression safety
+			// Trigger historical obligations from base catalog only for surviving test targets;
+			// if the dedicated test was deleted alongside the source module, do not schedule it.
 			const prevEntry = baseByPath.get(entry.path);
 			if (prevEntry) {
 				const prevEvidence = prevEntry.state === "excluded" ? prevEntry.alternativeEvidence ?? [] : getConfirmedEvidence(prevEntry);
-				rawTargets.push(...resolveEvidenceToRawTargets(prevEvidence, featureMap, goInfo));
+				const survivingEvidence = prevEvidence.filter(
+					(item) => validateEvidenceItemOnDisk(rootDir, item, featureMap, goInfo) === null,
+				);
+				rawTargets.push(...resolveEvidenceToRawTargets(survivingEvidence, featureMap, goInfo));
 			}
 			continue;
 		}
@@ -912,13 +916,21 @@ export const analyzeChangeObligations = (input: AnalyzeChangeObligationsInput = 
 		}
 	}
 
+	// Exclude any targets pointing to deleted test files before building selectedTargets
+	const survivingRawTargets = rawTargets.filter((target) => {
+		if ((target.kind === "vitest" || target.kind === "browser") && deletedTestPaths.has(target.file)) {
+			return false;
+		}
+		return true;
+	});
+
 	// Historical debt counts untouched uncovered/partial obligations in catalog
 	const changedManagedSet = new Set(changedFiles.filter((f) => f.category === "managed-source").map((f) => f.path));
 	const historicalDebt = (currentCatalog?.obligations ?? []).filter(
 		(item) => (item.state === "uncovered" || item.state === "partial") && !changedManagedSet.has(item.path),
 	).length;
 
-	const selectedTargets = coalesceRawTargets(rawTargets);
+	const selectedTargets = coalesceRawTargets(survivingRawTargets);
 	const report: ChangeObligationsReport = {
 		schemaVersion: 1,
 		baseSha: resolvedBaseSha,
@@ -943,7 +955,7 @@ export const analyzeChangeObligations = (input: AnalyzeChangeObligationsInput = 
 
 	return {
 		report,
-		rawTargets,
+		rawTargets: survivingRawTargets,
 		markdown: formatChangeObligationsMarkdown(report),
 	};
 };

@@ -19,7 +19,9 @@ import {
 	type LabResolveResult,
 } from "./lab/resolve-only";
 import {
+	buildExternalSelectionPlans,
 	buildLabEvidencePlan,
+	externalCaseFamilyOf,
 	PR_REQUIRED_EXTERNAL_CASE_IDS,
 	probeGoRaceDetector,
 	withCanvasOracle,
@@ -1314,10 +1316,22 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 					fixedExternalCaseIds: profile === "ci" ? CI_REQUIRED_EXTERNAL_CASE_IDS : PR_REQUIRED_EXTERNAL_CASE_IDS,
 				})
 			: undefined;
+	const extraCorrectnessIds = (obligationPlan?.extraExternalCaseIds ?? []).filter(
+		(id) => externalCaseFamilyOf(id) === "correctness",
+	);
+	const extraSuiteExternalIds = (obligationPlan?.extraExternalCaseIds ?? []).filter(
+		(id) => externalCaseFamilyOf(id) !== "correctness",
+	);
 	const basePlan = isCoreProfile(profile)
-		? managedEvidencePlan(profile, runDir, runId, source, obligationPlan?.extraExternalCaseIds ?? [])
+		? managedEvidencePlan(profile, runDir, runId, source, extraCorrectnessIds)
 		: buildLabEvidencePlan(profile, planContext, obligationPlan?.selection ?? options.selection);
 	const { steps, artifacts } = profile === "ci" || profile === "full" || profile === "nightly" ? withCanvasOracle(basePlan, planContext) : basePlan;
+	if (isCoreProfile(profile) && extraSuiteExternalIds.length > 0) {
+		const extraPlan = buildExternalSelectionPlans(planContext, extraSuiteExternalIds, undefined, "external-extra");
+		const sourceCheckIndex = steps.findIndex((step) => step.id === "source-check");
+		steps.splice(sourceCheckIndex < 0 ? steps.length : sourceCheckIndex, 0, ...extraPlan.steps);
+		artifacts.push(...extraPlan.artifacts);
+	}
 	if (obligationPlan) {
 		const initialSummary = obligationPlan.analysis.report.summary;
 		const initialLine = `0/${initialSummary.selectedCount}|${initialSummary.changedSources}|${initialSummary.newUncovered}|${initialSummary.historicalDebt}`;

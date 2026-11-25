@@ -190,6 +190,32 @@ describe("change obligations enforcement", () => {
 		expect(res.report.violations.some((v) => v.code === "INVALID_EVIDENCE_TARGET" || v.code === "DANGLING_TEST_REFERENCE")).toBe(true);
 	});
 
+	it("excludes a simultaneously deleted dedicated test when removing a managed source module", () => {
+		const rootDir = makeTempDir();
+		const baseCatalog = baseCatalogFixture();
+		const updatedCatalog: LabInventoryReport = {
+			...baseCatalog,
+			obligations: baseCatalog.obligations.filter((item) => item.path !== "apps/frontend/src/service/foo.ts"),
+		};
+		createMinimalWorkspace(rootDir, updatedCatalog);
+		fs.unlinkSync(path.join(rootDir, "apps/frontend/src/service/foo.ts"));
+		fs.unlinkSync(path.join(rootDir, "apps/frontend/src/service/foo.spec.ts"));
+
+		const res = analyzeChangeObligations({
+			rootDir,
+			baseSha: "base",
+			headSha: "head",
+			baseCatalogOverride: baseCatalog,
+			diffEntriesOverride: [
+				{ status: "D", path: "apps/frontend/src/service/foo.ts" },
+				{ status: "D", path: "apps/frontend/src/service/foo.spec.ts" },
+			],
+		});
+
+		expect(res.report.passed).toBe(true);
+		expect(res.report.selectedTargets).toEqual([]);
+	});
+
 	it("returns 0 selected targets for pure docs/markdown edits and expands shared changes conservatively", () => {
 		const rootDir = makeTempDir();
 		createMinimalWorkspace(rootDir, baseCatalogFixture());
