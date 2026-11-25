@@ -1,6 +1,6 @@
 // File role: Canvas adapter for the canonical scene core.
 import { compareRenderOrder, type AabbBox, type AffineMatrix, type RenderOrderKey } from "@collaborative-whiteboard/shared";
-import { renderIRItems } from "./canvasIRRenderer";
+import { renderIRItems, renderIRItemsSteps } from "./canvasIRRenderer";
 import { SceneCore } from "./sceneCore";
 import type { DirtyRenderMetrics } from "./sceneTypes";
 import type { RenderIRItem } from "./renderIR";
@@ -61,33 +61,19 @@ export class SceneEngine extends SceneCore {
 
 	*renderFullSteps(ctx: DrawingContext, logicalWidth: number, logicalHeight: number, excludedElementIds: ReadonlySet<string> = new Set()): Generator<void, number> {
 		this.clearContext(ctx, logicalWidth, logicalHeight);
-		let rendered = 0;
+		return yield* renderIRItemsSteps(ctx, this.fullRenderItemsInSteps(excludedElementIds), logicalWidth, logicalHeight, null, Infinity);
+	}
+
+	private *fullRenderItemsInSteps(excludedElementIds: ReadonlySet<string>): Generator<RenderIRItem | null> {
 		let refs: number[] = [];
-		let batch: RenderIRItem[] = [];
-		const flush = () => {
-			rendered += renderIRItems(ctx, batch, logicalWidth, logicalHeight);
-			batch = [];
-		};
 		for (const ref of this.order.refs()) {
 			refs.push(ref);
 			if (refs.length < 256) continue;
-			for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
-				const last = batch[batch.length - 1];
-				const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
-				if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
-				batch.push(item);
-			}
+			yield* this.renderItemsForRefs(refs, excludedElementIds);
 			refs = [];
-			yield;
+			yield null;
 		}
-		for (const item of this.renderItemsForRefs(refs, excludedElementIds)) {
-			const last = batch[batch.length - 1];
-			const grouped = last && (last.atom.toolId === "highlighter" || last.eraseMasks.length > 0);
-			if (batch.length >= 256 && (!grouped || last.atom.elementId !== item.atom.elementId)) flush();
-			batch.push(item);
-		}
-		if (batch.length) flush();
-		return rendered;
+		yield* this.renderItemsForRefs(refs, excludedElementIds);
 	}
 
 	renderAtomRefs(
@@ -153,7 +139,7 @@ export class SceneEngine extends SceneCore {
 			const maxX = Math.ceil((dirtyRect.maxX + DIRTY_PADDING) * scaleX) / scaleX;
 			const maxY = Math.ceil((dirtyRect.maxY + DIRTY_PADDING) * scaleY) / scaleY;
 			const paintRect = { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
-			return { dirtyRect: paintRect, ...this.queryDirtyCandidates(paintRect, logicalWidth, logicalHeight, excludedElementIds) };
+			return { dirtyRect: paintRect, ...this.queryDirtyCandidates(paintRect, logicalWidth, logicalHeight, excludedElementIds, false) };
 		});
 		const uniqueCandidates = new Set<number>();
 		for (const region of regions) for (const ref of region.candidateRefs) uniqueCandidates.add(ref);
@@ -174,15 +160,29 @@ export class SceneEngine extends SceneCore {
 		let renderedAtoms = 0;
 		for (const region of regions) {
 			const dirtyRect = region.dirtyRect;
+			const refs = this.orderDirtyCandidates(region.candidateRefs);
 			ctx.save();
 			ctx.beginPath();
 			ctx.clearRect(dirtyRect.minX, dirtyRect.minY, dirtyRect.width, dirtyRect.height);
 			ctx.rect(dirtyRect.minX, dirtyRect.minY, dirtyRect.width, dirtyRect.height);
 			ctx.clip();
-			renderedAtoms += this.renderAtomRefs(ctx, region.candidateRefs, logicalWidth, logicalHeight, excludedElementIds);
+			renderedAtoms += this.renderAtomRefs(ctx, refs, logicalWidth, logicalHeight, excludedElementIds);
 			ctx.restore();
 		}
 		return { mode: "dirty", gridCells, candidateChunks, candidateAtoms: uniqueCandidates.size, renderedAtoms };
+	}
+
+	private orderDirtyCandidates(refs: number[]) {
+		// Dense regions benefit from scanning the existing order rather than
+		// comparing many candidates; sparse regions should not scan the scene.
+		if (refs.length >= 2048 && refs.length >= this.atoms.length * 0.25) {
+			const selected = new Set(refs);
+			const ordered: number[] = [];
+			for (const ref of this.order.refs()) if (selected.has(ref)) ordered.push(ref);
+			return ordered;
+		}
+		refs.sort((left, right) => compareRenderOrder(this.atoms[left]!.order, this.atoms[right]!.order));
+		return refs;
 	}
 
 	private clearContext(ctx: DrawingContext, _width: number, _height: number) {

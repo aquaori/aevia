@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SceneOperationEnvelopeV2 } from "@collaborative-whiteboard/shared";
 import { SceneEngine } from "../../src/scene/sceneEngine";
-import { renderIRFrame } from "../../src/scene/canvasIRRenderer";
+import { renderIRFrame, renderIRItems } from "../../src/scene/canvasIRRenderer";
 import { drawPrimitive } from "../../src/scene/primitiveRenderer";
 import type { ShapeAtom } from "../../src/scene/sceneTypes";
 import { IDENTITY_MATRIX } from "@collaborative-whiteboard/shared";
@@ -108,6 +108,162 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("compares streamed opaque strokes with their final full replay", () => {
+		const engine = new SceneEngine();
+		const streamed = createCanvasContext();
+		for (let stroke = 0; stroke < 8; stroke++) {
+			for (let index = 0; index < 40; index++) {
+				const t = index / 39;
+				const refs = engine.ingestFlatPoint({
+					cmdId: `stream-${stroke}`, userId: "browser-test", pageId: 0,
+					tool: "pen", color: stroke % 2 ? "#e11d48" : "#111827", size: 8,
+					isDeleted: false, pointIndex: index, lamport: stroke * 40 + index + 1,
+					x: stroke === 0 ? 0.15 + t * 0.3 : 0.45 + (t - 0.5) * 0.28,
+					y: stroke === 0 ? 0.45 : 0.22 + t * 0.46 + (stroke - 1) * 0.01,
+					p: .5,
+				});
+				engine.renderAtomRefs(streamed, refs, WIDTH, HEIGHT);
+			}
+		}
+		engine.renderAtomRefs(streamed, engine.finishAllOpenStrokes(), WIDTH, HEIGHT);
+		const complete = createCanvasContext();
+		engine.renderFull(complete, WIDTH, HEIGHT);
+		const a = streamed.getImageData(0, 0, WIDTH, HEIGHT).data;
+		const b = complete.getImageData(0, 0, WIDTH, HEIGHT).data;
+		// Unfinished streamed strokes flush their tail atoms after later strokes,
+		// so initialization still needs its final reconciliation even for opaque pens.
+		expect(a.some((value, index) => value !== b[index])).toBe(true);
+	});
+	it("rebuilds moved content without clipping antialiased tile edges", () => {
+		const engine = new SceneEngine(); engine.applyOperation(operations[0]!);
+		const shape = operations[0]!;
+		if (shape.kind !== "element.create") throw new Error("Expected create");
+		for (let i = 0; i < 8; i++) engine.applyOperation({ ...shape, opId: `far-${i}`, elementId: `far-${i}`, lamport: 20 + i, historyGroupId: `far-${i}`, payload: { ...shape.payload, descriptor: { ...shape.payload.descriptor, box: { minX: .95, minY: .9, maxX: .96, maxY: .91, width: .01, height: .01 } } } });
+		const ctx = createCanvasContext(); engine.renderFull(ctx, WIDTH, HEIGHT);
+		const oldBounds = pixelRect(engine.getElementBounds("background-shape")!);
+		engine.applyOperation(transform); const newBounds = pixelRect(engine.getElementBounds("background-shape")!);
+		const ref = createCanvasContext(); engine.renderFull(ref, WIDTH, HEIGHT);
+		let locallyRendered = 0;
+		for (let y = 0; y < HEIGHT; y += 64) for (let x = 0; x < WIDTH; x += 64) {
+			if (![oldBounds, newBounds].some((b) => x <= b.maxX + 24 && x + 64 >= b.minX - 24 && y <= b.maxY + 24 && y + 64 >= b.minY - 24)) continue;
+			const staging = createCanvasContext();
+			const result = engine.renderDirty(staging, { minX: x - 24, minY: y - 24, maxX: x + 88, maxY: y + 88, width: 112, height: 112 }, WIDTH, HEIGHT);
+			if (result.mode === "dirty") locallyRendered++;
+			const tileWidth = Math.min(64, WIDTH - x), tileHeight = Math.min(64, HEIGHT - y);
+			ctx.clearRect(x, y, tileWidth, tileHeight);
+			ctx.drawImage(staging.canvas, x, y, tileWidth, tileHeight, x, y, tileWidth, tileHeight);
+		}
+		const a = ctx.getImageData(0, 0, WIDTH, HEIGHT).data, b = ref.getImageData(0, 0, WIDTH, HEIGHT).data;
+		let max = 0, at = 0;
+		for (let i = 0; i < a.length; i += 4) {
+			let diff = Math.abs(a[i + 3]! - b[i + 3]!);
+			for (let channel = 0; channel < 3; channel++) diff = Math.max(diff, Math.abs(a[i + channel]! * a[i + 3]! - b[i + channel]! * b[i + 3]!) / 255);
+			if (diff > max) { max = diff; at = i / 4; }
+		}
+		expect(max, `maximum premultiplied difference at ${at % WIDTH},${Math.floor(at / WIDTH)}`).toBeLessThanOrEqual(2);
+		expect(locallyRendered).toBeGreaterThan(0);
+	});
+	it("preserves ordered prefix compositing for a later translucent stroke", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(operations[0]!);
+		const cached = createCanvasContext();
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		const oldOrder = engine.lastAtomOrder();
+		const firstRef = engine.atomCount;
+		engine.applyOperation(operations[1]!);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const items = engine.getRenderIR().items.filter((item) => item.atom.ref >= firstRef);
+		expect(oldOrder).not.toBeNull();
+		renderIRItems(cached, items, WIDTH, HEIGHT);
+		expect(cached.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(reference.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
+	it("preserves translucent compositing across integer-aligned cached tiles", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(operations[0]!);
+		const prefix = createCanvasContext();
+		engine.renderFull(prefix, WIDTH, HEIGHT);
+		const firstRef = engine.atomCount;
+		engine.applyOperation(operations[1]!);
+		const suffix = engine.getRenderIR().items.filter((item) => item.atom.ref >= firstRef);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const tiled = createCanvasContext();
+		for (let y = 0; y < HEIGHT; y += 128) {
+			for (let x = 0; x < WIDTH; x += 128) {
+				tiled.save();
+				tiled.beginPath();
+				tiled.rect(x, y, 128, 128);
+				tiled.clip();
+				tiled.drawImage(prefix.canvas, 0, 0);
+				renderIRItems(tiled, suffix, WIDTH, HEIGHT);
+				tiled.restore();
+			}
+		}
+		expect(tiled.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(reference.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
+	it("requires a cached prefix to be rebuilt after an element moves", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation(operations[0]!);
+		const cached = createCanvasContext();
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		engine.applyOperation(transform);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const stalePixels = cached.getImageData(0, 0, WIDTH, HEIGHT).data;
+		const expectedPixels = reference.getImageData(0, 0, WIDTH, HEIGHT).data;
+		expect(stalePixels.some((value, index) => value !== expectedPixels[index])).toBe(true);
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		const rebuiltPixels = cached.getImageData(0, 0, WIDTH, HEIGHT).data;
+		expect(rebuiltPixels.every((value, index) => Math.abs(value - expectedPixels[index]!) <= 1)).toBe(true);
+	});
+	it("rejects direct painting for an older interleaved pen stroke", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation({ ...operations[0]!, lamport: 10 });
+		const cached = createCanvasContext();
+		engine.renderFull(cached, WIDTH, HEIGHT);
+		const previousOrder = engine.lastAtomOrder();
+		const firstRef = engine.atomCount;
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		engine.applyOperation({ ...stroke, lamport: 2, payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 22 } }, points: [{ x: .01, y: .5, p: .5, lamport: 2 }, { x: .99, y: .5, p: .5, lamport: 3 }] } });
+		expect(engine.renderNewPenAtomsOnTop(cached, firstRef, previousOrder, WIDTH, HEIGHT)).toBe(false);
+		const reference = createCanvasContext();
+		engine.renderFull(reference, WIDTH, HEIGHT);
+		const stale = cached.getImageData(0, 0, WIDTH, HEIGHT).data;
+		const expected = reference.getImageData(0, 0, WIDTH, HEIGHT).data;
+		expect(stale.some((value, index) => value !== expected[index])).toBe(true);
+	});
+	it("keeps dense local redraw in full-scene paint order", () => {
+		const engine = new SceneEngine();
+		const stroke = operations[1]!;
+		if (stroke.kind !== "element.create") throw new Error("Expected create");
+		const insidePoints = Array.from({ length: 2400 }, (_, i) => {
+			const row = Math.floor(i / 40);
+			const col = row % 2 === 0 ? i % 40 : 39 - (i % 40);
+			return { x: 0.06 + (col / 39) * 0.32, y: 0.08 + ((row % 30) / 29) * 0.32, p: 0.5, lamport: i + 2 };
+		});
+		const topPoints = Array.from({ length: 200 }, (_, i) => ({
+			x: 0.08 + (i / 199) * 0.28, y: 0.24 + Math.sin(i / 8) * 0.1, p: 0.5, lamport: 3000 + i,
+		}));
+		const outsidePoints = Array.from({ length: 1600 }, (_, i) => {
+			const row = Math.floor(i / 40);
+			const col = row % 2 === 0 ? i % 40 : 39 - (i % 40);
+			return { x: 0.65 + (col / 39) * 0.28, y: 0.66 + ((row % 20) / 19) * 0.26, p: 0.5, lamport: 4000 + i };
+		});
+		engine.applyOperation({ ...stroke, opId: "dense-inside", elementId: "dense-inside", historyGroupId: "dense-inside", payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 3 } }, points: insidePoints } });
+		engine.applyOperation({ ...stroke, opId: "dense-top", elementId: "dense-top", lamport: 3000, historyGroupId: "dense-top", payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#e11d48", size: 4 } }, points: topPoints } });
+		engine.applyOperation({ ...stroke, opId: "dense-outside", elementId: "dense-outside", lamport: 4000, historyGroupId: "dense-outside", payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 3 } }, points: outsidePoints } });
+		const dirty = createCanvasContext();
+		const full = createCanvasContext();
+		engine.renderFull(dirty, WIDTH, HEIGHT);
+		engine.renderFull(full, WIDTH, HEIGHT);
+		const rect = { minX: 0, minY: 0, maxX: 240, maxY: 180, width: 240, height: 180 };
+		const result = engine.renderDirty(dirty, rect, WIDTH, HEIGHT);
+		expect(result.mode).toBe("dirty");
+		expect(result.candidateAtoms).toBeGreaterThan(2048);
+		expect(dirty.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(full.getImageData(0, 0, WIDTH, HEIGHT).data);
+	});
 	it("paints a topmost pen increment identically to full replay and rejects older atoms", () => {
 		const engine = new SceneEngine();
 		engine.applyOperation(operations[0]!);
@@ -136,7 +292,13 @@ describe("SceneEngine dirty rendering", () => {
 		const sliced = createCanvasContext();
 		engine.renderFull(expected, WIDTH, HEIGHT);
 		const steps = engine.renderFullSteps(sliced, WIDTH, HEIGHT);
-		let count = 0;
+		const layerPrototype = typeof OffscreenCanvasRenderingContext2D === "undefined" ? CanvasRenderingContext2D.prototype : OffscreenCanvasRenderingContext2D.prototype;
+		const drawn = vi.spyOn(layerPrototype, "quadraticCurveTo");
+		const first = steps.next();
+		expect(first.done).toBe(false);
+		expect(drawn).toHaveBeenCalled();
+		drawn.mockRestore();
+		let count = 1;
 		while (!steps.next().done) count += 1;
 		expect(count).toBeGreaterThan(1);
 		expect(sliced.getImageData(0, 0, WIDTH, HEIGHT).data).toEqual(expected.getImageData(0, 0, WIDTH, HEIGHT).data);

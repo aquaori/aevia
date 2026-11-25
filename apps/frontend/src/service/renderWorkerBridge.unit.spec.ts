@@ -64,6 +64,17 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("validates initialization operations when drawing uses the main-thread fallback", () => {
+		const messages: Array<{ type: string }> = [];
+		vi.stubGlobal("Worker", class { postMessage(message: { type: string }) { messages.push(message); } terminate() {} });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			expect(bridge.isOffscreenEnabled()).toBe(false);
+			bridge.setInitSceneOperations([], 0);
+			expect(messages.some(({ type }) => type === "set-init-scene-operations")).toBe(true);
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
 	it("preserves interleaved stroke order before a scene query", async () => {
 		const messages: Array<{ type: string; data?: unknown; dispatchSeq?: number }> = [];
 		vi.stubGlobal("Worker", class {

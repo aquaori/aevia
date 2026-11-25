@@ -83,12 +83,19 @@ func (i *PagePointIndex) Upsert(cmd domain.Command) {
 	}
 	deleted := cmd.IsDeleted()
 	tool := domain.StringDefault(cmd.Get("tool"), "pen")
-	if locator, exists := i.locators[cmdID]; exists && canAppendIndexPoints(locator, pageID, len(points), deleted, tool) {
+	locator, exists := i.locators[cmdID]
+	if exists && canAppendIndexPoints(locator, pageID, len(points), deleted, tool) {
 		i.appendCommandPoints(cmd, locator.points)
 		return
 	}
 
-	i.Remove(cmdID)
+	// A new legacy command cannot have existing points unless it collides with
+	// a V2 scene path, whose points are indexed by element id instead of op id.
+	// Avoid a full-page fallback scan for the common new-command case.
+	_, scenePathCollision := i.scenePathStyles[cmdID]
+	if exists || scenePathCollision {
+		i.Remove(cmdID)
+	}
 	flatPoints := domain.FlattenCommand(cmd)
 	if len(flatPoints) == 0 {
 		i.locators[cmdID] = commandPointLocator{pageID: pageID, points: len(points), deleted: deleted, lastTool: tool, pointCmdID: cmdID}

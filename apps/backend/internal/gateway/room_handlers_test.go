@@ -71,7 +71,7 @@ func TestGenerateShareTokenForUnknownRoom(t *testing.T) {
 	}
 
 	status, body := do(t, server, "GET", "/generate-share-token?roomId=720005", nil, token)
-	if status != http.StatusBadRequest || body.Msg != "Room does not exist" {
+	if status != http.StatusUnauthorized || body.Msg != "房间会话已失效" {
 		t.Fatalf("expected a missing room to be rejected, got status=%d body=%+v", status, body)
 	}
 }
@@ -90,7 +90,7 @@ func TestRenewSessionRejectsForgedRoomIdentity(t *testing.T) {
 	}
 
 	status, body := do(t, server, "POST", "/renew-room-session", nil, token)
-	if status != http.StatusUnauthorized || body.Msg != "Room session is no longer valid" {
+	if status != http.StatusUnauthorized || body.Msg != "房间会话已失效" {
 		t.Fatalf("expected a forged room identity to be rejected, got status=%d body=%+v", status, body)
 	}
 }

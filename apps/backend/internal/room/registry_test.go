@@ -74,6 +74,69 @@ func TestRegistryGetUnknownRoom(t *testing.T) {
 	}
 }
 
+func TestDeletedRoomGetsFreshActorWhenRecreated(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	store := newTestStore(t, cfg)
+	registry := NewRegistry(store, cfg)
+	t.Cleanup(func() { registry.Shutdown(ctx) })
+	old, err := registry.Get(ctx, "room-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Delete(ctx, "room-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !old.Stopped() {
+		t.Fatal("old actor remained active")
+	}
+	if err := store.CreateRoom(ctx, domain.Room{RoomID: "room-1", Name: "new-room", CreatedAt: domain.NowMillis() + 1000, TotalPage: 1}); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := registry.Get(ctx, "room-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh == old || fresh.state.Room.Name != "new-room" {
+		t.Fatal("recreated room reused old state")
+	}
+}
+
+func TestRegistryRejectsLoadsDuringDeletion(t *testing.T) {
+	cfg := testConfig(t)
+	registry := NewRegistry(newTestStore(t, cfg), cfg)
+	registry.deleting["room-1"] = true
+	if _, err := registry.Get(context.Background(), "room-1"); err != ErrActorStopped {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestJoinRejectsGuestRevokedWhileQueued(t *testing.T) {
+	cfg := testConfig(t)
+	store := newTestStore(t, cfg)
+	ctx := context.Background()
+	if err := store.CreateGuest(ctx, "room-1", "guest", "editor"); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(store, cfg)
+	t.Cleanup(func() { registry.Shutdown(ctx) })
+	actor, err := registry.Get(ctx, "room-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The socket passed its gateway check, then the guest was kicked before the
+	// actor processed the already queued join.
+	if err := store.UpdateGuest(ctx, "room-1", "owner", "guest", "kick"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	defer close(done)
+	_, err = actor.Join(ClientInfo{ID: "stale", UserID: "guest", Send: make(chan Outbound, 64), Done: done}, 0, 0)
+	if err == nil {
+		t.Fatal("revoked guest joined through an already queued request")
+	}
+}
+
 // TestRegistryReplacesStoppedActor is the regression test for the eviction bug:
 // a stopped actor used to stay in the registry map, so every later join was
 // handed a dead actor, blocked forever waiting for a reply that could not come,
@@ -183,7 +246,11 @@ func testClientInfo() ClientInfo {
 
 func TestSlowInitialSnapshotDoesNotBlockRoom(t *testing.T) {
 	cfg := testConfig(t)
-	registry := NewRegistry(newTestStore(t, cfg), cfg)
+	store := newTestStore(t, cfg)
+	if err := store.CreateGuest(context.Background(), "room-1", "u1", "editor"); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(store, cfg)
 	t.Cleanup(func() { registry.Shutdown(context.Background()) })
 	actor, err := registry.Get(context.Background(), "room-1")
 	if err != nil {

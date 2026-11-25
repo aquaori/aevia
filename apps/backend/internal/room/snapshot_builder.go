@@ -18,14 +18,41 @@ func NewSnapshotBuilder(cfg config.Config) SnapshotBuilder {
 	return SnapshotBuilder{cfg: cfg}
 }
 
+// newInitSnapshotState contains only the detached data consumed by Init. The
+// actor already captured clear watermarks at the same room sequence, so this
+// read-only state must not rebuild them from the filtered command subset.
+func newInitSnapshotState(room domain.Room, commands []domain.Command, clearBefore map[int]sceneOrderKey) State {
+	commandMap := make(map[string]domain.Command, len(commands))
+	for _, cmd := range commands {
+		commandMap[cmd.ID()] = cmd
+	}
+	return State{
+		Room:        room,
+		RoomSeq:     room.DurableSeq,
+		Commands:    commandMap,
+		Index:       NewPagePointIndex(commands),
+		ClearBefore: clearBefore,
+	}
+}
+
 func (b SnapshotBuilder) Init(state State, pageID int) InitStream {
+	return b.init(state, pageID, true)
+}
+
+// initDetached is used only for a state reconstructed from an isolated read
+// snapshot. Its commands are no longer shared with the live room actor.
+func (b SnapshotBuilder) initDetached(state State, pageID int) InitStream {
+	return b.init(state, pageID, false)
+}
+
+func (b SnapshotBuilder) init(state State, pageID int, copyCommands bool) InitStream {
 	current := normalizePageID(pageID, state.Room.TotalPage)
 	loaded := initPageIDs(current, state.Room.TotalPage, b.cfg.InitPreloadPageCount)
 	return b.build(state, current, []int{current}, loaded, map[string]any{
 		"pageId":        current,
 		"totalPage":     state.Room.TotalPage,
 		"loadedPageIds": loaded,
-	})
+	}, copyCommands)
 }
 
 func (b SnapshotBuilder) PageChange(state State, req PageChangeRequest) InitStream {
@@ -46,33 +73,42 @@ func (b SnapshotBuilder) PageChange(state State, req PageChangeRequest) InitStre
 		"loadPageIds":   load,
 		"unloadPageIds": unload,
 		"mode":          "window",
-	})
+	}, true)
 }
 
-func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPageIDs []int, meta map[string]any) InitStream {
+func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPageIDs []int, meta map[string]any, copyCommands bool) InitStream {
 	startedAt := time.Now()
 	profile := os.Getenv("INIT_PROFILE") == "1"
 	pointsStartedAt := time.Now()
 	points := state.Index.VisiblePagePoints(renderPageIDs, state.ClearBefore)
 	pointsDuration := time.Since(pointsStartedAt)
 	commandsStartedAt := time.Now()
-	commands := commandsForPages(state.Commands, commandPageIDs, state.ClearBefore)
+	commands := commandsForPagesWithCopy(state.Commands, commandPageIDs, state.ClearBefore, copyCommands)
 	commandsDuration := time.Since(commandsStartedAt)
 	renderChunksStartedAt := time.Now()
 	renderChunks := chunkFlatPoints(points, b.cfg.InitFlatPointChunkSize)
 	renderChunksDuration := time.Since(renderChunksStartedAt)
 	commandChunksStartedAt := time.Now()
-	commandChunks := chunkCommands(commands, b.cfg.InitCommandChunkSize)
+	var commandChunks []CommandChunk
+	var prepareCommands func() []CommandChunk
+	if copyCommands {
+		commandChunks = chunkCommands(commands, b.cfg.InitCommandChunkSize)
+	} else {
+		prepareCommands = func() []CommandChunk { return chunkCommands(commands, b.cfg.InitCommandChunkSize) }
+	}
 	commandChunksDuration := time.Since(commandChunksStartedAt)
 	meta["maxLamport"] = maxCommandLamport(state.Commands)
-	meta["chunkSummary"] = map[string]any{
-		"renderChunks":       len(renderChunks),
-		"commandChunks":      len(commandChunks),
-		"totalRenderChunks":  len(renderChunks),
-		"totalCommandChunks": len(commandChunks),
-		"pointCount":         len(points),
-		"commandCount":       len(commands),
+	summary := map[string]any{
+		"renderChunks":      len(renderChunks),
+		"totalRenderChunks": len(renderChunks),
+		"pointCount":        len(points),
+		"commandCount":      len(commands),
 	}
+	if prepareCommands == nil {
+		summary["commandChunks"] = len(commandChunks)
+		summary["totalCommandChunks"] = len(commandChunks)
+	}
+	meta["chunkSummary"] = summary
 	if profile {
 		slog.Info("init profile build",
 			"page", pageID,
@@ -80,6 +116,7 @@ func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPa
 			"commands", len(commands),
 			"renderChunks", len(renderChunks),
 			"commandChunks", len(commandChunks),
+			"commandChunksDeferred", prepareCommands != nil,
 			"pagePointsMs", pointsDuration.Milliseconds(),
 			"commandsMs", commandsDuration.Milliseconds(),
 			"renderChunksMs", renderChunksDuration.Milliseconds(),
@@ -92,6 +129,7 @@ func (b SnapshotBuilder) build(state State, pageID int, renderPageIDs, commandPa
 		Meta:            meta,
 		RenderChunks:    renderChunks,
 		CommandChunks:   commandChunks,
+		prepareCommands: prepareCommands,
 	}
 }
 
@@ -114,6 +152,15 @@ func commandsForPages(
 	pageIDs []int,
 	clearBefore map[int]sceneOrderKey,
 ) []domain.Command {
+	return commandsForPagesWithCopy(commands, pageIDs, clearBefore, true)
+}
+
+func commandsForPagesWithCopy(
+	commands map[string]domain.Command,
+	pageIDs []int,
+	clearBefore map[int]sceneOrderKey,
+	copyCommands bool,
+) []domain.Command {
 	allowed := make(map[int]bool, len(pageIDs))
 	for _, pageID := range pageIDs {
 		allowed[pageID] = true
@@ -128,7 +175,10 @@ func commandsForPages(
 		if !commandVisibleAfterClear(cmd, clearBefore) || isHiddenPathAppend(cmd, hiddenPaths) {
 			continue
 		}
-		out = append(out, cmd.Snapshot())
+		if copyCommands {
+			cmd = cmd.Snapshot()
+		}
+		out = append(out, cmd)
 	}
 	domain.SortCommands(out)
 	return out
@@ -137,6 +187,9 @@ func commandsForPages(
 // Appends to a path created before a clear remain hidden with that path. Sending
 // them without their filtered create leaves clients waiting for a missing parent.
 func hiddenClearedPaths(commands map[string]domain.Command, clearBefore map[int]sceneOrderKey) map[string]bool {
+	if len(clearBefore) == 0 {
+		return nil
+	}
 	hidden := make(map[string]bool)
 	for _, cmd := range commands {
 		operation := sceneOperation(cmd)
@@ -153,6 +206,9 @@ func hiddenClearedPaths(commands map[string]domain.Command, clearBefore map[int]
 }
 
 func isHiddenPathAppend(cmd domain.Command, hiddenPaths map[string]bool) bool {
+	if len(hiddenPaths) == 0 {
+		return false
+	}
 	operation := sceneOperation(cmd)
 	return domain.String(operation["kind"]) == "element.append" && hiddenPaths[domain.String(operation["elementId"])]
 }
@@ -213,17 +269,21 @@ func chunkCommands(commands []domain.Command, chunkSize int) []CommandChunk {
 	}
 	const maxChunkBytes = 64 * 1024
 	chunks := make([]CommandChunk, 0, (len(commands)+chunkSize-1)/chunkSize)
+	encodedCommands := make([]json.RawMessage, len(commands))
 	start, bytes := 0, 0
 	for index, command := range commands {
-		encoded, _ := json.Marshal(command)
+		encoded, err := json.Marshal(command)
+		if err == nil {
+			encodedCommands[index] = encoded
+		}
 		size := len(encoded) + 1
 		if index > start && (index-start >= chunkSize || bytes+size > maxChunkBytes) {
-			chunks = append(chunks, CommandChunk{ChunkIndex: len(chunks), Commands: commands[start:index]})
+			chunks = append(chunks, CommandChunk{ChunkIndex: len(chunks), Commands: commands[start:index], encoded: append([]json.RawMessage(nil), encodedCommands[start:index]...)})
 			start, bytes = index, 0
 		}
 		bytes += size
 	}
-	chunks = append(chunks, CommandChunk{ChunkIndex: len(chunks), IsLast: true, Commands: commands[start:]})
+	chunks = append(chunks, CommandChunk{ChunkIndex: len(chunks), IsLast: true, Commands: commands[start:], encoded: append([]json.RawMessage(nil), encodedCommands[start:]...)})
 	return chunks
 }
 

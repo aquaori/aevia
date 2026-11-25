@@ -20,6 +20,8 @@ interface LocalCommandServiceOptions {
 	username: Ref<string>;
 	currentTool: Ref<EditorTool>;
 	isHistoryReady?: () => boolean;
+	commandMap: Map<string, Command>;
+	getCommandCount: () => number;
 	insertCommand: (cmd: Command) => void;
 	renderCanvas: () => void;
 	requestDirtyRender?: (rect: {
@@ -71,10 +73,10 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 					: options.username.value,
 			});
 			if (!sent) return { ok: false, error: sendFailedMessage };
-			if (!options.commands.value.find((item) => item.id === command.id)) {
+			if (!options.commandMap.has(command.id)) {
 				options.insertCommand(command);
 			}
-			options.currentCommandIndex.value = options.commands.value.length - 1;
+			options.currentCommandIndex.value = options.getCommandCount() - 1;
 			options.syncCommandState?.(command);
 			if (!options.isOffscreenMainCanvas?.()) {
 				options.renderCanvas();
@@ -198,7 +200,8 @@ export const createLocalCommandService = (options: LocalCommandServiceOptions) =
 		});
 		if (result.ok && targetOperation.kind === "page.clear" && !enabled) {
 			options.syncWorkerScene?.(options.commands.value, targetOperation.pageId, []);
-			if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
+			if (options.isOffscreenMainCanvas?.()) options.requestSceneRefresh?.();
+			else options.renderCanvas();
 		}
 		return result.ok ? { ...result, command: target } : result;
 	};

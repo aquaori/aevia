@@ -7,6 +7,13 @@ import type { RenderIRFrame, RenderIRItem } from "./renderIR";
 type DrawingContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 export function renderIRItems(ctx: DrawingContext, items: Iterable<RenderIRItem>, width: number, height: number, delta: AffineMatrix | null = null) {
+	const steps = renderIRItemsSteps(ctx, items, width, height, delta, Infinity);
+	let result = steps.next();
+	while (!result.done) result = steps.next();
+	return result.value;
+}
+
+export function* renderIRItemsSteps(ctx: DrawingContext, items: Iterable<RenderIRItem | null>, width: number, height: number, delta: AffineMatrix | null = null, batchSize = 256): Generator<void, number> {
 	let rendered = 0;
 	let layer: OffscreenCanvas | HTMLCanvasElement | null = null;
 	let layerCtx: DrawingContext | null = null;
@@ -40,12 +47,14 @@ export function renderIRItems(ctx: DrawingContext, items: Iterable<RenderIRItem>
 		active = null;
 	};
 	for (const item of items) {
+		if (!item) { yield; continue; }
 		const { atom } = item;
 		const matrix = delta ? multiplyMatrices(delta, item.matrix) : item.matrix;
 		if (atom.toolId !== "highlighter" && item.eraseMasks.length === 0) {
 			flush();
 			drawPrimitive(ctx, atom, matrix, width, height, item.erasedIntervals);
 			rendered += 1;
+			if (rendered % batchSize === 0) yield;
 			continue;
 		}
 		if (!layer) {
@@ -55,11 +64,12 @@ export function renderIRItems(ctx: DrawingContext, items: Iterable<RenderIRItem>
 			layerCtx = layer.getContext("2d") as DrawingContext | null;
 			layerCtx?.scale(layer.width / width, layer.height / height);
 		}
-		if (!layerCtx) { drawPrimitive(ctx, atom, matrix, width, height, item.erasedIntervals); rendered += 1; continue; }
+		if (!layerCtx) { drawPrimitive(ctx, atom, matrix, width, height, item.erasedIntervals); rendered += 1; if (rendered % batchSize === 0) yield; continue; }
 		if (active?.atom.elementId !== atom.elementId) { flush(); active = item; highlighter = atom.toolId === "highlighter"; }
 		const renderedAtom = highlighter ? { ...atom, toolId: "pen" as const, style: { ...atom.style, opacity: 1 } } : atom;
 		drawPrimitive(layerCtx, renderedAtom, matrix, width, height, item.erasedIntervals);
 		rendered += 1;
+		if (rendered % batchSize === 0) yield;
 	}
 	flush();
 	return rendered;

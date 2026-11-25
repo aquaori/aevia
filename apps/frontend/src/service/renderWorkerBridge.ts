@@ -20,6 +20,7 @@ interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
 	onDirtyRects?: (rects: aabbBox[]) => void;
 	onSceneResyncRequired?: () => void;
+	onSceneHistoryIncomplete?: (ids: string[]) => void;
 	onWorkerFailure?: () => void;
 }
 
@@ -129,13 +130,20 @@ const cloneRect = (rect: DirtyRectRequest): DirtyRectRequest => ({
 export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => {
 	let worker: Worker | null = null;
 	let sceneBatchRing: SceneBatchRing | null = null;
+	const sceneBatchEncoder = new TextEncoder();
 	const pendingSceneBatch: { cmd: Command; epoch: number; dispatchSeq: number }[] = [];
 	let sceneBatchScheduled = false;
 	const flushSceneBatch = () => {
 		sceneBatchScheduled = false;
 		if (!worker || pendingSceneBatch.length === 0) return;
 		const batch = pendingSceneBatch.splice(0);
-		const encoded = new TextEncoder().encode(JSON.stringify(batch));
+		const serialized = JSON.stringify(batch);
+		const directLength = sceneBatchRing?.writeText(serialized, sceneBatchEncoder);
+		if (directLength != null) {
+			worker.postMessage({ type: "scene-batch-ring", data: { length: directLength } });
+			return;
+		}
+		const encoded = sceneBatchEncoder.encode(serialized);
 		if (sceneBatchRing?.write(encoded)) {
 			worker.postMessage({ type: "scene-batch-ring", data: { length: encoded.length } });
 		} else {
@@ -361,6 +369,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 				return;
 			}
 			if (type === "scene-resync-required") { options.onSceneResyncRequired?.(); return; }
+			if (type === "scene-history-incomplete") { options.onSceneHistoryIncomplete?.(event.data.ids as string[]); return; }
 			if (type === "init-scene-barrier-result") {
 				const callback = pendingInitBarriers.get(requestId);
 				pendingInitBarriers.delete(requestId);
@@ -667,7 +676,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const setInitSceneOperations = (commands: Command[], pageId: number) => {
-		if (!worker || !offscreenEnabled) return;
+		if (!worker) return;
 		flushIncrementalCommands();
 		postWorker({
 			type: "set-init-scene-operations",

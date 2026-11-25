@@ -131,6 +131,7 @@ interface RoomPointerControllerOptions {
 		initialStyle?: Partial<SceneElementStyle>;
 		onStyleChange?: (style: Partial<SceneElementStyle>) => void;
 		onGroupBoundary?: () => void;
+		onRemoteText?: () => string | null;
 		onBoxChange?: (box: aabbBox) => boolean;
 	}) => Promise<string | null>;
 	getCommandBoundingBox: (cmd: Command) => aabbBox | null;
@@ -283,10 +284,10 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 				for (const character of currentCharacters.slice(commonPrefix)) patches.push({ type: "delete", charId: character.charId });
 				nextCharacters = currentCharacters.slice(0, commonPrefix);
 			} else {
-				for (const character of currentCharacters) patches.push({ type: "delete", charId: character.charId });
-				nextCharacters = [];
-				let afterId: string | null = null;
-				for (const grapheme of graphemes) {
+				for (const character of currentCharacters.slice(commonPrefix)) patches.push({ type: "delete", charId: character.charId });
+				nextCharacters = currentCharacters.slice(0, commonPrefix);
+				let afterId: string | null = nextCharacters[nextCharacters.length - 1]?.charId ?? null;
+				for (const grapheme of graphemes.slice(commonPrefix)) {
 					const charId = uuidv4();
 					patches.push({ type: "insert", charId, afterId, grapheme });
 					nextCharacters.push({ charId, grapheme });
@@ -338,6 +339,14 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			onGroupBoundary: () => {
 				historyGroupId = uuidv4();
 				lastInputAt = performance.now();
+			},
+			onRemoteText: () => {
+				const scene = new SceneEngine();
+				scene.rebuildFromCommands(options.commands.value, options.currentPageId.value);
+				const state = scene.getTextEditorState(elementId);
+				if (!state) return null;
+				currentCharacters = state.characters;
+				return currentCharacters.map((character) => character.grapheme).join("");
 			},
 		});
 		if (text === null) {

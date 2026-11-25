@@ -90,6 +90,7 @@ $topics = @{
         references = @("references/backend.md", "references/frontend.md", "references/protocol.md")
         files = @(
             "apps/frontend/src/service/roomCollabTransport.ts",
+            "apps/frontend/src/service/pendingSceneStore.ts",
             "apps/frontend/src/service/collabMessageDispatcher.ts",
             "apps/backend/internal/gateway/ws_messages.go",
             "apps/backend/internal/protocol/scene_append.go",

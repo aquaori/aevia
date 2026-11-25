@@ -540,7 +540,6 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			}
 			if (normalizedCommands.length > 0) {
 				initStreamState.commandsBuffer.push(...normalizedCommands);
-				options.setInitSceneOperations?.(normalizedCommands, initStreamState.currentPageId);
 			}
 		}
 	};
@@ -894,6 +893,7 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 			pageChangeStreamState.pageId
 		);
 		options.finishInitRenderStream?.();
+		options.onLegacyPageChangeCommitted?.();
 		if (!options.isOffscreenMainCanvas?.()) options.renderCanvas();
 		options.clearActivePageChangeRequest?.(donePayload?.requestId);
 		pageChangeStreamState = null;
@@ -1401,6 +1401,14 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 					operation.actorId !== options.userId.value
 				) {
 					options.notifyRemoteTextPatch?.(operation.elementId);
+				}
+				if (operation?.kind === "history.toggle" && operation.actorId !== options.userId.value) {
+					const affected = new Set<string>();
+					for (const candidate of options.commands.value) {
+						const previous = candidate.sceneOperation;
+						if (previous?.kind === "text.patch" && previous.historyGroupId === operation.payload.targetHistoryGroupId) affected.add(previous.elementId);
+					}
+					for (const elementId of affected) options.notifyRemoteTextPatch?.(elementId);
 				}
 				if (restoresClearedHistory) {
 					options.requestCurrentPageResync?.();

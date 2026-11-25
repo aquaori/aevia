@@ -11,7 +11,11 @@ func (a *Actor) recordAndBroadcast(exclude ClientID, typ string, data map[string
 		roomSeq = a.state.RoomSeq
 		data["roomSeq"] = roomSeq
 	}
-	a.state.Deltas.Add(DeltaEvent{RoomSeq: roomSeq, Type: typ, Data: data, Binary: binary})
+	pushType := ""
+	if envelope, ok := json.(Envelope); ok {
+		pushType = envelope.PushType
+	}
+	a.state.Deltas.Add(DeltaEvent{RoomSeq: roomSeq, Type: typ, PushType: pushType, Data: data, Binary: binary})
 	a.metrics.Deltas.Add(1)
 	a.broadcastExcept(exclude, json, binary)
 }

@@ -108,7 +108,7 @@ func (b *DeltaBuffer) trimBytes() {
 // broadcast hot path, for a buffer that only needs a rough byte budget. The
 // sizes below are structural estimates instead: no allocation, no reflection.
 func estimateDeltaSize(event DeltaEvent) int {
-	size := len(event.Type) + len(event.Binary) + 64
+	size := len(event.Type) + len(event.PushType) + len(event.Binary) + 64
 	for key, value := range event.Data {
 		size += len(key) + estimateValueSize(value)
 	}

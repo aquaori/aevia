@@ -25,6 +25,7 @@
 		renderWithPoints,
 		renderSceneCommands,
 		hasPendingSceneDependencies,
+		quarantineSceneMissingElements,
 		hitTestScene,
 		querySceneElements,
 		renderIncrementPoint,
@@ -81,6 +82,7 @@
 	const router = useRouter();
 	const userStore = useUserStore();
 	const mainCanvasGeneration = ref(0);
+	const initialSceneReady = ref(false);
 	let roomDisposed = false;
 	const accountStore = useAccountStore();
 	const showInvites = ref(false);
@@ -217,6 +219,7 @@
 
 	let lastIntegrityResyncAt = 0;
 	let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
+	let missingElementIds: string[] = [];
 	const requestSceneIntegrityResync = () => {
 		const now = Date.now();
 		if (now - lastIntegrityResyncAt < 5000) return;
@@ -238,6 +241,7 @@
 			points: c.points ? toRaw(c.points) : [],
 		}));
 		if (renderSceneCommands(rawCommands, currentPageId.value, transformingCmdIds.value)) requestSceneIntegrityResync();
+		quarantineSceneMissingElements(missingElementIds);
 		if (hasPendingSceneDependencies() && !dependencyTimer) {
 			dependencyTimer = setTimeout(() => {
 				dependencyTimer = undefined;
@@ -341,6 +345,11 @@
 		},
 		onDirtyRects: (rects) => canvasRuntime.handleMergedDirtyRects(rects),
 		onSceneResyncRequired: requestSceneIntegrityResync,
+		onSceneHistoryIncomplete: (ids) => {
+			missingElementIds = ids;
+			quarantineSceneMissingElements(ids);
+			if (ids.length) toast.warning(`${ids.length} 个画布对象的历史记录不完整，相关内容暂时无法显示；原始记录仍保留。`);
+		},
 		onWorkerFailure: () => roomCollabTransport.handleRenderWorkerFailure(),
 	});
 
@@ -384,6 +393,7 @@
 
 
 	const roomCollabTransport = createRoomCollabTransport({
+		onInitialSceneReady: () => { initialSceneReady.value = true; },
 		recoverRenderer: async () => {
 			workerBridge.dispose();
 			ctx.value = null;
@@ -475,6 +485,8 @@
 		username,
 		currentTool,
 		isHistoryReady: () => loadedPageIds.value.includes(currentPageId.value) && roomCollabTransport.isPageHistoryReady(currentPageId.value),
+		commandMap: commandMapRef,
+		getCommandCount: () => commandStore.commandCount,
 		insertCommand,
 		renderCanvas,
 		requestDirtyRender: (rect) => canvasRuntime.requestDirtyRender(rect),
@@ -536,6 +548,7 @@
 	});
 
 	const roomKeyboardController = createRoomKeyboardController({
+		canEdit: () => initialSceneReady.value && userStore.roomRole !== "viewer",
 		undo: roomCommandController.undo,
 		redo: roomCommandController.redo,
 		setTool: roomEditorController.setTool,
@@ -657,7 +670,7 @@
 	});
 
 	const canUndo = computed(() => currentCommandIndex.value >= 0);
-	const canRedo = computed(() => currentCommandIndex.value < commands.value.length - 1);
+	const canRedo = computed(() => currentCommandIndex.value < commandStore.commandCount - 1);
 	const session = createWhiteboardSession({
 		getRenderIR: () => workerBridge.requestRenderIR(),
 		getConsistencyWatermarks: async () => ({
@@ -847,6 +860,7 @@
 		></div>
 
 		<RoomPagination
+			:inert="!initialSceneReady"
 			:can-edit="userStore.roomRole !== 'viewer'"
 			:current-page-id="currentPageId"
 			:total-pages="totalPages"
@@ -862,8 +876,8 @@
 			<canvas
 				ref="canvasRef"
 				:key="mainCanvasGeneration"
-				@dblclick="userStore.roomRole !== 'viewer' && roomPointerControllerRef?.editSelectedText($event)"
-				@pointerdown="userStore.roomRole !== 'viewer' && startDrawing($event)"
+				@dblclick="initialSceneReady && userStore.roomRole !== 'viewer' && roomPointerControllerRef?.editSelectedText($event)"
+				@pointerdown="initialSceneReady && userStore.roomRole !== 'viewer' && startDrawing($event)"
 				@pointermove="userStore.roomRole !== 'viewer' && draw($event)"
 				@pointerup="userStore.roomRole !== 'viewer' && stopDrawing($event)"
 				@pointercancel="userStore.roomRole !== 'viewer' && stopDrawing($event)"
@@ -884,7 +898,7 @@
 			></canvas>
 		</div>
 
-		<RoomToolbar v-if="userStore.roomRole !== 'viewer'"
+		<RoomToolbar v-if="userStore.roomRole !== 'viewer'" :inert="!initialSceneReady"
 			:active-menu="activeMenu"
 			:current-tool="currentTool"
 			:current-color="currentColor"
@@ -906,6 +920,9 @@
 			:set-size-preview="roomToolController.setSizePreview"
 			:on-toggle-collapsed="(collapsed) => (isToolbarCollapsed = collapsed)"
 		/>
+		<div v-if="!initialSceneReady" class="fixed inset-0 z-[60] flex items-center justify-center bg-white/30" role="status" aria-live="polite">
+			<div class="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">正在准备画布…</div>
+		</div>
 	</div>
 </template>
 

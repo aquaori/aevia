@@ -1,6 +1,9 @@
 package room
 
 import (
+	"bytes"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +12,57 @@ import (
 	"collaborative-whiteboard/apps/backend/internal/domain"
 	"collaborative-whiteboard/apps/backend/internal/protocol"
 )
+
+func TestInitSnapshotStateMatchesFullState(t *testing.T) {
+	room := domain.Room{RoomID: "room", TotalPage: 1, DurableSeq: 12}
+	commands := []domain.Command{
+		stateTestPathCommand("old", 1, 0, domain.Point{X: 0.2, Y: 0.2, P: 0.5, Lamport: 1}),
+		stateTestPathCommand("new", 3, 0, domain.Point{X: 0.8, Y: 0.8, P: 0.5, Lamport: 3}),
+	}
+	watermarks := map[int]sceneOrderKey{0: {Lamport: 2, OpID: "clear"}}
+	full := NewState(room, commands)
+	full.ClearBefore = watermarks
+	minimal := newInitSnapshotState(room, commands, watermarks)
+	builder := NewSnapshotBuilder(config.Config{InitPreloadPageCount: 1, InitCommandChunkSize: 32, InitFlatPointChunkSize: 512})
+	want, got := builder.initDetached(full, 0), builder.initDetached(minimal, 0)
+	want.CommandChunks, got.CommandChunks = want.prepareCommands(), got.prepareCommands()
+	if want.SnapshotVersion != got.SnapshotVersion || !reflect.DeepEqual(want.Meta, got.Meta) ||
+		!reflect.DeepEqual(want.RenderChunks, got.RenderChunks) || !reflect.DeepEqual(want.CommandChunks, got.CommandChunks) {
+		t.Fatal("minimal initialization snapshot differs from full state")
+	}
+}
+
+func TestDetachedInitUsesIndependentSnapshotCommands(t *testing.T) {
+	live := domain.NewCommand(map[string]any{
+		"id": "text", "type": "scene-op", "pageId": 0, "lamport": 1.0,
+		"sceneOperation": map[string]any{"opId": "text", "elementId": "text", "kind": "text.patch", "payload": map[string]any{"value": "before"}},
+	})
+	detached := NewState(domain.Room{RoomID: "room", TotalPage: 1}, []domain.Command{live.Snapshot()})
+	builder := NewSnapshotBuilder(config.Config{InitPreloadPageCount: 1, InitCommandChunkSize: 32, InitFlatPointChunkSize: 512})
+	stream := builder.initDetached(detached, 0)
+	stream.CommandChunks = stream.prepareCommands()
+	live.Get("sceneOperation").(map[string]any)["payload"].(map[string]any)["value"] = "after"
+	got := stream.CommandChunks[0].Commands[0].Get("sceneOperation").(map[string]any)["payload"].(map[string]any)["value"]
+	if got != "before" {
+		t.Fatalf("detached snapshot changed with live command: %v", got)
+	}
+}
+
+func TestCapturedCommandsRemainStableAfterRoomUpdate(t *testing.T) {
+	original := stateTestPathCommand("stroke", 1, 0, domain.Point{X: 0.2, Y: 0.2, P: 0.5, Lamport: 1})
+	live := NewState(domain.Room{RoomID: "room", TotalPage: 1}, []domain.Command{original.Snapshot()})
+	captured := live.Commands["stroke"]
+	updated := captured.Clone()
+	updated.SetPoints([]domain.Point{{X: 0.8, Y: 0.8, P: 0.5, Lamport: 2}})
+	live.UpsertCommand(updated)
+	builder := NewSnapshotBuilder(config.Config{InitPreloadPageCount: 1, InitCommandChunkSize: 32, InitFlatPointChunkSize: 512})
+	stream := builder.initDetached(NewState(live.Room, []domain.Command{captured}), 0)
+	stream.CommandChunks = stream.prepareCommands()
+	got := stream.CommandChunks[0].Commands[0].Points()[0].X
+	if got != 0.2 || live.Commands["stroke"].Points()[0].X != 0.8 {
+		t.Fatalf("snapshot=%v live=%v", got, live.Commands["stroke"].Points()[0].X)
+	}
+}
 
 func TestBackgroundHistoryLoadsClearedCommands(t *testing.T) {
 	cfg := testConfig(t)
@@ -73,10 +127,29 @@ func TestBackgroundHistoryLoadsClearedCommands(t *testing.T) {
 	}
 }
 
+func TestEmptyHistoryCompletionWaitsForOutboundCapacity(t *testing.T) {
+	actor := &Actor{state: State{}}
+	out := make(chan Outbound, 1)
+	done := make(chan struct{})
+	defer close(done)
+	actor.loadPageHistory(ClientInfo{PageID: 0, Send: out, Done: done}, map[string]any{"requestId": "history", "pageId": 0})
+	if event := <-out; event.JSON.(Envelope).Type != "page-history-meta" {
+		t.Fatal("missing history metadata")
+	}
+	select {
+	case event := <-out:
+		if event.JSON.(Envelope).Type != "page-history-complete" {
+			t.Fatal("missing history completion")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("history completion was dropped")
+	}
+}
+
 func TestCommandChunksBoundBytesAndPreserveOrder(t *testing.T) {
 	commands := make([]domain.Command, 10)
 	for index := range commands {
-		commands[index] = domain.NewCommand(map[string]any{"id": string(rune('a' + index)), "data": strings.Repeat("x", 24000)})
+		commands[index] = domain.NewCommand(map[string]any{"id": string(rune('a' + index)), "data": strings.Repeat("x", 24000) + "<>&中文"})
 	}
 	chunks := chunkCommands(commands, 32)
 	if len(chunks) < 4 {
@@ -86,6 +159,17 @@ func TestCommandChunksBoundBytesAndPreserveOrder(t *testing.T) {
 	for index, chunk := range chunks {
 		if chunk.ChunkIndex != index || chunk.IsLast != (index == len(chunks)-1) {
 			t.Fatal("incorrect chunk metadata")
+		}
+		original, err := json.Marshal(chunk.Commands)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cached, err := json.Marshal(chunk.encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(original, cached) {
+			t.Fatal("cached commands changed the wire representation")
 		}
 		for _, command := range chunk.Commands {
 			ids += command.ID()
@@ -228,7 +312,14 @@ func TestLiveInitStreamDoesNotBypassClearWatermark(t *testing.T) {
 		case "init-render-chunk-meta":
 			renderRefs, _ = envelope.Data["commands"].([]protocol.RenderCommandRef)
 		case "init-commands-chunk":
-			commands, _ := envelope.Data["commands"].([]domain.Command)
+			payload, err := json.Marshal(envelope.Data["commands"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var commands []domain.Command
+			if err := json.Unmarshal(payload, &commands); err != nil {
+				t.Fatal(err)
+			}
 			for _, command := range commands {
 				commandIDs = append(commandIDs, command.ID())
 			}

@@ -50,7 +50,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !claims.Account && claims.Role != "" {
+	if !claims.Account {
 		_, kicked, lookupErr := s.store.GuestRole(r.Context(), claims.RoomID, claims.UserID)
 		if lookupErr != nil || kicked {
 			fail(w, http.StatusForbidden, "房间访问权限已失效")
@@ -105,6 +105,9 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		reason := "room busy"
 		if errors.Is(err, room.ErrActorStopped) {
 			reason = "room restarting"
+		} else if errors.Is(err, room.ErrRoomAccessRevoked) {
+			_ = conn.Close(websocket.StatusPolicyViolation, "room access revoked")
+			return
 		}
 		_ = conn.Close(websocket.StatusTryAgainLater, reason)
 		return

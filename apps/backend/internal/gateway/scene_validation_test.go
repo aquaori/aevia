@@ -60,6 +60,31 @@ func TestValidateSceneCommandAcceptsV2Create(t *testing.T) {
 	}
 }
 
+func TestPageClearCannotHideFutureOperations(t *testing.T) {
+	data := validScenePush()
+	op := data["cmd"].(map[string]any)["sceneOperation"].(map[string]any)
+	op["kind"] = "page.clear"
+	for _, test := range []struct {
+		name    string
+		before  map[string]any
+		allowed bool
+	}{
+		{"future time", map[string]any{"lamport": float64(1000000), "opId": "future", "sourceIndex": float64(0), "subIndex": float64(0)}, false},
+		{"future id", map[string]any{"lamport": float64(1), "opId": "z", "sourceIndex": float64(0), "subIndex": float64(0)}, false},
+		{"future index", map[string]any{"lamport": float64(1), "opId": "op-1", "sourceIndex": float64(1), "subIndex": float64(0)}, false},
+		{"same key", map[string]any{"lamport": float64(1), "opId": "op-1", "sourceIndex": float64(0), "subIndex": float64(0)}, true},
+		{"earlier time", map[string]any{"lamport": float64(0), "opId": "z", "sourceIndex": float64(0), "subIndex": float64(0)}, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			op["payload"] = map[string]any{"before": test.before}
+			code, _, ok := validateSceneCommand(sceneTestClient(), "push-cmd", data)
+			if ok != test.allowed || (!ok && code != "INVALID_SCENE_OPERATION") {
+				t.Fatalf("clear watermark allowed=%v code=%s, expected %v", ok, code, test.allowed)
+			}
+		})
+	}
+}
+
 func TestValidateStickerAssets(t *testing.T) {
 	payload := map[string]any{"descriptor": map[string]any{
 		"elementKind": "sticker", "toolId": "sticker", "recipeId": "bitmap",

@@ -20,6 +20,7 @@ const incrementalStrokeStates = new Map<string, StrokeState>();
 const activeStrokeIds = new Set<string>();
 const fallbackSceneEngine = new SceneEngine();
 const hasPendingSceneDependencies = () => fallbackSceneEngine.hasPendingDependencies();
+const quarantineSceneMissingElements = (ids: string[]) => fallbackSceneEngine.quarantineMissingElements(ids);
 
 interface DirtyRect {
 	minX: number;
@@ -264,6 +265,7 @@ export {
 	renderWithPoints,
 	renderSceneCommands,
 	hasPendingSceneDependencies,
+	quarantineSceneMissingElements,
 	hitTestScene,
 	querySceneElements,
 	renderIncrementPoint,
