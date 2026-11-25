@@ -3,6 +3,7 @@ import { mergeGoCoverageBlocks } from "./go-coverage";
 import fs from "node:fs";
 import path from "node:path";
 import type {
+	ChangeObligationsReport,
 	ExpectedArtifact,
 	GateCase,
 	GateScenario,
@@ -488,8 +489,26 @@ const validateLabGate = (expected: ExpectedArtifact, payload: unknown): Artifact
 	};
 };
 
+const isValidModuleEvidenceItem = (item: unknown): item is NonNullable<LabInventoryObligation["evidence"]>[number] => {
+	if (!isRecord(item) || typeof item.kind !== "string") return false;
+	switch (item.kind) {
+		case "vitest":
+		case "browser":
+			return typeof item.file === "string" && item.file.trim().length > 0;
+		case "go":
+			return typeof item.package === "string" && item.package.trim().length > 0;
+		case "external":
+			return typeof item.caseId === "string" && item.caseId.trim().length > 0;
+		case "feature":
+			return typeof item.obligationId === "string" && item.obligationId.trim().length > 0;
+		default:
+			return false;
+	}
+};
+
 const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): ArtifactResult => {
-	if (!isRecord(payload) || payload.schemaVersion !== 1 || typeof payload.scope !== "string" || !payload.scope.trim() ||
+	if (!isRecord(payload) || (payload.schemaVersion !== 1 && payload.schemaVersion !== 2) ||
+		typeof payload.scope !== "string" || !payload.scope.trim() ||
 		!Array.isArray(payload.obligations) || payload.obligations.length === 0) {
 		return missingResult(expected, "invalid", "Lab inventory report is missing its schema, scope, or obligations");
 	}
@@ -499,7 +518,7 @@ const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): Art
 	const unresolvedIds: string[] = [];
 	for (const rawObligation of payload.obligations) {
 		if (!isRecord(rawObligation) || typeof rawObligation.id !== "string" || !rawObligation.id.trim() ||
-			(rawObligation.kind !== "frontend" && rawObligation.kind !== "go") ||
+			(rawObligation.kind !== "frontend" && rawObligation.kind !== "go" && rawObligation.kind !== "shared") ||
 			typeof rawObligation.path !== "string" || !rawObligation.path.trim() ||
 			(rawObligation.state !== "covered" && rawObligation.state !== "partial" &&
 				rawObligation.state !== "uncovered" && rawObligation.state !== "excluded")) {
@@ -511,11 +530,19 @@ const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): Art
 		if (rawObligation.state === "excluded" && (typeof rawObligation.reason !== "string" || !rawObligation.reason.trim())) {
 			return missingResult(expected, "invalid", `Lab inventory obligation ${rawObligation.id} is excluded without a reason`);
 		}
-		if (
-			(rawObligation.state === "covered" || rawObligation.state === "partial") &&
-			(typeof rawObligation.owner !== "string" || !rawObligation.owner.trim())
-		) {
-			return missingResult(expected, "invalid", `Lab inventory obligation ${rawObligation.id} has no owning test`);
+		const hasEvidence = Array.isArray(rawObligation.evidence) &&
+			rawObligation.evidence.length > 0 &&
+			rawObligation.evidence.every(isValidModuleEvidenceItem);
+		const hasOwner = typeof rawObligation.owner === "string" && rawObligation.owner.trim().length > 0;
+		if ((rawObligation.state === "covered" || rawObligation.state === "partial") && !hasEvidence && !hasOwner) {
+			return missingResult(expected, "invalid", `Lab inventory obligation ${rawObligation.id} has no owning test or evidence`);
+		}
+		if (rawObligation.evidence !== undefined && (!Array.isArray(rawObligation.evidence) || !rawObligation.evidence.every(isValidModuleEvidenceItem))) {
+			return missingResult(expected, "invalid", `Lab inventory obligation ${rawObligation.id} has malformed evidence`);
+		}
+		if (rawObligation.alternativeEvidence !== undefined &&
+			(!Array.isArray(rawObligation.alternativeEvidence) || !rawObligation.alternativeEvidence.every(isValidModuleEvidenceItem))) {
+			return missingResult(expected, "invalid", `Lab inventory obligation ${rawObligation.id} has malformed alternativeEvidence`);
 		}
 		ids.add(rawObligation.id);
 		stateCounts[rawObligation.state] += 1;
@@ -526,7 +553,9 @@ const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): Art
 			path: rawObligation.path,
 			state: rawObligation.state,
 			owner: typeof rawObligation.owner === "string" ? rawObligation.owner : undefined,
+			evidence: Array.isArray(rawObligation.evidence) ? rawObligation.evidence : undefined,
 			reason: typeof rawObligation.reason === "string" ? rawObligation.reason : undefined,
+			alternativeEvidence: Array.isArray(rawObligation.alternativeEvidence) ? rawObligation.alternativeEvidence : undefined,
 		});
 	}
 	return {
@@ -545,6 +574,229 @@ const validateLabInventory = (expected: ExpectedArtifact, payload: unknown): Art
 			excluded: stateCounts.excluded,
 			unresolvedIds,
 		},
+	};
+};
+
+const normalizeVitestPath = (value: string): string => {
+	const posix = value.replaceAll("\\", "/");
+	return process.platform === "win32" ? posix.toLowerCase() : posix;
+};
+
+const vitestFileMatches = (actualName: string, expectedFile: string): boolean => {
+	const actualNorm = normalizeVitestPath(actualName);
+	const expectedNorm = normalizeVitestPath(expectedFile);
+	return actualNorm === expectedNorm || actualNorm.endsWith(`/${expectedNorm}`);
+};
+
+const goPackageMatches = (actualPkg: string, expectedPkg: string): boolean => {
+	if (actualPkg === expectedPkg) return true;
+	if (expectedPkg === ".") {
+		return actualPkg === "." || actualPkg === "backend" || actualPkg.endsWith("/backend");
+	}
+	if (expectedPkg.startsWith("./")) {
+		return actualPkg.endsWith(expectedPkg.slice(1));
+	}
+	return false;
+};
+
+const matchesPattern = (candidate: string, pattern: string): boolean => {
+	try {
+		return new RegExp(pattern).test(candidate);
+	} catch {
+		return candidate.includes(pattern);
+	}
+};
+
+const collectRunTestExecutionEvidence = (runDir: string, manifest: RunManifest) => {
+	type VitestFileRecord = { file: string; assertions: Array<{ status: string; fullName: string; title: string }> };
+	const vitestFiles: VitestFileRecord[] = [];
+	const browserFiles: VitestFileRecord[] = [];
+	const goPkgStatus = new Map<string, { passed: boolean; failed: boolean; tests: Map<string, { pass: boolean; fail: boolean }> }>();
+	const externalCaseStatuses = new Map<string, string[]>();
+
+	for (const artifact of manifest.expectedArtifacts) {
+		const step = manifest.steps.find((candidate) => candidate.id === artifact.stepId);
+		if (step && step.status !== "passed") continue;
+		const absPath = path.resolve(runDir, artifact.path);
+		if (!fs.existsSync(absPath)) continue;
+
+		if (artifact.kind === "vitest") {
+			try {
+				const parsed = readJson(absPath);
+				if (!isRecord(parsed) || !Array.isArray(parsed.testResults)) continue;
+				const isBrowser = artifact.id.includes("browser") || artifact.path.includes("browser");
+				const targetList = isBrowser ? browserFiles : vitestFiles;
+				for (const fileResult of parsed.testResults) {
+					if (!isRecord(fileResult) || typeof fileResult.name !== "string") continue;
+					const rawAssertions = Array.isArray(fileResult.assertionResults) ? fileResult.assertionResults : [];
+					const assertions = rawAssertions.filter(isRecord).map((a) => ({
+						status: typeof a.status === "string" ? a.status : "unknown",
+						fullName: typeof a.fullName === "string" ? a.fullName : "",
+						title: typeof a.title === "string" ? a.title : "",
+					}));
+					targetList.push({ file: fileResult.name, assertions });
+				}
+			} catch {
+				// handled by artifact's own validator
+			}
+		} else if (artifact.kind === "go-test") {
+			try {
+				const text = fs.readFileSync(absPath, "utf8");
+				for (const line of text.split(/\r?\n/)) {
+					if (!line.trim()) continue;
+					const ev = JSON.parse(line) as unknown;
+					if (!isRecord(ev) || typeof ev.Package !== "string" || typeof ev.Action !== "string") continue;
+					const pkgEntry = goPkgStatus.get(ev.Package) ?? { passed: false, failed: false, tests: new Map() };
+					if (typeof ev.Test !== "string" || !ev.Test) {
+						if (ev.Action === "pass") pkgEntry.passed = true;
+						else if (ev.Action === "fail") pkgEntry.failed = true;
+					} else {
+						const tEntry = pkgEntry.tests.get(ev.Test) ?? { pass: false, fail: false };
+						if (ev.Action === "pass") tEntry.pass = true;
+						else if (ev.Action === "fail") tEntry.fail = true;
+						pkgEntry.tests.set(ev.Test, tEntry);
+					}
+					goPkgStatus.set(ev.Package, pkgEntry);
+				}
+			} catch {
+				// handled by go-test validator
+			}
+		} else if (artifact.kind === "external") {
+			try {
+				const parsed = readJson(absPath);
+				if (!isRecord(parsed) || !isRecord(parsed.run) || parsed.run.id !== manifest.runId || !Array.isArray(parsed.results)) {
+					continue;
+				}
+				for (const row of parsed.results) {
+					if (!isRecord(row) || typeof row.id !== "string" || typeof row.status !== "string") continue;
+					const list = externalCaseStatuses.get(row.id) ?? [];
+					list.push(row.status);
+					externalCaseStatuses.set(row.id, list);
+				}
+			} catch {
+				// handled by external validator
+			}
+		}
+	}
+
+	return { vitestFiles, browserFiles, goPkgStatus, externalCaseStatuses };
+};
+
+const validateChangeObligations = (
+	expected: ExpectedArtifact,
+	runDir: string,
+	manifest: RunManifest,
+	payload: unknown
+): ArtifactResult => {
+	if (
+		!isRecord(payload) ||
+		payload.schemaVersion !== 1 ||
+		typeof payload.passed !== "boolean" ||
+		!Array.isArray(payload.selectedTargets) ||
+		!Array.isArray(payload.violations) ||
+		!isRecord(payload.summary)
+	) {
+		return missingResult(expected, "invalid", "Change obligations report is missing required schema fields");
+	}
+	const report = payload as unknown as ChangeObligationsReport;
+	if (!report.passed || report.violations.length > 0) {
+		const msg = report.violations.map((v) => `${v.path}: ${v.message}`).join("; ") || "Change obligations check failed";
+		return missingResult(expected, "failed", msg);
+	}
+
+	const evidence = collectRunTestExecutionEvidence(runDir, manifest);
+	const failures: string[] = [];
+	let passedTargets = 0;
+
+	const checkVitestTarget = (
+		pool: Array<{ file: string; assertions: Array<{ status: string; fullName: string; title: string }> }>,
+		file: string,
+		patterns: string[] | undefined,
+		label: string
+	): boolean => {
+		const matches = pool.filter((entry) => vitestFileMatches(entry.file, file));
+		if (matches.length === 0) {
+			failures.push(`${label} target did not execute in this run: ${file}`);
+			return false;
+		}
+		const allAssertions = matches.flatMap((m) => m.assertions);
+		if (allAssertions.length === 0) {
+			failures.push(`${label} target produced 0 assertions: ${file}`);
+			return false;
+		}
+		if (patterns && patterns.length > 0) {
+			for (const pat of patterns) {
+				const matching = allAssertions.filter((a) => matchesPattern(`${a.fullName} ${a.title}`, pat));
+				if (matching.length === 0) {
+					failures.push(`${label} target ${file} had no assertions matching pattern '${pat}'`);
+					return false;
+				}
+				if (matching.some((a) => a.status !== "passed")) {
+					failures.push(`${label} target ${file} failed or skipped assertions matching '${pat}'`);
+					return false;
+				}
+			}
+			return true;
+		}
+		if (allAssertions.some((a) => a.status !== "passed")) {
+			failures.push(`${label} target ${file} had failing or non-passed assertions`);
+			return false;
+		}
+		return true;
+	};
+
+	for (const target of report.selectedTargets) {
+		if (target.kind === "vitest") {
+			if (checkVitestTarget(evidence.vitestFiles, target.file, target.testNamePatterns, "vitest")) passedTargets += 1;
+		} else if (target.kind === "browser") {
+			if (checkVitestTarget(evidence.browserFiles, target.file, target.testNamePatterns, "browser")) passedTargets += 1;
+		} else if (target.kind === "go") {
+			const pkgEntries = [...evidence.goPkgStatus.entries()].filter(([pkg]) => goPackageMatches(pkg, target.package));
+			if (pkgEntries.length === 0) {
+				failures.push(`go package did not execute in this run: ${target.package}`);
+				continue;
+			}
+			if (pkgEntries.some(([, info]) => info.failed || !info.passed)) {
+				failures.push(`go package did not pass: ${target.package}`);
+				continue;
+			}
+			if (target.runPatterns && target.runPatterns.length > 0) {
+				let patternOk = true;
+				for (const pat of target.runPatterns) {
+					const matchedTests = pkgEntries.flatMap(([, info]) =>
+						[...info.tests.entries()].filter(([name]) => matchesPattern(name, pat)),
+					);
+					if (matchedTests.length === 0 || matchedTests.some(([, st]) => st.fail || !st.pass)) {
+						failures.push(`go package ${target.package} missing passing test for pattern '${pat}'`);
+						patternOk = false;
+						break;
+					}
+				}
+				if (!patternOk) continue;
+			}
+			passedTargets += 1;
+		} else if (target.kind === "external") {
+			const statuses = evidence.externalCaseStatuses.get(target.caseId) ?? [];
+			if (statuses.length === 0) {
+				failures.push(`external E2E case did not execute in this run: ${target.caseId}`);
+			} else if (statuses.some((s) => s !== "passed")) {
+				failures.push(`external E2E case did not pass (${statuses.join(",")}): ${target.caseId}`);
+			} else {
+				passedTargets += 1;
+			}
+		}
+	}
+
+	const total = report.selectedTargets.length;
+	return {
+		id: expected.id,
+		stepId: expected.stepId,
+		kind: expected.kind,
+		status: failures.length === 0 ? "passed" : "failed",
+		total,
+		passed: passedTargets,
+		failed: failures.length,
+		error: failures.length > 0 ? failures.join("; ") : undefined,
 	};
 };
 
@@ -627,6 +879,7 @@ const validateGoCoverage = (expected: ExpectedArtifact, text: string): ArtifactR
 const validateArtifact = (
 	expected: ExpectedArtifact,
 	runDir: string,
+	manifest: RunManifest,
 	runId: string,
 	sourceRevision: string,
 	dirtyPatchSha256: string
@@ -662,6 +915,8 @@ const validateArtifact = (
 			return validateLabGate(expected, readJson(filePath));
 		case "lab-inventory":
 			return validateLabInventory(expected, readJson(filePath));
+		case "change-obligations":
+			return validateChangeObligations(expected, runDir, manifest, readJson(filePath));
 		case "perf-request":
 			return validatePerfRequest(expected, readJson(filePath));
 	}
@@ -729,6 +984,7 @@ export const buildAggregate = (manifest: RunManifest, runDir: string): Aggregate
 			return validateArtifact(
 				expected,
 				runDir,
+				manifest,
 				manifest.runId,
 			manifest.source.revision || "",
 			manifest.source.dirtyPatchSha256 || ""

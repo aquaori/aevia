@@ -1,6 +1,7 @@
 // File role: deterministic checks for the lab evidence plans behind smoke/nightly/single modes.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	buildExternalSelectionPlans,
 	buildLabEvidencePlan,
 	buildNightlyPlan,
 	buildSinglePlan,
@@ -43,6 +44,43 @@ describe("lab evidence plans", () => {
 		expect(stepIds(plan)).toEqual(["build", "external-focused", "external-focused-resilience", "source-check"]);
 		const cases = plan.artifacts.filter(item => item.kind === "external").flatMap(item => item.expectedCases ?? []);
 		expect(cases).toEqual(expect.arrayContaining(["harness-health", "correctness-smoke", "undo-redo-convergence", "late-joiner-undo-consistency", "resilience-network-recovery"]));
+	});
+
+	it("merges PR change selections with fixed PR E2E cases without duplicates", () => {
+		const plan = buildLabEvidencePlan("pr", context(), {
+			unresolved: [],
+			selections: [
+				{ kind: "vitest", files: ["apps/frontend/src/service/foo.spec.ts"] },
+				{ kind: "browser", files: ["apps/frontend/tests/browser/smoke.browser.spec.ts"] },
+				{ kind: "go", packages: ["./internal/room"] },
+				{ kind: "external", caseIds: ["harness-health", "late-joiner-visual-consistency"] },
+			],
+		});
+		expect(stepIds(plan)).toEqual([
+			"build",
+			"frontend-test",
+			"browser-test",
+			"go-test",
+			"external-focused",
+			"external-focused-resilience",
+			"source-check",
+		]);
+		const externalCases = plan.artifacts.filter(item => item.kind === "external").flatMap(item => item.expectedCases ?? []);
+		expect(externalCases).toContain("late-joiner-visual-consistency");
+		expect(externalCases.filter(id => id === "harness-health")).toHaveLength(1);
+	});
+
+	it("routes non-correctness external cases to their owning performance suites", () => {
+		const plan = buildExternalSelectionPlans(
+			context(),
+			["undo-redo-convergence", "resilience-network-recovery"],
+			undefined,
+			"external-extra",
+		);
+		expect(stepIds(plan)).toEqual(["external-extra", "external-extra-resilience"]);
+		expect(plan.steps[0]?.command).toContain("--suite=correctness-full");
+		expect(plan.steps[1]?.command).toContain("--suite=performance-external");
+		expect(plan.steps[1]?.command).toContain("--case-set=resilience");
 	});
 
 	it("builds a smoke plan with gate evidence and isolated services", () => {

@@ -946,7 +946,11 @@ const runNetworkRecovery = async (context: SuiteContext) =>
 				const { users } = await createRoomWithUsers(context.config, ["NetworkObserver", "NetworkBot"]);
 				const opened = await openBoundaryRoomPage(context, users[0]!, false);
 				probe = opened.probe;
-				await probe.page.waitForFunction(() => (window as unknown as { __labNetworkProbe: { opens: number } }).__labNetworkProbe.opens > 0);
+				await probe.page.waitForFunction(
+					() => (window as unknown as { __labNetworkProbe: { opens: number } }).__labNetworkProbe.opens > 0,
+					undefined,
+					{ timeout: context.config.caseTimeoutMs },
+				);
 				const opensBefore = await probe.page.evaluate(() => (window as unknown as { __labNetworkProbe: { opens: number } }).__labNetworkProbe.opens);
 				await probe.client.send("Network.enable");
 				await probe.client.send("Network.emulateNetworkConditions", {
@@ -955,17 +959,23 @@ const runNetworkRecovery = async (context: SuiteContext) =>
 					downloadThroughput: 64 * 1024,
 					uploadThroughput: 64 * 1024,
 				});
+				// Close the socket before going offline so the close handshake finishes cleanly instead
+				// of hanging Chromium's close timer on a blocked offline network interface.
+				await probe.page.evaluate(() => {
+					const state = (window as unknown as { __labNetworkProbe: { sockets: WebSocket[] } }).__labNetworkProbe;
+					for (const socket of state.sockets) if (socket.readyState === WebSocket.OPEN) socket.close(4001, "lab interruption");
+				});
+				await probe.page.waitForFunction(
+					() => (window as unknown as { __labNetworkProbe: { closes: number } }).__labNetworkProbe.closes > 0,
+					undefined,
+					{ timeout: context.config.caseTimeoutMs },
+				);
 				await probe.client.send("Network.emulateNetworkConditions", {
 					offline: true,
 					latency: 0,
 					downloadThroughput: 0,
 					uploadThroughput: 0,
 				});
-				await probe.page.evaluate(() => {
-					const state = (window as unknown as { __labNetworkProbe: { sockets: WebSocket[] } }).__labNetworkProbe;
-					for (const socket of state.sockets) if (socket.readyState === WebSocket.OPEN) socket.close(4001, "lab interruption");
-				});
-				await probe.page.waitForFunction(() => (window as unknown as { __labNetworkProbe: { closes: number } }).__labNetworkProbe.closes > 0);
 				const offline = await probe.page.evaluate(async () => {
 					try { await fetch(`${location.origin}/?lab-offline-probe`, { cache: "no-store" }); return false; } catch { return true; }
 				});

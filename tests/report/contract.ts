@@ -11,6 +11,7 @@ export type ArtifactKind =
 	| "feature-catalog"
 	| "lab-gate"
 	| "lab-inventory"
+	| "change-obligations"
 	| "perf-request"
 	| "oracle-check";
 
@@ -122,20 +123,136 @@ export type LabGateReport = {
 	reasons: ValidityReason[];
 };
 
+/** Supported executable evidence links attached to a module obligation. */
+export type ModuleEvidenceKind = "vitest" | "browser" | "go" | "external" | "feature";
+
+export type ModuleEvidenceItem =
+	| {
+			kind: "vitest";
+			file: string;
+			testNamePattern?: string;
+			level?: "unit" | "module" | "harness";
+			oracle?: string;
+	  }
+	| {
+			kind: "browser";
+			file: string;
+			testNamePattern?: string;
+			level?: "browser";
+			oracle?: string;
+	  }
+	| {
+			kind: "go";
+			package: string;
+			file?: string;
+			runPattern?: string;
+			level?: "unit" | "integration";
+			oracle?: string;
+	  }
+	| {
+			kind: "external";
+			caseId: string;
+			level?: "e2e";
+			oracle?: string;
+	  }
+	| {
+			kind: "feature";
+			obligationId: string;
+			oracle?: string;
+	  };
+
+export type LabInventoryKind = "frontend" | "go" | "shared";
+export type LabInventoryState = "covered" | "partial" | "uncovered" | "excluded";
+
 /** Artifact kind `lab-inventory`: module-level test-debt snapshot. */
 export type LabInventoryObligation = {
 	id: string;
-	kind: "frontend" | "go";
+	kind: LabInventoryKind;
 	path: string;
-	state: "covered" | "partial" | "uncovered" | "excluded";
+	state: LabInventoryState;
 	owner?: string;
+	evidence?: ModuleEvidenceItem[];
+	recommendedEvidence?: ModuleEvidenceItem[];
 	reason?: string;
+	alternativeEvidence?: ModuleEvidenceItem[];
 };
 
 export type LabInventoryReport = {
-	schemaVersion: 1;
+	schemaVersion: 1 | 2;
 	scope: string;
 	obligations: LabInventoryObligation[];
+};
+
+export type ChangeObligationFileCategory =
+	| "managed-source"
+	| "test"
+	| "high-impact-config"
+	| "docs-or-assets"
+	| "other";
+
+export type ChangeObligationFileRecord = {
+	status: string;
+	path: string;
+	previousPath?: string;
+	category: ChangeObligationFileCategory;
+	obligationId?: string;
+	state?: LabInventoryState;
+	evidenceCount?: number;
+};
+
+export type ChangeObligationViolation = {
+	code: string;
+	path: string;
+	status: string;
+	message: string;
+	remediation: string[];
+};
+
+export type ChangeObligationTarget =
+	| {
+			kind: "vitest";
+			file: string;
+			testNamePatterns?: string[];
+			executionMode: "reused-from-core" | "selected";
+	  }
+	| {
+			kind: "browser";
+			file: string;
+			testNamePatterns?: string[];
+			executionMode: "reused-from-core" | "selected";
+	  }
+	| {
+			kind: "go";
+			package: string;
+			runPatterns?: string[];
+			executionMode: "reused-from-core" | "selected";
+	  }
+	| {
+			kind: "external";
+			caseId: string;
+			executionMode: "reused-from-core" | "selected";
+	  };
+
+export type ChangeObligationsReport = {
+	schemaVersion: 1;
+	baseSha: string;
+	headSha: string;
+	stagedOnly: boolean;
+	passed: boolean;
+	fallbackMode: "none" | "targeted" | "core-suite";
+	fallbackReasons: string[];
+	changedFiles: ChangeObligationFileRecord[];
+	violations: ChangeObligationViolation[];
+	selectedTargets: ChangeObligationTarget[];
+	summary: {
+		changedSources: number;
+		changedTests: number;
+		newUncovered: number;
+		historicalDebt: number;
+		selectedCount: number;
+		reusedCount: number;
+		executedExtraCount: number;
+	};
 };
 
 /** Artifact kind `perf-request`: CI asks a human/IM bot to run the performance gate later. */
@@ -186,6 +303,15 @@ export type RunManifest = {
 	selection?: import("../lab/resolve-only").LabResolveResult;
 	lane?: "all" | "quality" | "performance" | "performance-standard" | "performance-boundary";
 	capabilities?: { goRace?: { supported: boolean; exitCode: number | null; detail: string } };
+	changeObligations?: {
+		baseSha: string;
+		headSha: string;
+		passed: boolean;
+		changedSources: number;
+		selectedCount: number;
+		historicalDebt: number;
+		summaryLine?: string;
+	};
 };
 
 export const isLabMode = (value: unknown): value is LabMode =>
