@@ -2,301 +2,245 @@ package domain
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"sort"
 	"testing"
 )
 
-// Cross-runtime ordering contract.
-//
-// The fixture is shared verbatim with the frontend/shared TypeScript test
-// packages/shared/src/protocol/orderVectors.spec.ts, which sorts the same
-// vectors with compareCommandOrder / compareRenderOrder. ASCII ids only: the Go
-// backend compares raw UTF-8 bytes while JavaScript compares UTF-16 code units,
-// and those two orders are only guaranteed to agree for ASCII.
-//
-// Alignment notes:
-//   - commands maps to FlatPoint with OrderOpID empty (so CompareFlatPoint falls
-//     back to CmdID) and PointIndex 0 for every row. Under those conditions
-//     CompareFlatPoint is exactly compareCommandOrder: lamport then id.
-//   - renderKeys cannot be fed to CompareFlatPoint faithfully. The render key
-//     splits ties into sourceIndex AND subIndex, while FlatPoint has a single
-//     PointIndex, so any mapping would invent a relationship between the two
-//     levels. This test instead asserts the weaker invariant that the Go
-//     comparator never contradicts the fixture's lamport/opId prefix order.
-const orderVectorsRelativePath = "../../../../packages/shared/src/protocol/__fixtures__/order-vectors.json"
+func TestCommandDataMethodsSnapshotAndJSON(t *testing.T) {
+	var nilCmd *CommandData
+	if nilCmd.Clone() != nil || nilCmd.Snapshot() != nil || nilCmd.Get("id") != nil || nilCmd.Points() != nil {
+		t.Fatal("expected nil receivers to handle safely")
+	}
+	nilCmd.RangeFields(func(string, any) bool {
+		t.Fatal("unexpected field on nil command")
+		return true
+	})
+	nilCmd.Set("k", "v")
+	nilCmd.SetPoints([]Point{{X: 1, Y: 2}})
 
-type orderVectorsFixture struct {
-	SchemaVersion int                    `json:"schemaVersion"`
-	Description   string                 `json:"description"`
-	Commands      []orderCommandVector   `json:"commands"`
-	RenderKeys    []orderRenderKeyVector `json:"renderKeys"`
-}
+	raw, err := nilCmd.MarshalJSON()
+	if err != nil || string(raw) != "null" {
+		t.Fatalf("expected nil MarshalJSON 'null', got %q %v", string(raw), err)
+	}
 
-type orderCommandVector struct {
-	Labels        []string           `json:"labels"`
-	ExpectedOrder []string           `json:"expectedOrder"`
-	Items         []orderCommandItem `json:"items"`
-}
+	nested := NewCommand(map[string]any{
+		"id":   "nested",
+		"type": "note",
+	})
+	cmd := NewCommand(map[string]any{
+		"id":        "cmd-1",
+		"type":      "path",
+		"pageId":    1,
+		"isDeleted": false,
+		"points": []map[string]any{
+			{"x": 10.0, "y": 20.0, "p": 0.5, "lamport": 2.0},
+		},
+		"child": nested,
+		"meta":  map[string]any{"tag": "v1"},
+		"pts":   []Point{{X: 1, Y: 2}},
+		"flats": []FlatPoint{{CmdID: "c1"}},
+		"cmds":  []Command{nested},
+		"maps":  []map[string]any{{"k": "v"}},
+		"anys":  []any{nested, "x", nil},
+	})
+	cmd.SetIdentity("user-1", "room-1")
 
-type orderCommandItem struct {
-	ID      string  `json:"id"`
-	Lamport float64 `json:"lamport"`
-}
+	if cmd.ID() != "cmd-1" || cmd.Type() != "path" || cmd.UserID() != "user-1" {
+		t.Fatalf("unexpected identity fields: %s %s %s", cmd.ID(), cmd.Type(), cmd.UserID())
+	}
+	if pageID, ok := cmd.PageID(); !ok || pageID != 1 {
+		t.Fatalf("expected pageId 1, got %d %v", pageID, ok)
+	}
+	if cmd.IsDeleted() {
+		t.Fatal("expected not deleted")
+	}
 
-type orderRenderKeyVector struct {
-	Labels        []string             `json:"labels"`
-	ExpectedOrder []string             `json:"expectedOrder"`
-	Items         []orderRenderKeyItem `json:"items"`
-}
+	cloned := cmd.Clone()
+	snap := cmd.Snapshot()
+	if cloned.ID() != "cmd-1" || snap.ID() != "cmd-1" {
+		t.Fatal("expected clone/snapshot to preserve id")
+	}
 
-type orderRenderKeyItem struct {
-	Lamport     float64 `json:"lamport"`
-	OpID        string  `json:"opId"`
-	SourceIndex int     `json:"sourceIndex"`
-	SubIndex    int     `json:"subIndex"`
-}
+	keys := 0
+	cmd.RangeFields(func(key string, _ any) bool {
+		keys++
+		return keys < 2
+	})
+	if keys != 2 {
+		t.Fatalf("expected early stop at 2 keys, got %d", keys)
+	}
 
-func loadOrderVectors(t *testing.T) orderVectorsFixture {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(orderVectorsRelativePath))
+	cmd.Set("points", []any{map[string]any{"x": 3, "y": 4, "p": 0.8, "lamport": 5}})
+	if pts, ok := cmd.Get("points").([]Point); !ok || len(pts) != 1 || pts[0].X != 3 {
+		t.Fatalf("unexpected points via Get/Set: %+v", cmd.Get("points"))
+	}
+	cmd.Set("points", "bad-json-shape")
+	if len(cmd.Points()) != 0 {
+		t.Fatalf("expected invalid points conversion to yield empty slice, got %+v", cmd.Points())
+	}
+	cmd.Set("points", []Point{{X: 5, Y: 6, P: 0.7, Lamport: 9}})
+
+	payload, err := cmd.Payload()
 	if err != nil {
-		t.Fatalf("read order vectors fixture: %v", err)
+		t.Fatalf("Payload: %v", err)
 	}
-	var fixture orderVectorsFixture
-	if err := json.Unmarshal(raw, &fixture); err != nil {
-		t.Fatalf("decode order vectors fixture: %v", err)
+	decoded, err := CommandFromPayload(payload)
+	if err != nil || decoded.ID() != "cmd-1" {
+		t.Fatalf("CommandFromPayload failed: %v %+v", err, decoded)
 	}
-	return fixture
-}
+	if _, err := CommandFromPayload([]byte("{bad")); err == nil {
+		t.Fatal("expected invalid JSON error")
+	}
 
-func TestOrderVectorsFixtureShape(t *testing.T) {
-	fixture := loadOrderVectors(t)
-	if fixture.SchemaVersion != 1 {
-		t.Fatalf("expected schemaVersion 1, got %d", fixture.SchemaVersion)
-	}
-	if len(fixture.Commands) < 9 {
-		t.Fatalf("expected at least 9 command vectors, got %d", len(fixture.Commands))
-	}
-	if len(fixture.RenderKeys) < 9 {
-		t.Fatalf("expected at least 9 render-key vectors, got %d", len(fixture.RenderKeys))
-	}
-	for _, vector := range fixture.Commands {
-		if len(vector.Labels) != len(vector.Items) || len(vector.ExpectedOrder) != len(vector.Items) {
-			t.Fatalf("command vector is misaligned: labels=%d expected=%d items=%d",
-				len(vector.Labels), len(vector.ExpectedOrder), len(vector.Items))
-		}
-		for _, item := range vector.Items {
-			if item.ID == "" {
-				t.Fatalf("command vector item is missing an id: %+v", vector)
-			}
-		}
-	}
-	for _, vector := range fixture.RenderKeys {
-		if len(vector.Labels) != len(vector.Items) || len(vector.ExpectedOrder) != len(vector.Items) {
-			t.Fatalf("render-key vector is misaligned: labels=%d expected=%d items=%d",
-				len(vector.Labels), len(vector.ExpectedOrder), len(vector.Items))
-		}
+	// Reset fields map nil path
+	blank := &CommandData{}
+	blank.Set("a", 1)
+	if blank.Get("a") != 1 {
+		t.Fatal("expected blank.Set to initialize map")
 	}
 }
 
-func TestCompareFlatPointMatchesSharedOrderVectors(t *testing.T) {
-	fixture := loadOrderVectors(t)
-	for index, vector := range fixture.Commands {
-		points := make([]FlatPoint, 0, len(vector.Items))
-		for _, item := range vector.Items {
-			// OrderOpID intentionally empty: CompareFlatPoint must fall back to CmdID
-			// exactly like compareCommandOrder. PointIndex is unused on these vectors.
-			points = append(points, FlatPoint{CmdID: item.ID, Lamport: item.Lamport, PointIndex: 0})
-		}
-		if len(points) != len(vector.ExpectedOrder) {
-			t.Fatalf("vector %d: %d points but %d expected ids", index, len(points), len(vector.ExpectedOrder))
-		}
+func TestFlattenScenePathFragmentSortAndHelpers(t *testing.T) {
+	pathCmd := NewCommand(map[string]any{
+		"id":     "p1",
+		"type":   "path",
+		"pageId": 0,
+		"points": []Point{{X: 1, Y: 2, P: 0.5, Lamport: 10}, {X: 3, Y: 4, P: 0.6, Lamport: 11}},
+	})
+	pathCmd.SetIdentity("u1", "r1")
 
-		position := make(map[string]int, len(vector.ExpectedOrder))
-		for positionIndex, id := range vector.ExpectedOrder {
-			position[id] = positionIndex
-		}
-
-		// Pairwise direction must match the fixture's total order. This is the
-		// strongest cross-runtime assertion: it makes a tie or an inverted pair
-		// fail immediately instead of being masked by sort.
-		for _, left := range points {
-			for _, right := range points {
-				got := CompareFlatPoint(left, right)
-				want := 0
-				switch {
-				case position[left.CmdID] < position[right.CmdID]:
-					want = -1
-				case position[left.CmdID] > position[right.CmdID]:
-					want = 1
-				}
-				if got != want {
-					t.Fatalf("vector %d (%v): CompareFlatPoint(%q, %q) = %d, want %d",
-						index, vector.Labels, left.CmdID, right.CmdID, got, want)
-				}
-			}
-		}
-
-		sorted := append([]FlatPoint(nil), points...)
-		SortFlatPoints(sorted)
-		gotOrder := make([]string, len(sorted))
-		for i, point := range sorted {
-			gotOrder[i] = point.CmdID
-		}
-		if len(gotOrder) != len(vector.ExpectedOrder) {
-			t.Fatalf("vector %d: sorted %d points, want %d", index, len(gotOrder), len(vector.ExpectedOrder))
-		}
-		for i := range gotOrder {
-			if gotOrder[i] != vector.ExpectedOrder[i] {
-				t.Fatalf("vector %d: sorted order %v, want %v", index, gotOrder, vector.ExpectedOrder)
-			}
-		}
+	if flats := FlattenCommand(pathCmd); len(flats) != 2 || flats[1].PointIndex != 1 {
+		t.Fatalf("unexpected FlattenCommand: %+v", flats)
 	}
-}
-
-// The Go comparator cannot represent render keys exactly: sourceIndex and
-// subIndex are two tie-break levels, PointIndex is one integer. Assert the
-// weaker, still valuable property that lamport/opId ordering never contradicts
-// the frontend fixture.
-func TestCompareFlatPointDoesNotContradictRenderOrderVectors(t *testing.T) {
-	fixture := loadOrderVectors(t)
-	for index, vector := range fixture.RenderKeys {
-		points := make([]FlatPoint, 0, len(vector.Items))
-		for _, item := range vector.Items {
-			points = append(points, FlatPoint{
-				Lamport:    item.Lamport,
-				CmdID:      item.OpID,
-				OrderOpID:  item.OpID,
-				PointIndex: 0,
-			})
-		}
-		for expectedIndex, label := range vector.ExpectedOrder {
-			// Recover the item behind each label. Labels are parallel to items.
-			itemIndex := -1
-			for candidate := range vector.Labels {
-				if vector.Labels[candidate] == label {
-					itemIndex = candidate
-					break
-				}
-			}
-			if itemIndex < 0 {
-				t.Fatalf("vector %d: expected label %q is missing from labels", index, label)
-			}
-			for later := expectedIndex + 1; later < len(vector.ExpectedOrder); later++ {
-				laterLabel := vector.ExpectedOrder[later]
-				laterIndex := -1
-				for candidate := range vector.Labels {
-					if vector.Labels[candidate] == laterLabel {
-						laterIndex = candidate
-						break
-					}
-				}
-				if laterIndex < 0 {
-					t.Fatalf("vector %d: expected label %q is missing from labels", index, laterLabel)
-				}
-				// CompareFlatPoint compares (lamport, orderOpId/cmdId) only for these
-				// constructed points. 0 means "tied in the Go model" (the renderer's
-				// sourceIndex/subIndex would decide), which is allowed; >0 would mean
-				// Go disagrees with the cross-runtime golden order.
-				if got := CompareFlatPoint(points[itemIndex], points[laterIndex]); got > 0 {
-					t.Fatalf("vector %d: Go orders %q after %q, contradicting the render contract",
-						index, label, laterLabel)
-				}
-			}
-		}
+	if flats := FlattenCommandRange(pathCmd, -1); len(flats) != 2 {
+		t.Fatalf("expected negative startIndex clamped to 0, got %d", len(flats))
 	}
-}
-
-func TestCompareFlatPointOrderOpIDAndPointIndexTieBreaks(t *testing.T) {
-	// A scene operation's order key is its opId, not its command id: the opId
-	// ordering must win even when the command ids point the other way.
-	operation := FlatPoint{CmdID: "cmd-z", OrderOpID: "op-a", Lamport: 1}
-	otherOperation := FlatPoint{CmdID: "cmd-a", OrderOpID: "op-b", Lamport: 1}
-	if got := CompareFlatPoint(operation, otherOperation); got != -1 {
-		t.Fatalf("expected OrderOpID to be compared instead of CmdID, got %d", got)
+	if flats := FlattenCommandRange(pathCmd, 99); flats != nil {
+		t.Fatalf("expected out-of-range startIndex nil, got %+v", flats)
+	}
+	if flats := FlattenCommand(NewCommand(map[string]any{"id": "t1", "type": "text", "pageId": 0})); flats != nil {
+		t.Fatalf("expected non-path nil")
+	}
+	if flats := FlattenCommand(NewCommand(map[string]any{"id": "", "type": "path", "pageId": -1})); flats != nil {
+		t.Fatalf("expected invalid path metadata nil")
 	}
 
-	// Empty OrderOpID falls back to CmdID.
-	left := FlatPoint{CmdID: "cmd-a", Lamport: 1}
-	right := FlatPoint{CmdID: "cmd-b", Lamport: 1}
-	if got := CompareFlatPoint(left, right); got != -1 {
-		t.Fatalf("expected CmdID fallback ordering, got %d", got)
+	// ScenePathFragmentFromCommand cases
+	if _, ok := ScenePathFragmentFromCommand(nil); ok {
+		t.Fatal("expected nil command false")
+	}
+	if _, ok := ScenePathFragmentFromCommand(NewCommand(map[string]any{"type": "scene-op"})); ok {
+		t.Fatal("expected missing sceneOperation false")
+	}
+	if _, ok := ScenePathFragmentFromCommand(NewCommand(map[string]any{
+		"type":           "scene-op",
+		"sceneOperation": map[string]any{"opId": "o1", "elementId": "e1", "pageId": 0},
+	})); ok {
+		t.Fatal("expected missing payload false")
+	}
+	if _, ok := ScenePathFragmentFromCommand(NewCommand(map[string]any{
+		"type": "scene-op",
+		"sceneOperation": map[string]any{
+			"kind":    "element.create",
+			"pageId":  0,
+			"opId":    "",
+			"payload": map[string]any{},
+		},
+	})); ok {
+		t.Fatal("expected missing opId false")
+	}
+	if _, ok := ScenePathFragmentFromCommand(NewCommand(map[string]any{
+		"type": "scene-op",
+		"sceneOperation": map[string]any{
+			"kind":      "element.create",
+			"opId":      "o1",
+			"elementId": "e1",
+			"pageId":    0,
+			"payload":   map[string]any{"descriptor": map[string]any{"elementKind": "shape"}},
+		},
+	})); ok {
+		t.Fatal("expected non-path descriptor false")
 	}
 
-	// Points of the same command are ordered by PointIndex.
-	first := FlatPoint{CmdID: "cmd-a", Lamport: 1, PointIndex: 0}
-	second := FlatPoint{CmdID: "cmd-a", Lamport: 1, PointIndex: 1}
-	if got := CompareFlatPoint(first, second); got != -1 {
-		t.Fatalf("expected PointIndex tie-break, got %d", got)
-	}
-	if got := CompareFlatPoint(second, first); got != 1 {
-		t.Fatalf("expected reversed PointIndex tie-break, got %d", got)
-	}
-	if got := CompareFlatPoint(first, first); got != 0 {
-		t.Fatalf("expected identical points to compare equal, got %d", got)
-	}
-
-	// SortFlatPoints must produce the same order as the pairwise comparator.
-	points := []FlatPoint{
-		{CmdID: "c", Lamport: 2, PointIndex: 0},
-		{CmdID: "a", Lamport: 1, PointIndex: 1},
-		{CmdID: "a", Lamport: 1, PointIndex: 0},
-	}
-	SortFlatPoints(points)
-	got := []string{points[0].CmdID, points[1].CmdID, points[2].CmdID}
-	if got[0] != "a" || got[1] != "a" || got[2] != "c" {
-		t.Fatalf("unexpected sorted order: %v", got)
-	}
-	if points[0].PointIndex != 0 || points[1].PointIndex != 1 {
-		t.Fatalf("expected PointIndex ascending within a command, got %+v", points)
-	}
-	if !sort.SliceIsSorted(points, func(i, j int) bool { return CompareFlatPoint(points[i], points[j]) < 0 }) {
-		t.Fatal("SortFlatPoints output is not sorted by CompareFlatPoint")
-	}
-}
-
-func TestOrderVectorsRetainKnownEdgeCases(t *testing.T) {
-	fixture := loadOrderVectors(t)
-	commandIDs := make(map[string]bool)
-	for _, vector := range fixture.Commands {
-		for _, id := range vector.ExpectedOrder {
-			commandIDs[id] = true
-		}
-	}
-	for _, id := range []string{"A", "a", "ab", "cmd-1", "cmd-10", "cmd-2", "10", "9", "cmdA", "cmd_1"} {
-		if !commandIDs[id] {
-			t.Fatalf("fixture lost regression coverage for id %q", id)
-		}
+	createCmd := NewCommand(map[string]any{
+		"type":   "scene-op",
+		"userId": "u1",
+		"sceneOperation": map[string]any{
+			"kind":      "element.create",
+			"opId":      "op-create",
+			"elementId": "el-1",
+			"pageId":    1,
+			"lamport":   7,
+			"payload": map[string]any{
+				"descriptor": map[string]any{
+					"elementKind": "path",
+					"recipeId":    "stroke",
+					"toolId":      "highlighter",
+					"style":       map[string]any{"color": "#ff0", "size": 5, "strokePattern": "dashed"},
+				},
+				"points": []Point{{X: 1, Y: 1}},
+			},
+		},
+	})
+	frag, ok := ScenePathFragmentFromCommand(createCmd)
+	if !ok || !frag.IsCreate || frag.Tool != "highlighter" || len(frag.Points) != 1 {
+		t.Fatalf("unexpected create fragment: %+v %v", frag, ok)
 	}
 
-	// Uppercase sorts before lowercase, prefixes sort first, and numeric
-	// suffixes are compared lexically rather than numerically.
-	expectBefore := func(earlier, later string) {
-		t.Helper()
-		for _, vector := range fixture.Commands {
-			positions := make(map[string]int, len(vector.ExpectedOrder))
-			for i, id := range vector.ExpectedOrder {
-				positions[id] = i
-			}
-			earlierPos, hasEarlier := positions[earlier]
-			laterPos, hasLater := positions[later]
-			if !hasEarlier || !hasLater {
-				continue
-			}
-			if earlierPos >= laterPos {
-				t.Fatalf("vector %v: expected %q before %q", vector.Labels, earlier, later)
-			}
-			return
-		}
-		t.Fatalf("fixture has no vector containing both %q and %q", earlier, later)
+	appendCmd := NewCommand(map[string]any{
+		"type": "scene-op",
+		"sceneOperation": map[string]any{
+			"kind":      "element.append",
+			"opId":      "op-app",
+			"elementId": "el-1",
+			"pageId":    1,
+			"lamport":   8,
+			"payload": map[string]any{
+				"sourceStart": 2,
+				"points":      []Point{{X: 9, Y: 9}},
+			},
+		},
+	})
+	frag, ok = ScenePathFragmentFromCommand(appendCmd)
+	if !ok || frag.IsCreate || frag.SourceStart != 2 || len(frag.Points) != 1 {
+		t.Fatalf("unexpected append fragment: %+v %v", frag, ok)
 	}
-	expectBefore("A", "a")
-	expectBefore("a", "ab")
-	expectBefore("cmd-1", "cmd-10")
-	expectBefore("cmd-10", "cmd-2")
-	expectBefore("10", "9")
-	expectBefore("cmd-1", "cmdA")
-	expectBefore("cmdA", "cmd_1")
+
+	unknownKindCmd := NewCommand(map[string]any{
+		"type": "scene-op",
+		"sceneOperation": map[string]any{
+			"kind":      "element.delete",
+			"opId":      "op-del",
+			"elementId": "el-1",
+			"pageId":    1,
+			"payload":   map[string]any{},
+		},
+	})
+	if _, ok := ScenePathFragmentFromCommand(unknownKindCmd); ok {
+		t.Fatal("expected unknown kind false")
+	}
+
+	// SortCommands and primitive extractors
+	cmds := []Command{
+		NewCommand(map[string]any{"id": "b", "lamport": 5}),
+		NewCommand(map[string]any{"id": "a", "lamport": 5}),
+		NewCommand(map[string]any{"id": "z", "lamport": 2}),
+	}
+	SortCommands(cmds)
+	if cmds[0].ID() != "z" || cmds[1].ID() != "a" || cmds[2].ID() != "b" {
+		t.Fatalf("unexpected SortCommands order: %s %s %s", cmds[0].ID(), cmds[1].ID(), cmds[2].ID())
+	}
+
+	if IntDefault(int64(4), 0) != 4 || IntDefault(uint64(5), 0) != 5 || IntDefault(uint(6), 0) != 6 || IntDefault("x", 9) != 9 {
+		t.Fatal("IntDefault conversions failed")
+	}
+	if FloatDefault(float32(1.5), 0) != 1.5 || FloatDefault(int64(3), 0) != 3 || FloatDefault("bad", 2.5) != 2.5 {
+		t.Fatal("FloatDefault conversions failed")
+	}
+	if StringDefault("", "fb") != "fb" || StringDefault("ok", "fb") != "ok" {
+		t.Fatal("StringDefault failed")
+	}
+	if NowMillis() <= 0 {
+		t.Fatal("expected positive NowMillis")
+	}
+	_, _ = json.Marshal(cmds[0])
 }

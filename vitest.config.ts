@@ -57,6 +57,9 @@ export default defineConfig({
 						"apps/frontend/src/states/**/*.spec.ts",
 						"apps/frontend/src/scene/**/*.spec.ts",
 						"apps/frontend/src/service/**/*.unit.spec.ts",
+						"apps/frontend/src/controllers/**/*.unit.spec.ts",
+						"apps/frontend/src/workers/**/*.unit.spec.ts",
+						"apps/frontend/src/instrumentation/**/*.unit.spec.ts",
 					],
 				},
 				resolve: {
@@ -69,10 +72,17 @@ export default defineConfig({
 					name: "frontend-module",
 					globals: true,
 					environment: "happy-dom",
-					exclude: ["apps/frontend/src/service/**/*.unit.spec.ts"],
+					exclude: ["apps/frontend/src/**/*.unit.spec.ts"],
 					include: [
 						"apps/frontend/src/service/**/*.spec.ts",
 						"apps/frontend/src/store/**/*.spec.ts",
+						"apps/frontend/src/controllers/**/*.spec.ts",
+						"apps/frontend/src/components/**/*.spec.ts",
+						"apps/frontend/src/views/**/*.spec.ts",
+						"apps/frontend/src/router/**/*.spec.ts",
+						"apps/frontend/src/workers/**/*.spec.ts",
+						"apps/frontend/src/instrumentation/**/*.spec.ts",
+						"apps/frontend/src/App.spec.ts",
 					],
 				},
 				resolve: {

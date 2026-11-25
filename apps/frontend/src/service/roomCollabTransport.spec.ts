@@ -214,4 +214,38 @@ describe("snapshot recovery cursor", () => {
 		expect(FakeSocket.instances[1]!.url).toContain("lastRoomSeq=42");
 		transport.disconnect();
 	});
+
+	it("handles role changes, server pressure/draining, session replaced, access revoked, and member list", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const transport = makeTransport(() => Promise.resolve(true));
+		await transport.connect();
+		const conn = FakeSocket.instances[0]!;
+
+		expect(transport.send("custom-ping", { ok: true })).toBe(true);
+		transport.openMemberList();
+		expect(conn.sent.some((raw) => raw.includes("get-member-list"))).toBe(true);
+
+		conn.receive("role.current", { role: "editor" });
+		conn.receive("role.changed", { role: "viewer" });
+		expect(toastMock.info).toHaveBeenCalled();
+
+		conn.receive("server-pressure", { overloaded: true });
+		conn.receive("server.draining", {});
+		conn.receive("resync.required", { reason: "lag" });
+
+		// session.replaced marks intentional close + reconnectFailed
+		conn.receive("session.replaced", {});
+		expect(transport.isIntentionalClose.value).toBe(true);
+		transport.disconnect();
+
+		// access.revoked on a fresh connection marks intentional close
+		const transport2 = makeTransport(() => Promise.resolve(true));
+		await transport2.connect();
+		const conn2 = FakeSocket.instances[1]!;
+		conn2.receive("access.revoked", {});
+		expect(transport2.isIntentionalClose.value).toBe(true);
+		transport2.retryReconnect();
+		transport2.disconnect();
+	});
 });
