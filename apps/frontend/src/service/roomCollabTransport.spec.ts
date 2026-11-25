@@ -248,4 +248,87 @@ describe("snapshot recovery cursor", () => {
 		transport2.retryReconnect();
 		transport2.disconnect();
 	});
+
+	it("resumes partial page-history across transport teardown using IndexedDB cursor (H08)", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const backing = new Map<string, unknown>();
+		const fakeDB = {
+			objectStoreNames: { contains: () => true },
+			createObjectStore: vi.fn(),
+			transaction: () => {
+				const tx: Record<string, unknown> = {
+					oncomplete: null,
+					onerror: null,
+					objectStore: () => ({
+						get: (key: string) => {
+							const req: Record<string, unknown> = { result: backing.get(key), onsuccess: null, onerror: null };
+							queueMicrotask(() => (req.onsuccess as (() => void) | null)?.());
+							return req;
+						},
+						put: (val: unknown, key: string) => {
+							backing.set(key, structuredClone(val));
+							queueMicrotask(() => (tx.oncomplete as (() => void) | null)?.());
+						},
+						delete: (key: string) => {
+							backing.delete(key);
+							queueMicrotask(() => (tx.oncomplete as (() => void) | null)?.());
+						},
+					}),
+				};
+				return tx;
+			},
+		};
+		vi.stubGlobal("indexedDB", {
+			open: () => {
+				const req: Record<string, unknown> = { result: fakeDB, onsuccess: null, onerror: null, onupgradeneeded: null };
+				queueMicrotask(() => (req.onsuccess as (() => void) | null)?.());
+				return req;
+			},
+		});
+
+		const applyLoadedPageDelta = vi.fn();
+		const first = makeTransport(() => Promise.resolve(true), undefined, applyLoadedPageDelta);
+
+		await first.connect();
+		const conn1 = FakeSocket.instances[0]!;
+		conn1.receive("init-meta", { snapshotVersion: 9 });
+		dispatcherState.onSnapshot(9);
+		await vi.runAllTimersAsync();
+		const req1 = conn1.sent.map((raw) => JSON.parse(raw)).find((m) => m.type === "load-page-history");
+		expect(req1?.data?.cursor).toBeUndefined();
+		conn1.receive("page-history-meta", { requestId: req1.data.requestId, pageId: 0, snapshotVersion: 9, resumed: false });
+		conn1.receive("page-history-chunk", {
+			requestId: req1.data.requestId,
+			pageId: 0,
+			cursor: "hist-1",
+			commands: [{ id: "hist-1", type: "path", tool: "pen", color: "#000", size: 3, pageId: 0, lamport: 1, userId: "user", box: { minX: 0, minY: 0, maxX: 0.1, maxY: 0.1, width: 0.1, height: 0.1 } }],
+		});
+		await vi.runAllTimersAsync();
+		first.disconnect();
+
+		// Fresh transport (simulates full page reload losing memory): must resume with cursor="hist-1".
+		const second = makeTransport(() => Promise.resolve(true), undefined, applyLoadedPageDelta);
+		await second.connect();
+		const conn2 = FakeSocket.instances[1]!;
+		conn2.receive("init-meta", { snapshotVersion: 9 });
+		dispatcherState.onSnapshot(9);
+		await vi.runAllTimersAsync();
+		const req2 = conn2.sent.map((raw) => JSON.parse(raw)).find((m) => m.type === "load-page-history");
+		expect(req2?.data?.cursor).toBe("hist-1");
+		expect(req2?.data?.snapshotVersion).toBe(9);
+		conn2.receive("page-history-meta", { requestId: req2.data.requestId, pageId: 0, snapshotVersion: 9, resumed: true });
+		conn2.receive("page-history-chunk", {
+			requestId: req2.data.requestId,
+			pageId: 0,
+			cursor: "hist-2",
+			commands: [{ id: "hist-2", type: "path", tool: "pen", color: "#000", size: 3, pageId: 0, lamport: 2, userId: "user", box: { minX: 0, minY: 0, maxX: 0.2, maxY: 0.2, width: 0.2, height: 0.2 } }],
+		});
+		conn2.receive("page-history-complete", { requestId: req2.data.requestId, pageId: 0 });
+		await vi.runAllTimersAsync();
+
+		expect(applyLoadedPageDelta).toHaveBeenCalledTimes(1);
+		expect(applyLoadedPageDelta.mock.calls[0]![0].commands.map((c: { id: string }) => c.id)).toEqual(["hist-1", "hist-2"]);
+		second.disconnect();
+	});
 });

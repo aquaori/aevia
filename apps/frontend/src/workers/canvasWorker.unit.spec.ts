@@ -66,7 +66,16 @@ const buildInitBinaryChunkBuffer = (snapshotVersion: number, chunkIndex: number,
 };
 
 describe("canvasWorker", () => {
-	type PostedMsg = { type?: string; valid?: boolean; requestId?: string; buffer?: unknown; rects?: unknown[]; reason?: string };
+	type PostedMsg = {
+		type?: string;
+		valid?: boolean;
+		requestId?: string;
+		buffer?: unknown;
+		rects?: unknown[];
+		reason?: string;
+		sceneRevision?: number;
+		presentedRevision?: number | null;
+	};
 	let posted: PostedMsg[] = [];
 
 	beforeEach(async () => {
@@ -315,6 +324,92 @@ describe("canvasWorker", () => {
 		});
 		dispatch("flat-points", { requestId: "fp-bg-1", commands: [penCreateCmd], pageId: 0, transformingCmdIds: [] });
 		dispatch("sync-scene", { commands: [penCreateCmd], pageId: 0, transformingCmdIds: [] });
+
+		dispatch("dispose", {});
+	});
+
+	it("advances presentedRevision past off-page ops, sync-scene, and deferred rAF flushes (H60)", () => {
+		const canvas = new OffscreenCanvas(800, 600);
+		dispatch("lab-configure", { enabled: false });
+		dispatch("init-canvas", { canvas, width: 800, height: 600, dpr: 1 });
+		dispatch("begin-init-stream", { pageId: 0 });
+		dispatch("finish-init-stream", {});
+
+		dispatch("get-render-watermarks", { requestId: "wm-0", epoch: 1 });
+		const wm0 = posted.find((m) => m.requestId === "wm-0");
+		expect(wm0?.presentedRevision).toBe(wm0?.sceneRevision);
+
+		// Off-page scene-op does not stall subsequent page-0 presentedRevision updates.
+		const makeStrokeCmd = (id: string, pageId: number, lamport: number, tool: "pen" | "highlighter" = "pen") => ({
+			id,
+			type: "scene-op",
+			pageId,
+			userId: "u1",
+			lamport,
+			isDeleted: false,
+			box: { minX: 0.1, minY: 0.1, maxX: 0.3, maxY: 0.3, width: 0.2, height: 0.2 },
+			sceneOperation: {
+				schemaVersion: 2,
+				opId: id,
+				elementId: id,
+				actorId: "u1",
+				roomId: "r1",
+				historyGroupId: `hg-${id}`,
+				pageId,
+				lamport,
+				kind: "element.create",
+				payload: {
+					descriptor: {
+						elementKind: "path",
+						recipeId: "stroke",
+						toolId: tool,
+						style: { color: "#000", size: 4 },
+					},
+					points: [{ x: 0.1, y: 0.1, p: 0.5, lamport }],
+					isComplete: true,
+				},
+			},
+		});
+
+		dispatch("update-command-state", { dispatchSeq: 1, cmd: makeStrokeCmd("off-page-1", 1, 10) });
+		dispatch("get-render-watermarks", { requestId: "wm-off", epoch: 1 });
+		const wmOff = posted.find((m) => m.requestId === "wm-off");
+		expect(wmOff?.presentedRevision).toBe(wmOff?.sceneRevision);
+
+		// On-page pen + deferred highlighter rAF batch: watermark query must not flush prematurely,
+		// and presentedRevision must catch up once rAF flushes.
+		const queuedFrames: FrameRequestCallback[] = [];
+		vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+			queuedFrames.push(cb);
+			return queuedFrames.length;
+		});
+
+		dispatch("update-command-state", { dispatchSeq: 2, cmd: makeStrokeCmd("pen-on-0", 0, 11, "pen") });
+		dispatch("get-render-watermarks", { requestId: "wm-pen", epoch: 1 });
+		const wmPen = posted.find((m) => m.requestId === "wm-pen");
+		expect(wmPen?.presentedRevision).toBe(wmPen?.sceneRevision);
+
+		dispatch("update-command-state", { dispatchSeq: 3, cmd: makeStrokeCmd("hl-on-0", 0, 12, "highlighter") });
+		dispatch("get-render-watermarks", { requestId: "wm-pending", epoch: 1 });
+		const wmPending = posted.find((m) => m.requestId === "wm-pending");
+		expect(wmPending?.sceneRevision).toBeGreaterThan(wmPending?.presentedRevision ?? -1);
+		expect(queuedFrames.length).toBe(1);
+
+		queuedFrames.shift()!(performance.now());
+		dispatch("get-render-watermarks", { requestId: "wm-flushed", epoch: 1 });
+		const wmFlushed = posted.find((m) => m.requestId === "wm-flushed");
+		expect(wmFlushed?.presentedRevision).toBe(wmFlushed?.sceneRevision);
+
+		// sync-scene clears presentedRevision until painted; rerender-scene restores parity.
+		dispatch("sync-scene", { commands: [makeStrokeCmd("pen-on-0", 0, 11, "pen")], pageId: 0, transformingCmdIds: [] });
+		dispatch("get-render-watermarks", { requestId: "wm-sync", epoch: 1 });
+		const wmSync = posted.find((m) => m.requestId === "wm-sync");
+		expect(wmSync?.presentedRevision).toBeNull();
+
+		dispatch("rerender-scene", { pageId: 0, transformingCmdIds: [] });
+		dispatch("get-render-watermarks", { requestId: "wm-rerender", epoch: 1 });
+		const wmRerender = posted.find((m) => m.requestId === "wm-rerender");
+		expect(wmRerender?.presentedRevision).toBe(wmRerender?.sceneRevision);
 
 		dispatch("dispose", {});
 	});

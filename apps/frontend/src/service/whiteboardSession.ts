@@ -15,6 +15,56 @@ import type { RemoteCursor } from "../utils/type";
 import type { EditorTool } from "@collaborative-whiteboard/shared";
 import type { RenderIRFrame } from "../scene/renderIR";
 
+export const VALID_LIFECYCLE_TRANSITIONS: Readonly<Record<SessionLifecyclePhase, readonly SessionLifecyclePhase[]>> = {
+	idle: ["mounting", "connecting", "destroying"],
+	mounting: ["ready", "destroying"],
+	ready: ["mounting", "connecting", "disconnecting", "destroying"],
+	connecting: ["ready", "connected", "disconnecting", "destroying"],
+	connected: ["connecting", "disconnecting", "destroying"],
+	disconnecting: ["ready", "connecting", "destroying"],
+	destroying: ["disconnecting", "destroying", "destroyed"],
+	destroyed: [],
+};
+
+export function canTransitionLifecyclePhase(
+	from: SessionLifecyclePhase,
+	to: SessionLifecyclePhase,
+): boolean {
+	return from === to || VALID_LIFECYCLE_TRANSITIONS[from].includes(to);
+}
+
+export function areConsistencyWatermarksMonotonic(
+	previous: ConsistencyWatermarks,
+	next: ConsistencyWatermarks,
+): boolean {
+	if (next.roomSeq < previous.roomSeq) return false;
+	if (!next.render) {
+		return !previous.render;
+	}
+	if (next.render.processedDispatchSeq > next.render.submittedDispatchSeq) return false;
+	if (
+		next.render.presentedRevision !== null &&
+		next.render.presentedRevision > next.render.sceneRevision
+	) {
+		return false;
+	}
+	if (!previous.render) return true;
+	if (next.render.epoch < previous.render.epoch) return false;
+	if (next.render.epoch > previous.render.epoch) return true;
+	if (next.render.submittedDispatchSeq < previous.render.submittedDispatchSeq) return false;
+	if (next.render.processedDispatchSeq < previous.render.processedDispatchSeq) return false;
+	if (next.render.sceneRevision < previous.render.sceneRevision) return false;
+	if (previous.render.presentedRevision !== null) {
+		if (
+			next.render.presentedRevision === null ||
+			next.render.presentedRevision < previous.render.presentedRevision
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
 interface CreateWhiteboardSessionOptions {
 	getConsistencyWatermarks?: () => Promise<ConsistencyWatermarks>;
 	getRenderIR?: () => Promise<RenderIRFrame | null>;

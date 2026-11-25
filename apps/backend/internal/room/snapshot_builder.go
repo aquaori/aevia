@@ -11,11 +11,12 @@ import (
 )
 
 type SnapshotBuilder struct {
-	cfg config.Config
+	cfg   config.Config
+	cache *initSnapshotCache
 }
 
 func NewSnapshotBuilder(cfg config.Config) SnapshotBuilder {
-	return SnapshotBuilder{cfg: cfg}
+	return SnapshotBuilder{cfg: cfg, cache: newInitSnapshotCache()}
 }
 
 // newInitSnapshotState contains only the detached data consumed by Init. The
@@ -47,12 +48,36 @@ func (b SnapshotBuilder) initDetached(state State, pageID int) InitStream {
 
 func (b SnapshotBuilder) init(state State, pageID int, copyCommands bool) InitStream {
 	current := normalizePageID(pageID, state.Room.TotalPage)
+	key := initCacheKey{
+		roomID:       state.Room.RoomID,
+		pageID:       current,
+		totalPage:    state.Room.TotalPage,
+		roomSeq:      state.RoomSeq,
+		preloadPages: b.cfg.InitPreloadPageCount,
+		clearSig:     clearBeforeSignature(state.ClearBefore),
+	}
+	if cached, ok := b.cache.get(key); ok {
+		return cached
+	}
 	loaded := initPageIDs(current, state.Room.TotalPage, b.cfg.InitPreloadPageCount)
-	return b.build(state, current, []int{current}, loaded, map[string]any{
+	stream := b.build(state, current, []int{current}, loaded, map[string]any{
 		"pageId":        current,
 		"totalPage":     state.Room.TotalPage,
 		"loadedPageIds": loaded,
 	}, copyCommands)
+	return b.cache.put(key, stream)
+}
+
+func (b SnapshotBuilder) TryCachedInit(roomID string, pageID, totalPage int, roomSeq uint64, clearBefore map[int]sceneOrderKey) (InitStream, bool) {
+	current := normalizePageID(pageID, totalPage)
+	return b.cache.get(initCacheKey{
+		roomID:       roomID,
+		pageID:       current,
+		totalPage:    totalPage,
+		roomSeq:      roomSeq,
+		preloadPages: b.cfg.InitPreloadPageCount,
+		clearSig:     clearBeforeSignature(clearBefore),
+	})
 }
 
 func (b SnapshotBuilder) PageChange(state State, req PageChangeRequest) InitStream {

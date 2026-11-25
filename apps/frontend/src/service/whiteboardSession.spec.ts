@@ -1,7 +1,12 @@
 import { computed, ref } from "vue";
 import { describe, expect, it, vi } from "vitest";
 import type { EditorPlugin, WhiteboardSessionState } from "../utils/editorTypes";
-import { createWhiteboardSession } from "./whiteboardSession";
+import {
+	VALID_LIFECYCLE_TRANSITIONS,
+	areConsistencyWatermarksMonotonic,
+	canTransitionLifecyclePhase,
+	createWhiteboardSession,
+} from "./whiteboardSession";
 
 const makeState = (): WhiteboardSessionState => ({
 	currentTool: ref("pen"),
@@ -93,5 +98,119 @@ describe("createWhiteboardSession", () => {
 		expect(calls).toContain("connecting");
 		expect(calls).toContain("connected");
 		expect(calls).toContain("destroyed");
+	});
+
+	it("validates session lifecycle state transitions and monotonic watermarks", () => {
+		expect(VALID_LIFECYCLE_TRANSITIONS.destroyed).toEqual([]);
+		expect(canTransitionLifecyclePhase("idle", "mounting")).toBe(true);
+		expect(canTransitionLifecyclePhase("ready", "connecting")).toBe(true);
+		expect(canTransitionLifecyclePhase("connected", "connected")).toBe(true);
+		expect(canTransitionLifecyclePhase("destroyed", "ready")).toBe(false);
+		expect(canTransitionLifecyclePhase("idle", "connected")).toBe(false);
+
+		expect(
+			areConsistencyWatermarksMonotonic(
+				{
+					roomSeq: 10,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 4,
+						processedDispatchSeq: 3,
+						sceneRevision: 3,
+						presentedRevision: 2,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+				{
+					roomSeq: 12,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 5,
+						processedDispatchSeq: 5,
+						sceneRevision: 4,
+						presentedRevision: 4,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+			),
+		).toBe(true);
+		expect(
+			areConsistencyWatermarksMonotonic(
+				{
+					roomSeq: 10,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 4,
+						processedDispatchSeq: 3,
+						sceneRevision: 3,
+						presentedRevision: 2,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+				{
+					roomSeq: 9,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 5,
+						processedDispatchSeq: 5,
+						sceneRevision: 4,
+						presentedRevision: 4,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+			),
+		).toBe(false);
+		expect(
+			areConsistencyWatermarksMonotonic(
+				{
+					roomSeq: 10,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 5,
+						processedDispatchSeq: 4,
+						sceneRevision: 4,
+						presentedRevision: 3,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+				{
+					roomSeq: 11,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 5,
+						processedDispatchSeq: 4,
+						sceneRevision: 4,
+						presentedRevision: 2,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+			),
+		).toBe(false);
+		expect(
+			areConsistencyWatermarksMonotonic(
+				{
+					roomSeq: 10,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 5,
+						processedDispatchSeq: 4,
+						sceneRevision: 4,
+						presentedRevision: 3,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+				{
+					roomSeq: 11,
+					render: {
+						epoch: 1,
+						submittedDispatchSeq: 5,
+						processedDispatchSeq: 5,
+						sceneRevision: 4,
+						presentedRevision: 5,
+						queue: { reliableBatches: 0, oldestReliableAgeMs: 0, replaceableRenderPending: false },
+					},
+				},
+			),
+		).toBe(false);
 	});
 });

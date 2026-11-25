@@ -807,6 +807,20 @@
       ]
     },
     {
+      "id": "frontend:apps/frontend/src/service/pageHistoryCache.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/pageHistoryCache.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/pageHistoryCache.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/pageHistoryCache.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
       "id": "frontend:apps/frontend/src/service/pageOverviewService.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/pageOverviewService.ts",
@@ -1247,6 +1261,25 @@
       ]
     },
     {
+      "id": "frontend:apps/frontend/src/workers/taskTypes.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/workers/taskTypes.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/workerTaskScheduler.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/workerTaskScheduler.unit.spec.ts",
+          "level": "unit"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/workers/canvasWorker.unit.spec.ts",
+          "level": "unit"
+        }
+      ]
+    },
+    {
       "id": "frontend:apps/frontend/src/workers/workerTaskScheduler.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/workers/workerTaskScheduler.ts",
@@ -1376,6 +1409,12 @@
           "kind": "go",
           "package": "./internal/domain",
           "file": "apps/backend/internal/domain/types_test.go",
+          "level": "unit"
+        },
+        {
+          "kind": "go",
+          "package": "./internal/domain",
+          "file": "apps/backend/internal/domain/command_methods_test.go",
           "level": "unit"
         }
       ]
@@ -1954,6 +1993,21 @@
       "id": "go:apps/backend/internal/room/snapshot_builder.go",
       "kind": "go",
       "path": "apps/backend/internal/room/snapshot_builder.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/snapshot_builder_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/room",
+          "file": "apps/backend/internal/room/snapshot_builder_test.go",
+          "level": "unit"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/room/snapshot_cache.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/snapshot_cache.go",
       "state": "covered",
       "owner": "apps/backend/internal/room/snapshot_builder_test.go",
       "evidence": [

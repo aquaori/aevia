@@ -121,7 +121,7 @@
 			"id": "http.rooms.page-review",
 			"kind": "http",
 			"surface": "GET /get-page-review",
-			"state": "obligation_verified",
+			"state": "partial",
 			"oracle": "An authorized caller receives the requested page review and cross-room access is denied.",
 			"evidence": [
 				"go:TestProtectedRoutesRequireSession",

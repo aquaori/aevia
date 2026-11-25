@@ -70,8 +70,8 @@ func TestGatewayRoomInvitesSettingsMembersTransferAndPageReview(t *testing.T) {
 	if st, _ := do(t, server, "POST", "/room-invites/revoke", map[string]any{}, ownerGrant); st != http.StatusBadRequest {
 		t.Fatalf("expected 400 for empty invite revoke, got %d", st)
 	}
-	if st, _ := do(t, server, "GET", "/get-page-review", nil, ownerGrant); st != http.StatusOK {
-		t.Fatalf("get page review: %d", st)
+	if st, body := do(t, server, "GET", "/get-page-review", nil, ownerGrant); st != http.StatusOK || body.Code != 200 {
+		t.Fatalf("get page review: %d %+v", st, body)
 	}
 
 	// Room settings get & patch
