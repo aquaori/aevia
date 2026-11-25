@@ -20,6 +20,7 @@ if (!existsSync("node_modules/.bin/lint-staged")) {
 	process.exit(1);
 }
 run(process.execPath, ["node_modules/lint-staged/bin/lint-staged.js"]);
+run(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/ci-check-obligations.mjs", "--staged"]);
 const shared = files.some((file) => /^(package(-lock)?\.json|tsconfig[^/]*\.json|vitest\.config\.ts|eslint\.config\.mjs|\.github\/workflows\/[^/]+\.ya?ml)$/.test(file));
 const frontend = shared || files.some((file) => /^(apps\/frontend\/|packages\/shared\/|tests\/|scripts\/).+\.(ts|tsx|js|mjs|cjs|vue|json|html|css|scss|sass|less)$/.test(file));
 const backend = shared || files.some((file) => /^apps\/backend\/.+\.(go|mod|sum)$/.test(file) || file === "scripts/go.mjs");

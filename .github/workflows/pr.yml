@@ -13,10 +13,14 @@ concurrency:
 jobs:
   checks:
     name: PR merge checks
+    outputs:
+      change_summary: ${{ steps.change_summary.outputs.value }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -45,6 +49,23 @@ jobs:
       - run: npm run test:pr
         env:
           AEVIA_TEST_BROWSER: chromium
+          CI_BASE: ${{ github.event.pull_request.base.sha }}
+          CI_HEAD: HEAD
+          AEVIA_CHANGE_SUMMARY_OUTPUT: ${{ runner.temp }}/change-obligations-pr.md
+          AEVIA_CHANGE_SUMMARY_LINE_OUTPUT: ${{ runner.temp }}/change-obligations-pr-summary.txt
+      - name: Publish change test obligations summary
+        id: change_summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "${{ runner.temp }}/change-obligations-pr.md" ]; then
+            cat "${{ runner.temp }}/change-obligations-pr.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          summary="inconclusive"
+          if [ -f "${{ runner.temp }}/change-obligations-pr-summary.txt" ]; then
+            summary="$(tr -d '\r\n' < "${{ runner.temp }}/change-obligations-pr-summary.txt")"
+          fi
+          echo "value=${summary:-inconclusive}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -52,3 +73,11 @@ jobs:
           path: tests/reports/summary/runs/
           if-no-files-found: warn
           retention-days: 14
+
+  change_tests_summary:
+    if: always()
+    needs: checks
+    name: Aevia change tests / ${{ needs.checks.outputs.change_summary || 'inconclusive' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "PR change test summary is recorded in the job name."

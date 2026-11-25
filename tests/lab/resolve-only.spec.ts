@@ -1,6 +1,6 @@
 // File role: deterministic checks for lab single-mode selector resolution.
 import { describe, expect, it } from "vitest";
-import { resolveOnlySelectors, resolveSinceRef } from "./resolve-only";
+import { mergeSelections, resolveOnlySelectors, resolveSinceRef } from "./resolve-only";
 
 const repoRoot = process.cwd();
 
@@ -43,5 +43,32 @@ describe("lab selector resolution", () => {
 		// HEAD...HEAD is empty; untracked files may exist, but every mapped target stays valid.
 		expect(Array.isArray(resolved.selections)).toBe(true);
 		expect(Array.isArray(resolved.unresolved)).toBe(true);
+	});
+
+	it("deduplicates selections without letting a patterned target mask a full-file or full-package target", () => {
+		const merged = mergeSelections([
+			{ kind: "vitest", files: ["apps/frontend/src/a.spec.ts"], testNamePattern: "only alpha" },
+			{ kind: "vitest", files: ["apps/frontend/src/b.spec.ts"] },
+			{ kind: "vitest", files: ["apps/frontend/src/a.spec.ts"] },
+			{ kind: "browser", files: ["apps/frontend/tests/browser/x.browser.spec.ts"] },
+			{ kind: "go", packages: ["./internal/room"], runPattern: "TestWindow" },
+			{ kind: "go", packages: ["./internal/gateway"] },
+		]);
+
+		const vitest = merged.filter((item) => item.kind === "vitest");
+		expect(vitest).toEqual([
+			{ kind: "vitest", files: ["apps/frontend/src/a.spec.ts", "apps/frontend/src/b.spec.ts"] },
+		]);
+
+		const browser = merged.filter((item) => item.kind === "browser");
+		expect(browser).toEqual([
+			{ kind: "browser", files: ["apps/frontend/tests/browser/x.browser.spec.ts"] },
+		]);
+
+		const go = merged.filter((item) => item.kind === "go");
+		expect(go).toEqual([
+			{ kind: "go", packages: ["./internal/gateway"] },
+			{ kind: "go", packages: ["./internal/room"], runPattern: "TestWindow" },
+		]);
 	});
 });
