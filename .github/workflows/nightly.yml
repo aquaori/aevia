@@ -2,8 +2,6 @@ name: Aevia nightly lab
 run-name: Aevia nightly / ${{ inputs.ci_hub_request_id || github.run_number }}
 # Fixed Windows host for performance; Linux quality and race run independently.
 on:
-  schedule:
-    - cron: "0 18 * * *" # 02:00 Asia/Shanghai
   workflow_dispatch:
     inputs:
       ci_hub_request_id:
