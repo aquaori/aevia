@@ -113,11 +113,14 @@ describe("SceneEngine dirty rendering", () => {
 		const streamed = createCanvasContext();
 		for (let stroke = 0; stroke < 8; stroke++) {
 			for (let index = 0; index < 40; index++) {
+				const t = index / 39;
 				const refs = engine.ingestFlatPoint({
 					cmdId: `stream-${stroke}`, userId: "browser-test", pageId: 0,
 					tool: "pen", color: stroke % 2 ? "#e11d48" : "#111827", size: 8,
 					isDeleted: false, pointIndex: index, lamport: stroke * 40 + index + 1,
-					x: .1 + index * .018, y: .15 + stroke * .07 + Math.sin(index / 4) * .08, p: .5,
+					x: stroke === 0 ? 0.15 + t * 0.3 : 0.45 + (t - 0.5) * 0.28,
+					y: stroke === 0 ? 0.45 : 0.22 + t * 0.46 + (stroke - 1) * 0.01,
+					p: .5,
 				});
 				engine.renderAtomRefs(streamed, refs, WIDTH, HEIGHT);
 			}
@@ -127,8 +130,8 @@ describe("SceneEngine dirty rendering", () => {
 		engine.renderFull(complete, WIDTH, HEIGHT);
 		const a = streamed.getImageData(0, 0, WIDTH, HEIGHT).data;
 		const b = complete.getImageData(0, 0, WIDTH, HEIGHT).data;
-		// Separate batches blend antialiased edges differently. Initialization
-		// therefore still needs its final reconciliation even for opaque pens.
+		// Unfinished streamed strokes flush their tail atoms after later strokes,
+		// so initialization still needs its final reconciliation even for opaque pens.
 		expect(a.some((value, index) => value !== b[index])).toBe(true);
 	});
 	it("rebuilds moved content without clipping antialiased tile edges", () => {
@@ -235,7 +238,22 @@ describe("SceneEngine dirty rendering", () => {
 		const engine = new SceneEngine();
 		const stroke = operations[1]!;
 		if (stroke.kind !== "element.create") throw new Error("Expected create");
-		engine.applyOperation({ ...stroke, payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 3 } }, points: Array.from({ length: 4000 }, (_, i) => ({ x: .05 + (i % 1000) / 1250, y: .25 + Math.sin(i / 40) * .1, p: .5, lamport: i + 2 })) } });
+		const insidePoints = Array.from({ length: 2400 }, (_, i) => {
+			const row = Math.floor(i / 40);
+			const col = row % 2 === 0 ? i % 40 : 39 - (i % 40);
+			return { x: 0.06 + (col / 39) * 0.32, y: 0.08 + ((row % 30) / 29) * 0.32, p: 0.5, lamport: i + 2 };
+		});
+		const topPoints = Array.from({ length: 200 }, (_, i) => ({
+			x: 0.08 + (i / 199) * 0.28, y: 0.24 + Math.sin(i / 8) * 0.1, p: 0.5, lamport: 3000 + i,
+		}));
+		const outsidePoints = Array.from({ length: 1600 }, (_, i) => {
+			const row = Math.floor(i / 40);
+			const col = row % 2 === 0 ? i % 40 : 39 - (i % 40);
+			return { x: 0.65 + (col / 39) * 0.28, y: 0.66 + ((row % 20) / 19) * 0.26, p: 0.5, lamport: 4000 + i };
+		});
+		engine.applyOperation({ ...stroke, opId: "dense-inside", elementId: "dense-inside", historyGroupId: "dense-inside", payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 3 } }, points: insidePoints } });
+		engine.applyOperation({ ...stroke, opId: "dense-top", elementId: "dense-top", lamport: 3000, historyGroupId: "dense-top", payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#e11d48", size: 4 } }, points: topPoints } });
+		engine.applyOperation({ ...stroke, opId: "dense-outside", elementId: "dense-outside", lamport: 4000, historyGroupId: "dense-outside", payload: { ...stroke.payload, descriptor: { ...stroke.payload.descriptor, toolId: "pen", style: { color: "#000", size: 3 } }, points: outsidePoints } });
 		const dirty = createCanvasContext();
 		const full = createCanvasContext();
 		engine.renderFull(dirty, WIDTH, HEIGHT);
