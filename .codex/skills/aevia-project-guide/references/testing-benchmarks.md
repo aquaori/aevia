@@ -9,6 +9,7 @@ Root:
 
 - `vitest.config.ts`: Vitest project definitions.
 - `tests/run-system.ts`: managed `quick`, `ci`, and `full` profiles plus the legacy interactive benchmark runner. Managed runs own a UUID report directory and manifest.
+- `tests/profile/`: opt-in `npm run test:profile` diagnostics. Uses isolated services and per-run reports to compare pixel observations, diagnostic browser/Go spans, and CPU, timeline and memory captures. See `tests/profile/README.md` for coverage and limitations.
 - `tests/report/contract.ts`: run manifest, step, and artifact contracts.
 - `tests/report/provenance.ts`: Git revision and dirty-source fingerprint.
 - `tests/report/aggregate.ts`: fail-closed aggregation of only manifest-listed artifacts.

@@ -69,8 +69,9 @@ type PageChangeRequest struct {
 }
 
 type DeltaEvent struct {
-	RoomSeq uint64
-	Type    string
-	Data    map[string]any
-	Binary  []byte
+	RoomSeq  uint64
+	Type     string
+	PushType string
+	Data     map[string]any
+	Binary   []byte
 }

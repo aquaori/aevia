@@ -82,6 +82,7 @@
 	const router = useRouter();
 	const userStore = useUserStore();
 	const mainCanvasGeneration = ref(0);
+	const initialSceneReady = ref(false);
 	let roomDisposed = false;
 	const accountStore = useAccountStore();
 	const showInvites = ref(false);
@@ -392,6 +393,7 @@
 
 
 	const roomCollabTransport = createRoomCollabTransport({
+		onInitialSceneReady: () => { initialSceneReady.value = true; },
 		recoverRenderer: async () => {
 			workerBridge.dispose();
 			ctx.value = null;
@@ -546,6 +548,7 @@
 	});
 
 	const roomKeyboardController = createRoomKeyboardController({
+		canEdit: () => initialSceneReady.value && userStore.roomRole !== "viewer",
 		undo: roomCommandController.undo,
 		redo: roomCommandController.redo,
 		setTool: roomEditorController.setTool,
@@ -857,6 +860,7 @@
 		></div>
 
 		<RoomPagination
+			:inert="!initialSceneReady"
 			:can-edit="userStore.roomRole !== 'viewer'"
 			:current-page-id="currentPageId"
 			:total-pages="totalPages"
@@ -872,8 +876,8 @@
 			<canvas
 				ref="canvasRef"
 				:key="mainCanvasGeneration"
-				@dblclick="userStore.roomRole !== 'viewer' && roomPointerControllerRef?.editSelectedText($event)"
-				@pointerdown="userStore.roomRole !== 'viewer' && startDrawing($event)"
+				@dblclick="initialSceneReady && userStore.roomRole !== 'viewer' && roomPointerControllerRef?.editSelectedText($event)"
+				@pointerdown="initialSceneReady && userStore.roomRole !== 'viewer' && startDrawing($event)"
 				@pointermove="userStore.roomRole !== 'viewer' && draw($event)"
 				@pointerup="userStore.roomRole !== 'viewer' && stopDrawing($event)"
 				@pointercancel="userStore.roomRole !== 'viewer' && stopDrawing($event)"
@@ -894,7 +898,7 @@
 			></canvas>
 		</div>
 
-		<RoomToolbar v-if="userStore.roomRole !== 'viewer'"
+		<RoomToolbar v-if="userStore.roomRole !== 'viewer'" :inert="!initialSceneReady"
 			:active-menu="activeMenu"
 			:current-tool="currentTool"
 			:current-color="currentColor"
@@ -916,6 +920,9 @@
 			:set-size-preview="roomToolController.setSizePreview"
 			:on-toggle-collapsed="(collapsed) => (isToolbarCollapsed = collapsed)"
 		/>
+		<div v-if="!initialSceneReady" class="fixed inset-0 z-[60] flex items-center justify-center bg-white/30" role="status" aria-live="polite">
+			<div class="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">正在准备画布…</div>
+		</div>
 	</div>
 </template>
 

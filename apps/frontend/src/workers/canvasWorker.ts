@@ -370,11 +370,11 @@ const renderFullScene = () => {
 	return paintedRefs;
 };
 
-function* renderFullSceneSteps(): Generator<void> {
-	if (!mainCtx || !offscreenCanvas) return;
+function* renderFullSceneSteps(): Generator<void, number> {
+	if (!mainCtx || !offscreenCanvas) return 0;
 	const staging = new OffscreenCanvas(offscreenCanvas.width, offscreenCanvas.height);
 	const stagingCtx = staging.getContext("2d");
-	if (!stagingCtx) { renderFullScene(); return; }
+	if (!stagingCtx) return renderFullScene();
 	stagingCtx.scale(viewport.dpr, viewport.dpr);
 	stagingCtx.lineCap = "round";
 	stagingCtx.lineJoin = "round";
@@ -386,6 +386,7 @@ function* renderFullSceneSteps(): Generator<void> {
 	mainCtx.restore();
 	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
 	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
+	return paintedRefs;
 }
 
 const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdIds: string[], renderAfter: boolean) => {
@@ -920,9 +921,21 @@ const handleWorkerMessage = (event: MessageEvent) => {
 		sceneEngine.endBulkLoad();
 		// Reconcile single-point and translucent strokes after their streamed atoms
 		// have already provided first paint. This does not gate progressive display.
-		const paintedRefs = renderFullScene();
-		applyPendingInitSceneOperations();
-		if (mainCtx) markWorkerRenderComplete(paintedRefs, "init-stream-final");
+		const steps = renderFullSceneSteps();
+		const runSlice = (deadline = performance.now() + 4) => {
+			while (performance.now() < deadline) {
+				const result = steps.next();
+				if (!result.done) continue;
+				sceneTaskInProgress = false;
+				applyPendingInitSceneOperations();
+				if (mainCtx) markWorkerRenderComplete(result.value, "init-stream-final");
+				drainDeferredMessages();
+				return;
+			}
+			sceneTaskInProgress = true;
+			taskScheduler.schedule("foreground", runSlice);
+		};
+		runSlice();
 		return;
 	}
 

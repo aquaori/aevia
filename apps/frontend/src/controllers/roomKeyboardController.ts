@@ -2,6 +2,7 @@
 import type { EditorTool } from "@collaborative-whiteboard/shared";
 
 interface RoomKeyboardControllerOptions {
+	canEdit?: () => boolean;
 	undo: () => void;
 	redo: () => void;
 	setTool: (tool: EditorTool) => void;
@@ -13,6 +14,7 @@ interface RoomKeyboardControllerOptions {
 export const createRoomKeyboardController = (options: RoomKeyboardControllerOptions) => {
 	const handleKeydown = (event: KeyboardEvent) => {
 		if ((event.target as HTMLElement).tagName === "INPUT") return;
+		if (options.canEdit && !options.canEdit()) return;
 
 		if (event.ctrlKey || event.metaKey) {
 			if (event.shiftKey && event.key.toLowerCase() === "z") {

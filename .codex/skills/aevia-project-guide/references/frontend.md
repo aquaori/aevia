@@ -61,6 +61,8 @@ Canonical scene core:
 
 S08 scene rebuilds and IR exports expose step generators alongside their synchronous wrappers. The worker slices initialization, history rebuilding, point batches and independent flat-point projections, and keeps scene-dependent messages ordered until an active transaction finishes. Ordinary scene redraws coalesce dirty regions; transform acknowledgements follow their paint.
 
+The final initialization reconciliation uses the same staged, sliced full-render path. It retains the progressively drawn canvas until the staged canvas is complete, then publishes the final-init marker and resumes dependent messages. Streamed opaque pen batches can differ at antialiased edges from full replay, so this reconciliation cannot be removed solely because the tools are opaque.
+
 Scene element bounds are cached and updated as atoms are appended; invalidate the cache when changing geometry, transforms, text layout or rebuilding an element. Long create/append operations yield in batches. Background projections receive shorter, periodic slices while the foreground queue is busy; this does not let reads observe a partly rebuilt active scene.
 
 SceneCore keeps in-memory, per-element checkpoints at geometrically spaced operation counts. A late change or history toggle can restore a checkpoint only if its earliest affected operation sorts strictly after the checkpoint; earlier changes invalidate it. Restoring recreates atom/index entries and replays the ordered suffix. Checkpoints copy atom records and shared style values while sharing immutable geometry; preserve that isolation if atom mutation changes. Legacy and hydrated paths and elements with unresolved dependencies do not produce checkpoints. Page-wide rebuild/reset drops these snapshots.

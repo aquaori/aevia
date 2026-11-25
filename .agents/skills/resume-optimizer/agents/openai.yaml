@@ -1,0 +1,4 @@
+interface:
+  display_name: "Resume Optimizer"
+  short_description: "Quantify resume impact and produce one-page drafts"
+  default_prompt: "Use $resume-optimizer to quantify my resume impact, rewrite weak bullets, and ask whether I want a one-page version."

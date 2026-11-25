@@ -42,6 +42,9 @@ data/*.sqlite-*
 !.codex/skills/aevia-project-guide/
 !.codex/skills/aevia-testing/
 __pycache__/
+outputs/
+.playwright-cli/
+*.log
 
 # Benchmark baselines and learned history are tracked as well, so regression
 # detection works in CI and on a teammate's machine instead of only on the

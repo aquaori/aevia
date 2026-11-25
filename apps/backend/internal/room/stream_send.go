@@ -142,7 +142,7 @@ func sendDeltaReplay(ch *streamSender, result JoinResult) {
 			sendStreamOutbound(ch, Outbound{Binary: delta.Binary})
 			continue
 		}
-		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: delta.Type, Data: delta.Data}})
+		sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: delta.Type, PushType: delta.PushType, Data: delta.Data}})
 	}
 	sendStreamOutbound(ch, Outbound{JSON: Envelope{Type: "delta-replay-complete", Data: map[string]any{
 		"roomSeq": result.Deltas[len(result.Deltas)-1].RoomSeq,

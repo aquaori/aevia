@@ -36,6 +36,8 @@ type ExternalServices = {
 	frontendUrl: string;
 	apiUrl: string;
 	wsUrl: string;
+	pprofUrl?: string;
+	profileControl?: (command: "begin" | "clock" | "end", id: string) => Promise<{ remoteMs: number; beforeMs: number; afterMs: number }>;
 	stop: () => Promise<void>;
 };
 
@@ -146,12 +148,12 @@ const startManagedService = (
 	name: string,
 	command: string,
 	args: string[],
-	options: { cwd: string; env: NodeJS.ProcessEnv }
+	options: { cwd: string; env: NodeJS.ProcessEnv; stdin?: boolean }
 ): ManagedService => {
 	const child = spawn(command, args, {
 		cwd: options.cwd,
 		env: options.env,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"],
 		windowsHide: true,
 		detached: process.platform !== "win32",
 	});
@@ -234,7 +236,7 @@ const stopManagedService = async (service: ManagedService) => {
 	service.child.unref();
 };
 
-const startExternalServices = async (): Promise<ExternalServices> => {
+const startExternalServices = async (diagnostics?: { outDir: string; pprof: boolean; viteConfig?: string; goOverlay?: string; controlDir?: string }): Promise<ExternalServices> => {
 	mkdirSync(testTempDir, { recursive: true });
 	mkdirSync(path.join(canonicalRootDir, ".cache", "go-build"), { recursive: true });
 	mkdirSync(path.join(canonicalRootDir, ".cache", "go-mod"), { recursive: true });
@@ -250,6 +252,8 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 	const frontendUrl = `http://127.0.0.1:${frontendPort}`;
 	const apiUrl = `http://127.0.0.1:${backendPort}`;
 	const wsUrl = `ws://127.0.0.1:${backendPort}/ws`;
+	const pprofPort = diagnostics?.pprof ? await findAvailablePort() : undefined;
+	const pprofUrl = pprofPort ? `http://127.0.0.1:${pprofPort}/debug/pprof` : undefined;
 	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}-${randomUUID()}.sqlite`);
 	activeServicesDbPath = databasePath;
 	const backendExecutable = path.join(
@@ -263,7 +267,7 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 	};
 	const backendBuild = spawnSync(
 		"go",
-		["build", "-o", backendExecutable, "./cmd/aevia-backend"],
+		["build", ...(diagnostics?.goOverlay ? ["-overlay", diagnostics.goOverlay] : []), "-o", backendExecutable, "./cmd/aevia-backend"],
 		{
 			cwd: backendDir,
 			env: goEnv,
@@ -279,13 +283,28 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 		);
 	}
 
+	const vite = path.join(canonicalRootDir, "node_modules", "vite", "bin", "vite.js");
+	const frontendEnv = { ...process.env, BROWSERSLIST_IGNORE_OLD_DATA: "1", VITE_API_URL: apiUrl, VITE_WS_URL: wsUrl };
+	const viteConfig = diagnostics?.viteConfig ? ["--config", diagnostics.viteConfig] : [];
+	if (diagnostics) {
+		const built = spawnSync(process.execPath, [vite, "build", ...viteConfig, "--outDir", diagnostics.outDir, "--sourcemap"], {
+			cwd: frontendDir, env: frontendEnv, encoding: "utf8", timeout: 90000, windowsHide: true,
+		});
+		if (built.error || built.status !== 0) {
+			rmSync(backendExecutable, { force: true });
+			throw new Error(`Unable to build profiling frontend: ${built.error?.message || built.stderr}`);
+		}
+	}
 	const backend = startManagedService("backend", backendExecutable, [], {
 		cwd: backendDir,
+		stdin: Boolean(diagnostics?.controlDir),
 		env: {
 			...goEnv,
 			HOST: "127.0.0.1",
 			PORT: String(backendPort),
 			DB_PATH: databasePath,
+			...(diagnostics ? { PPROF_ADDR: pprofPort ? `127.0.0.1:${pprofPort}` : "" } : {}),
+			...(diagnostics?.controlDir ? { AEVIA_PROFILE_CONTROL: diagnostics.controlDir } : {}),
 			LOG_FORMAT: "console",
 			HTTP_REQUESTS_PER_SECOND: "5000",
 			HTTP_REQUESTS_BURST: "10000",
@@ -297,23 +316,15 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 		"frontend",
 		process.execPath,
 		[
-			path.join(canonicalRootDir, "node_modules", "vite", "bin", "vite.js"),
-			"--force",
+			vite,
+			...(diagnostics ? ["preview", ...viteConfig, "--outDir", diagnostics.outDir] : ["--force"]),
 			"--host",
 			"127.0.0.1",
 			"--port",
 			String(frontendPort),
 			"--strictPort",
 		],
-		{
-			cwd: frontendDir,
-			env: {
-				...process.env,
-				BROWSERSLIST_IGNORE_OLD_DATA: "1",
-				VITE_API_URL: apiUrl,
-				VITE_WS_URL: wsUrl,
-			},
-		}
+		{ cwd: frontendDir, env: frontendEnv }
 	);
 	const managedServices = [frontend, backend];
 	let stopped = false;
@@ -335,7 +346,26 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 			// Other test runs may still own files in this directory.
 		}
 	};
-	const services = { frontendUrl, apiUrl, wsUrl, stop };
+	const profileControl: ExternalServices["profileControl"] = diagnostics?.controlDir ? (command, id) => new Promise((resolve, reject) => {
+		const output = backend.child.stdout!;
+		const beforeMs = performance.now();
+		let received = "";
+		const finish = () => { clearTimeout(timer); output.off("data", receive); };
+		const receive = (chunk: Buffer) => {
+			received += chunk.toString();
+			const match = received.match(new RegExp(`^AEVIA_PROFILE ${id} ([0-9.]+) (true|false)\\r?$`, "m"));
+			if (!match) return;
+			finish();
+			if (match[2] === "true") resolve({ remoteMs: Number(match[1]), beforeMs, afterMs: performance.now() });
+			else reject(new Error(`Go profiler could not persist ${id}`));
+		};
+		const timer = setTimeout(() => { finish(); reject(new Error("Go profiler control timeout")); }, 3000);
+		output.on("data", receive);
+		backend.child.stdin!.write(`${command} ${id}\n`, error => {
+			if (error) { finish(); reject(error); }
+		});
+	}) : undefined;
+	const services = { frontendUrl, apiUrl, wsUrl, pprofUrl, profileControl, stop };
 	activeExternalServices = services;
 
 	try {
@@ -1510,6 +1540,15 @@ const buildManagedRunOptions = (profile: ManagedProfile): ManagedRunOptions & { 
 };
 
 const main = async () => {
+	if (hasArg("profile-diagnostics")) {
+		const { runDiagnostics } = await import("./profile/run");
+		try {
+			await runDiagnostics(canonicalRootDir, startExternalServices);
+		} finally {
+			await stopExternalServices();
+		}
+		return;
+	}
 	if (process.argv.some(arg => arg === "--from-step" || arg.startsWith("--from-step="))) throw new Error("Checkpoint resume is not implemented; use an explicit case or scenario rerun");
 	if (hasArg("doctor")) {
 		runDoctor();

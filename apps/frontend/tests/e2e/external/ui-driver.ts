@@ -147,10 +147,12 @@ const createRoomPage = async (browser: Browser, config: ExternalConfig) => {
 export const openRoomPage = async (
 	browser: Browser,
 	config: ExternalConfig,
-	user: RoomUser
+	user: RoomUser,
+	beforeNavigation?: (page: Page) => void | Promise<void>
 ): Promise<BrowserPage> => {
 	const roomPage = await createRoomPage(browser, config);
 	const { page } = roomPage;
+	await beforeNavigation?.(page);
 
 	await page.goto(config.frontendUrl);
 	await page.evaluate(({ token, userName, userId, expiresAt }: { token: string; userName: string; userId: string; expiresAt?: number | null }) => {
@@ -172,7 +174,9 @@ export const openRoomPage = async (
 export const openMeasuredRoomPage = async (
 	browser: Browser,
 	config: ExternalConfig,
-	user: RoomUser
+	user: RoomUser,
+	beforeNavigation?: (page: Page) => Promise<void>,
+	afterNavigation?: (page: Page) => Promise<void>
 ): Promise<BrowserPage & { initialRender: { firstNonBlankMs: number; visuallyStableMs: number; stabilityConfirmedMs: number; frames: number; nonBlankRatio: number } }> => {
 	const roomPage = await createRoomPage(browser, config);
 	const { page } = roomPage;
@@ -192,7 +196,9 @@ export const openMeasuredRoomPage = async (
 		waitForCollectionStop: config.labEnabled,
 		maxDiffRatio: 0.0001,
 	}) });
+	await beforeNavigation?.(page);
 	await page.goto(`${config.frontendUrl}/room`);
+	const concurrentAction = afterNavigation?.(page);
 	if (config.labEnabled) {
 		await page.waitForFunction(() => {
 			const marks = (window as unknown as { __AEVIA_LAB__?: { marks: { name: string; detail?: { reason?: string } }[] } }).__AEVIA_LAB__?.marks ?? [];
@@ -200,9 +206,13 @@ export const openMeasuredRoomPage = async (
 		}, undefined, { timeout: config.caseTimeoutMs });
 		await page.evaluate(() => { (window as unknown as { __externalRenderCollectionStopped: boolean }).__externalRenderCollectionStopped = true; });
 	}
+	await concurrentAction;
 	const initialRender = await page.evaluate(
-		() => (window as Window & { __externalRoomRenderMeasurement?: unknown }).__externalRoomRenderMeasurement
+		() => (window as Window & { __externalRoomRenderMeasurement?: {
+			firstNonBlankMs: number; visuallyStableMs: number; stabilityConfirmedMs: number; frames: number; nonBlankRatio: number;
+		} }).__externalRoomRenderMeasurement
 	);
+	if (!initialRender) throw new Error("Room measurement was not installed");
 	await page.locator("canvas").first().waitFor({ timeout: 30000 });
 	await installCanvasObserver(page);
 

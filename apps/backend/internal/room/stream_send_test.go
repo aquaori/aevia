@@ -1,6 +1,7 @@
 package room
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -25,6 +26,26 @@ func TestInitDefersCommandPreparationUntilAfterRenderStream(t *testing.T) {
 		if got := (<-queue).JSON.(Envelope).Type; got != kind {
 			t.Fatalf("got %q, want %q", got, kind)
 		}
+	}
+}
+
+func TestDeltaReplayPreservesBinaryUpdates(t *testing.T) {
+	actor := &Actor{state: State{Deltas: NewDeltaBuffer(time.Minute, 1<<20)}}
+	frame := []byte{1, 2, 3, 4}
+	actor.recordAndBroadcast("", "push-cmd", map[string]any{"roomSeq": 1}, nil, frame)
+	frame[0] = 9 // The retained delta must not share the caller's buffer.
+	deltas, complete := actor.state.Deltas.Since(0)
+	if !complete || len(deltas) != 1 {
+		t.Fatalf("got %d deltas (complete=%v), want 1", len(deltas), complete)
+	}
+	queue := make(chan Outbound, 3)
+	sendDeltaReplay(&streamSender{out: queue}, JoinResult{Deltas: deltas})
+	<-queue // metadata
+	if got := (<-queue).Binary; !bytes.Equal(got, []byte{1, 2, 3, 4}) {
+		t.Fatalf("replayed binary frame %v", got)
+	}
+	if got := (<-queue).JSON.(Envelope).Type; got != "delta-replay-complete" {
+		t.Fatalf("got %q after replay", got)
 	}
 }
 
@@ -56,5 +77,32 @@ func TestResumeDecision(t *testing.T) {
 	buffer.Add(DeltaEvent{RoomSeq: 4})
 	if got, _ := decideResume(buffer, 3, 4); got != "delta" {
 		t.Fatalf("expected delta, got %s", got)
+	}
+}
+
+func TestDeltaReplayPreservesPushTypes(t *testing.T) {
+	queue := make(chan Outbound, 8)
+	actor := &Actor{state: State{Deltas: NewDeltaBuffer(time.Minute, 1<<20)}}
+	for i, pushType := range []string{"normal", "update", "stop"} {
+		data := map[string]any{"roomSeq": i + 1, "id": pushType}
+		actor.recordAndBroadcast("", "push-cmd", data, Envelope{Type: "push-cmd", PushType: pushType, Data: data}, nil)
+	}
+	deltas, complete := actor.state.Deltas.Since(0)
+	if !complete || len(deltas) != 3 {
+		t.Fatalf("got %d deltas (complete=%v), want 3", len(deltas), complete)
+	}
+	result := JoinResult{Deltas: deltas}
+	sendDeltaReplay(&streamSender{out: queue}, result)
+	if got := (<-queue).JSON.(Envelope).Type; got != "delta-replay-meta" {
+		t.Fatalf("got %q before replay", got)
+	}
+	for _, want := range []string{"normal", "update", "stop"} {
+		got := (<-queue).JSON.(Envelope)
+		if got.Type != "push-cmd" || got.PushType != want {
+			t.Fatalf("got replay envelope %+v, want pushType %q", got, want)
+		}
+	}
+	if got := (<-queue).JSON.(Envelope).Type; got != "delta-replay-complete" {
+		t.Fatalf("got %q after replay", got)
 	}
 }

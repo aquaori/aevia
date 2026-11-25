@@ -120,6 +120,7 @@ interface RoomCollabTransportOptions {
 	persistSessionAuth?: (payload: { sessionToken: string; expiresAt: number | null }) => void;
 	onRoomRoleChanged?: (role: string) => void;
 	onSessionExpired?: () => void;
+	onInitialSceneReady?: () => void;
 	recoverRenderer?: () => Promise<boolean>;
 }
 
@@ -545,6 +546,7 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 			void (options.confirmInitScene?.() ?? Promise.resolve(true)).then((valid) => {
 				if (!connection || socket.value !== connection || generation !== snapshotGeneration) return;
 				if (!valid) { lastRoomSeq = 0; appliedSequences.clear(); connection.close(); return; }
+				options.onInitialSceneReady?.();
 				lastRoomSeq = snapshotVersion;
 				snapshotPending = false;
 				for (const seq of appliedSequences) if (seq <= lastRoomSeq) appliedSequences.delete(seq);

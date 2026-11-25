@@ -108,6 +108,29 @@ describe("SceneEngine text layout", () => {
 });
 
 describe("SceneEngine dirty rendering", () => {
+	it("compares streamed opaque strokes with their final full replay", () => {
+		const engine = new SceneEngine();
+		const streamed = createCanvasContext();
+		for (let stroke = 0; stroke < 8; stroke++) {
+			for (let index = 0; index < 40; index++) {
+				const refs = engine.ingestFlatPoint({
+					cmdId: `stream-${stroke}`, userId: "browser-test", pageId: 0,
+					tool: "pen", color: stroke % 2 ? "#e11d48" : "#111827", size: 8,
+					isDeleted: false, pointIndex: index, lamport: stroke * 40 + index + 1,
+					x: .1 + index * .018, y: .15 + stroke * .07 + Math.sin(index / 4) * .08, p: .5,
+				});
+				engine.renderAtomRefs(streamed, refs, WIDTH, HEIGHT);
+			}
+		}
+		engine.renderAtomRefs(streamed, engine.finishAllOpenStrokes(), WIDTH, HEIGHT);
+		const complete = createCanvasContext();
+		engine.renderFull(complete, WIDTH, HEIGHT);
+		const a = streamed.getImageData(0, 0, WIDTH, HEIGHT).data;
+		const b = complete.getImageData(0, 0, WIDTH, HEIGHT).data;
+		// Separate batches blend antialiased edges differently. Initialization
+		// therefore still needs its final reconciliation even for opaque pens.
+		expect(a.some((value, index) => value !== b[index])).toBe(true);
+	});
 	it("rebuilds moved content without clipping antialiased tile edges", () => {
 		const engine = new SceneEngine(); engine.applyOperation(operations[0]!);
 		const shape = operations[0]!;
