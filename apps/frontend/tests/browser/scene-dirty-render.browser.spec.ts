@@ -475,12 +475,17 @@ describe("SceneEngine dirty rendering", () => {
 			fullEngine.applyOperation(op);
 		};
 
-		// Seed > 600 overlapping dense strokes to cross PREFIX_CACHE_MIN_ATOMS (512).
+		// Seed > 600 overlapping dense strokes to cross PREFIX_CACHE_MIN_ATOMS (512):
+		// half inside the active tail region and half outside so dense candidate filtering runs
+		// without slicing quadratic curves across software Skia's dirty-clip boundary.
 		for (let strokeIndex = 0; strokeIndex < 80; strokeIndex += 1) {
-			const baseY = 0.15 + ((strokeIndex % 10) * 0.07);
+			const inTailBand = strokeIndex % 2 === 0;
+			const baseX = inTailBand ? 0.19 : 0.68;
+			const spanX = inTailBand ? 0.22 : 0.22;
+			const baseY = (inTailBand ? 0.20 : 0.56) + ((strokeIndex % 8) * 0.02);
 			const points = Array.from({ length: 10 }, (_, ptIndex) => ({
-				x: 0.12 + ptIndex * 0.075,
-				y: baseY + ((ptIndex % 2) * 0.02),
+				x: baseX + (ptIndex / 9) * spanX,
+				y: baseY + ((ptIndex % 2) * 0.015),
 				p: 0.5,
 				lamport: 10 + strokeIndex * 10 + ptIndex,
 			}));
@@ -515,7 +520,7 @@ describe("SceneEngine dirty rendering", () => {
 
 		// Add localized tail highlighter (multiply) + eraser stroke (destination-out) over dense strokes:
 		// SettledPrefixCache should avoid repainting the settled background atoms.
-		const tailRegion = { minX: 0.2 * WIDTH, minY: 0.18 * HEIGHT, maxX: 0.45 * WIDTH, maxY: 0.38 * HEIGHT, width: 0.25 * WIDTH, height: 0.2 * HEIGHT };
+		const tailRegion = { minX: 0.16 * WIDTH, minY: 0.16 * HEIGHT, maxX: 0.45 * WIDTH, maxY: 0.40 * HEIGHT, width: 0.29 * WIDTH, height: 0.24 * HEIGHT };
 		applyBoth({
 			schemaVersion: 2,
 			opId: "tail-hl",
