@@ -16,6 +16,8 @@ import RoomShortcutsDialog from "./RoomShortcutsDialog.vue";
 import RoomSizePreview from "./RoomSizePreview.vue";
 import RoomTextEditor from "./RoomTextEditor.vue";
 import RoomToolbar from "./RoomToolbar.vue";
+import RoomTransitionCurtain from "./RoomTransitionCurtain.vue";
+import { roomTransition } from "../states/roomTransitionState";
 
 vi.mock("vue-sonner", () => ({
 	toast: {
@@ -36,6 +38,7 @@ describe("Room Vue components", () => {
 	});
 
 	afterEach(() => {
+		roomTransition.abortRoomTransition();
 		vi.restoreAllMocks();
 	});
 
@@ -405,5 +408,27 @@ describe("Room Vue components", () => {
 		await collapsed.find("button").trigger("click");
 		expect(baseToolbarProps.onToggleCollapsed).toHaveBeenCalledWith(false);
 		collapsed.unmount();
+	});
+
+	it("RoomTransitionCurtain renders frosted hanging signboard with benchmark status text and backstage Easter eggs", async () => {
+		const wrapper = mount(RoomTransitionCurtain);
+		expect(wrapper.find('[role="status"]').exists()).toBe(false);
+
+		roomTransition.notifyRoomMounted({ roomId: "445566", roomName: "Studio Board" });
+		await flushPromises();
+
+		const status = wrapper.find('[role="status"]');
+		expect(status.exists()).toBe(true);
+		expect(status.text()).toContain("正在准备画布");
+		expect(status.text()).toContain("Studio Board · #445·566");
+		expect(wrapper.find(".af-egg-roller").exists()).toBe(true);
+		expect(wrapper.findAll(".af-egg-knock")).toHaveLength(2);
+		expect(wrapper.findAll(".af-egg-worker")).toHaveLength(2);
+		expect(wrapper.findAll(".af-egg-sticky")).toHaveLength(2);
+
+		roomTransition.notifyRoomSceneReady();
+		await flushPromises();
+		expect(wrapper.find('[role="status"]').exists()).toBe(false);
+		wrapper.unmount();
 	});
 });

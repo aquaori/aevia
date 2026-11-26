@@ -70,6 +70,7 @@
 	import RoomSettings from "../components/RoomSettings.vue";
 	import AccountPanel from "../components/AccountPanel.vue";
 	import { useAccountStore } from "../store/accountStore";
+	import { roomTransition } from "../states/roomTransitionState";
 	import axios from "axios";
 	import { toast } from "vue-sonner";
 	import { apiUrl } from "../config/endpoints";
@@ -393,7 +394,10 @@
 
 
 	const roomCollabTransport = createRoomCollabTransport({
-		onInitialSceneReady: () => { initialSceneReady.value = true; },
+		onInitialSceneReady: () => {
+			initialSceneReady.value = true;
+			roomTransition.notifyRoomSceneReady();
+		},
 		recoverRenderer: async () => {
 			workerBridge.dispose();
 			ctx.value = null;
@@ -728,13 +732,27 @@
 	};
 
 	onMounted(() => {
+		if (!initialSceneReady.value && !reconnectFailed.value && !showNamePrompt.value) {
+			roomTransition.notifyRoomMounted({ roomId: roomId.value, roomName: roomName.value });
+		}
 		roomLifecycleController.mount();
 		document.addEventListener("visibilitychange", handleVisibilityChange);
 	});
 	onUnmounted(() => {
 		if (dependencyTimer) clearTimeout(dependencyTimer);
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
+		roomTransition.handleRoomUnmounted();
 		roomLifecycleController.unmount();
+	});
+
+	watch([roomId, roomName], ([nextId, nextName]) => {
+		roomTransition.updateRoomMeta({ roomId: nextId, roomName: nextName });
+	});
+
+	watch([reconnectFailed, showNamePrompt], ([failed, prompting]) => {
+		if (failed || prompting) {
+			roomTransition.abortRoomTransition();
+		}
 	});
 
 	watch(showPageOverview, (visible) => {
@@ -828,21 +846,23 @@
 			<p class="text-slate-400">为了获得最佳绘画体验，请横屏使用。</p>
 		</div>
 
-		<RoomHeader
-			:visible="!isFullscreen"
-			:can-share="userStore.roomRole !== 'viewer'"
-			:can-manage-room="!!accountStore.account && accountStore.account.id === userId"
-			:room-name="roomName"
-			:room-id="roomId"
-			:more-open="headerMenuOpen"
-			:online-count="onlineCount"
-			:has-copied="hasCopied"
-			:on-toggle-more="roomPanelController.toggleMoreMenu"
-			:on-copy-link="() => { showInvites = true; }"
-			:on-open-member-list="roomPanelController.openMemberList"
-			:on-open-room-settings="() => { headerMenuOpen = false; showRoomSettings = true; }"
-			:on-toggle-shortcuts="roomPanelController.toggleShortcuts"
-		/>
+		<div :class="{ 'af-room-chrome-pop': roomTransition.justRevealed.value }">
+			<RoomHeader
+				:visible="!isFullscreen"
+				:can-share="userStore.roomRole !== 'viewer'"
+				:can-manage-room="!!accountStore.account && accountStore.account.id === userId"
+				:room-name="roomName"
+				:room-id="roomId"
+				:more-open="headerMenuOpen"
+				:online-count="onlineCount"
+				:has-copied="hasCopied"
+				:on-toggle-more="roomPanelController.toggleMoreMenu"
+				:on-copy-link="() => { showInvites = true; }"
+				:on-open-member-list="roomPanelController.openMemberList"
+				:on-open-room-settings="() => { headerMenuOpen = false; showRoomSettings = true; }"
+				:on-toggle-shortcuts="roomPanelController.toggleShortcuts"
+			/>
+		</div>
 		<RoomInvites v-if="showInvites" :room-id="roomId" :token="token" @close="showInvites = false" />
 		<RoomSettings v-if="showRoomSettings" :room-id="roomId" :room-name="roomName" :role="userStore.roomRole" @close="showRoomSettings = false" @changed="(name) => { roomName = name; }" @exit="() => { userStore.clearAll(); router.push('/'); }" />
 		<AccountPanel v-if="!accountStore.account" in-room @authenticated="enterWithAccount" />
@@ -859,16 +879,18 @@
 			}"
 		></div>
 
-		<RoomPagination
-			:inert="!initialSceneReady"
-			:can-edit="userStore.roomRole !== 'viewer'"
-			:current-page-id="currentPageId"
-			:total-pages="totalPages"
-			:show-page-overview="showPageOverview"
-			:prev-page="roomPageService.prevPage"
-			:next-page="roomPageService.nextPage"
-			:open-overview="roomPanelController.openOverview"
-		/>
+		<div :class="{ 'af-room-chrome-pop': roomTransition.justRevealed.value }">
+			<RoomPagination
+				:inert="!initialSceneReady"
+				:can-edit="userStore.roomRole !== 'viewer'"
+				:current-page-id="currentPageId"
+				:total-pages="totalPages"
+				:show-page-overview="showPageOverview"
+				:prev-page="roomPageService.prevPage"
+				:next-page="roomPageService.nextPage"
+				:open-overview="roomPanelController.openOverview"
+			/>
+		</div>
 
 		<!-- Canvas Wrapper -->
 		<div class="fixed inset-0 w-full h-full touch-none select-none overflow-hidden bg-white">
@@ -898,30 +920,29 @@
 			></canvas>
 		</div>
 
-		<RoomToolbar v-if="userStore.roomRole !== 'viewer'" :inert="!initialSceneReady"
-			:active-menu="activeMenu"
-			:current-tool="currentTool"
-			:current-color="currentColor"
-			:current-size="currentSize"
-			:current-stroke-pattern="currentStrokePattern"
-			:current-sticker="currentSticker"
-			:is-fullscreen="isFullscreen"
-			:is-toolbar-collapsed="isToolbarCollapsed"
-			:toggle-fullscreen="roomHeaderController.toggleFullscreen"
-			:toggle-menu="roomToolController.toggleMenu"
-			:set-tool="roomEditorController.setTool"
-			:set-color="roomEditorController.setColor"
-			:set-stroke-pattern="roomToolController.setStrokePattern"
-			:set-sticker="roomToolController.setSticker"
-			:clear-canvas="roomCommandController.clearCanvas"
-			:undo="roomCommandController.undo"
-			:redo="roomCommandController.redo"
-			:update-current-size="roomToolController.updateCurrentSize"
-			:set-size-preview="roomToolController.setSizePreview"
-			:on-toggle-collapsed="(collapsed) => (isToolbarCollapsed = collapsed)"
-		/>
-		<div v-if="!initialSceneReady" class="fixed inset-0 z-[60] flex items-center justify-center bg-white/30" role="status" aria-live="polite">
-			<div class="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">正在准备画布…</div>
+		<div :class="{ 'af-room-chrome-pop': roomTransition.justRevealed.value }">
+			<RoomToolbar v-if="userStore.roomRole !== 'viewer'" :inert="!initialSceneReady"
+				:active-menu="activeMenu"
+				:current-tool="currentTool"
+				:current-color="currentColor"
+				:current-size="currentSize"
+				:current-stroke-pattern="currentStrokePattern"
+				:current-sticker="currentSticker"
+				:is-fullscreen="isFullscreen"
+				:is-toolbar-collapsed="isToolbarCollapsed"
+				:toggle-fullscreen="roomHeaderController.toggleFullscreen"
+				:toggle-menu="roomToolController.toggleMenu"
+				:set-tool="roomEditorController.setTool"
+				:set-color="roomEditorController.setColor"
+				:set-stroke-pattern="roomToolController.setStrokePattern"
+				:set-sticker="roomToolController.setSticker"
+				:clear-canvas="roomCommandController.clearCanvas"
+				:undo="roomCommandController.undo"
+				:redo="roomCommandController.redo"
+				:update-current-size="roomToolController.updateCurrentSize"
+				:set-size-preview="roomToolController.setSizePreview"
+				:on-toggle-collapsed="(collapsed) => (isToolbarCollapsed = collapsed)"
+			/>
 		</div>
 	</div>
 </template>

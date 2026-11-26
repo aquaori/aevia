@@ -185,6 +185,20 @@
       ]
     },
     {
+      "id": "frontend:apps/frontend/src/components/RoomTransitionCurtain.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/RoomTransitionCurtain.vue",
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
       "id": "frontend:apps/frontend/src/config/endpoints.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/config/endpoints.ts",
@@ -1035,6 +1049,20 @@
       "id": "frontend:apps/frontend/src/states/roomSessionState.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/states/roomSessionState.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/states/roomStates.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/states/roomStates.spec.ts",
+          "level": "unit"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/states/roomTransitionState.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/states/roomTransitionState.ts",
       "state": "covered",
       "owner": "apps/frontend/src/states/roomStates.spec.ts",
       "evidence": [

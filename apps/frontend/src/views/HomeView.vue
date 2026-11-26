@@ -38,6 +38,7 @@
 	import RoomSettings from "../components/RoomSettings.vue";
 	import { useAccountStore } from "../store/accountStore";
 	import { stickerAssets } from "../scene/stickerAssets";
+	import { roomTransition } from "../states/roomTransitionState";
 	import aeviaLogoUrl from "../assets/brand/aevia-logo.png";
 	import aeviaIconUrl from "../assets/brand/aevia-icon.png";
 
@@ -616,6 +617,10 @@
 				{ headers: accountStore.headers() },
 			);
 			applySessionAuth(admission.data.data);
+			await roomTransition.beginRoomEntryTransition({
+				roomId: targetRoomId,
+				roomName: finalRoomName,
+			});
 			await router.push({ name: "room" });
 		} catch (error) {
 			const responseError = error as ResponseError;
@@ -643,6 +648,9 @@
 				{ headers: accountStore.token ? accountStore.headers() : {} },
 			);
 			applySessionAuth(response.data.data);
+			await roomTransition.beginRoomEntryTransition({
+				roomId: joinCode.value,
+			});
 			await router.push({ name: "room" });
 		} catch (error) {
 			const responseError = error as ResponseError;
@@ -694,6 +702,10 @@
 					{ headers: accountStore.token ? accountStore.headers() : {} },
 				);
 				applySessionAuth(response.data.data);
+				await roomTransition.beginRoomEntryTransition({
+					roomId: room.roomId,
+					roomName: room.name,
+				});
 				await router.push({ name: "room" });
 				return;
 			} catch (error) {
@@ -727,6 +739,10 @@
 			);
 			applySessionAuth(response.data.data);
 			unlockTargetRoom.value = null;
+			await roomTransition.beginRoomEntryTransition({
+				roomId: room.roomId,
+				roomName: room.name,
+			});
 			await router.push({ name: "room" });
 		} catch (error) {
 			const responseError = error as ResponseError;
@@ -806,7 +822,7 @@
 </script>
 
 <template>
- <div class="entry-app">
+ <div class="entry-app" :class="{ 'is-stage-clearing': roomTransition.isClearingStage.value }">
   <!-- =======================================================
        SIGNED-IN: CREATIVE SKETCHBOOK DESK & FOLIO PINBOARD
        ======================================================= -->

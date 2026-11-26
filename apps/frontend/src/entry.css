@@ -2417,11 +2417,547 @@
   }
 }
 
+/* =========================================================
+   4-ACT ROOM ENTRY TRANSITION (Stage Clearing + Curtain)
+   ========================================================= */
+.entry-app.is-stage-clearing {
+  pointer-events: none;
+}
+
+/* Wave 1 (0ms): Sticky notes, cursors & notices lift away first */
+.entry-app.is-stage-clearing .af-notes-board,
+.entry-app.is-stage-clearing .af-playground-badge,
+.entry-app.is-stage-clearing .af-collab-cursor,
+.entry-app.is-stage-clearing .af-invite-prop-left,
+.entry-app.is-stage-clearing .af-invite-prop-right,
+.entry-app.is-stage-clearing .af-invite-cursor,
+.entry-app.is-stage-clearing .entry-notices {
+  opacity: 0;
+  transform: translateY(-20px) scale(0.94) rotate(-2.5deg);
+  transition:
+    opacity 160ms var(--entry-ease) 0ms,
+    transform 180ms var(--entry-ease) 0ms;
+}
+
+/* Wave 2 (45ms): Header islands, headline, gallery items & dock tuck away */
+.entry-app.is-stage-clearing .af-minimal-header,
+.entry-app.is-stage-clearing .af-studio-nav,
+.entry-app.is-stage-clearing .af-playground-headline,
+.entry-app.is-stage-clearing .af-playground-desc,
+.entry-app.is-stage-clearing .af-gallery-header,
+.entry-app.is-stage-clearing .entry-room-row {
+  opacity: 0;
+  transform: translateY(-16px) scale(0.96);
+  transition:
+    opacity 165ms var(--entry-ease) 45ms,
+    transform 185ms var(--entry-ease) 45ms;
+}
+
+.entry-app.is-stage-clearing .af-guest-dock-wrap {
+  opacity: 0;
+  transform: translate(-50%, 28px) scale(0.95);
+  transition:
+    opacity 165ms var(--entry-ease) 45ms,
+    transform 185ms var(--entry-ease) 45ms;
+}
+
+/* Wave 3 (85ms): Foreground Easel / Portal / Ticket clears cleanly */
+.entry-app.is-stage-clearing .af-portal-stack,
+.entry-app.is-stage-clearing .af-easel-card,
+.entry-app.is-stage-clearing .af-teleporter-card,
+.entry-app.is-stage-clearing .af-ticket-stack,
+.entry-app.is-stage-clearing .entry-empty,
+.entry-app.is-stage-clearing .af-guest-canvas-bg,
+.entry-app.is-stage-clearing .af-invite-ribbon-bg {
+  opacity: 0;
+  transform: translateY(-18px) scale(0.94);
+  transition:
+    opacity 170ms var(--entry-ease) 85ms,
+    transform 190ms var(--entry-ease) 85ms;
+}
+
+/* Cross-Route Stagehand Curtain */
+.af-transition-curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.af-transition-curtain.is-focusing {
+  pointer-events: none;
+}
+
+/* Blurred Backstage Renovation Easter Eggs Layer */
+.af-backstage-workshop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  background-color: rgba(248, 249, 252, 0.56);
+  background-image: radial-gradient(circle, rgba(148, 163, 184, 0.28) 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 1;
+  transition: opacity 280ms var(--entry-ease);
+}
+
+.af-transition-curtain.is-focusing .af-backstage-workshop {
+  opacity: 0;
+}
+
+.af-egg-corners {
+  position: absolute;
+  inset: 28px;
+}
+
+.af-egg-corner {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-color: rgba(79, 70, 229, 0.35);
+  border-style: solid;
+  animation: af-corner-breathe 2.4s ease-in-out infinite;
+}
+
+.af-egg-corner.tl { top: 0; left: 0; border-width: 3px 0 0 3px; border-radius: 6px 0 0 0; }
+.af-egg-corner.tr { top: 0; right: 0; border-width: 3px 3px 0 0; border-radius: 0 6px 0 0; }
+.af-egg-corner.bl { bottom: 0; left: 0; border-width: 0 0 3px 3px; border-radius: 0 0 0 6px; }
+.af-egg-corner.br { bottom: 0; right: 0; border-width: 0 3px 3px 0; border-radius: 0 0 6px 0; }
+
+/* Prismatic Paint Roller Band Sweeping Across Studio */
+.af-egg-roller {
+  position: absolute;
+  left: -35%;
+  top: 26%;
+  width: 170%;
+  height: 92px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(37, 99, 235, 0.34), rgba(124, 58, 237, 0.36), rgba(236, 72, 153, 0.34), rgba(245, 158, 11, 0.32));
+  transform: rotate(-11deg) translateX(-28%);
+  animation: af-roller-sweep 2.8s cubic-bezier(0.4, 0, 0.2, 1) infinite alternate;
+}
+
+/* Double-Tap Calibration / Hammer Knock Pulses */
+.af-egg-knock {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+}
+
+.af-egg-knock.k1 {
+  left: 16%;
+  top: 24%;
+}
+
+.af-egg-knock.k2 {
+  right: 17%;
+  bottom: 22%;
+}
+
+.af-knock-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 4px solid rgba(79, 70, 229, 0.52);
+  opacity: 0;
+  animation: af-knock-ripple 1.8s ease-out infinite;
+}
+
+.af-egg-knock.k2 .af-knock-ring {
+  border-color: rgba(236, 72, 153, 0.52);
+  animation-delay: 0.9s;
+}
+
+.af-knock-ring.r2 {
+  animation-delay: 0.24s;
+}
+
+.af-egg-knock.k2 .af-knock-ring.r2 {
+  animation-delay: 1.14s;
+}
+
+.af-knock-mallet {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.72);
+  animation: af-mallet-tap 1.8s ease-in-out infinite;
+}
+
+.af-egg-knock.k2 .af-knock-mallet {
+  background: rgba(99, 102, 241, 0.72);
+  animation-delay: 0.9s;
+}
+
+/* Sticky Note Prop Silhouettes Placed Behind Glass */
+.af-egg-sticky {
+  position: absolute;
+  width: 118px;
+  height: 92px;
+  border-radius: 14px;
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+}
+
+.af-egg-sticky.s1 {
+  left: 20%;
+  bottom: 20%;
+  background: rgba(254, 240, 138, 0.78);
+  animation: af-sticky-place-a 2.5s ease-in-out infinite alternate;
+}
+
+.af-egg-sticky.s2 {
+  right: 22%;
+  top: 22%;
+  background: rgba(199, 210, 254, 0.78);
+  animation: af-sticky-place-b 2.7s ease-in-out infinite alternate;
+}
+
+/* Stagehand Collaborator Cursors */
+.af-egg-worker {
+  position: absolute;
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.af-egg-worker.w1 {
+  left: 26%;
+  bottom: 28%;
+  animation: af-worker-a 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite alternate;
+}
+
+.af-egg-worker.w2 {
+  right: 26%;
+  top: 32%;
+  animation: af-worker-b 2.7s cubic-bezier(0.4, 0, 0.2, 1) infinite alternate;
+}
+
+.af-worker-tag {
+  margin-top: 12px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.af-worker-tag.indigo { background: #4f46e5; }
+.af-worker-tag.pink { background: #ec4899; }
+
+/* Frosted Glass Veil with Smooth Focus Pull */
+.af-curtain-glass {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.46);
+  backdrop-filter: blur(13px) saturate(1.18);
+  -webkit-backdrop-filter: blur(13px) saturate(1.18);
+  opacity: 1;
+  transition:
+    backdrop-filter 300ms var(--entry-ease),
+    -webkit-backdrop-filter 300ms var(--entry-ease),
+    opacity 300ms var(--entry-ease);
+}
+
+.af-transition-curtain.is-focusing .af-curtain-glass {
+  backdrop-filter: blur(0px) saturate(1);
+  -webkit-backdrop-filter: blur(0px) saturate(1);
+  opacity: 0;
+}
+
+/* Style ①: Suspended Frosted Studio Signboard */
+.af-hanging-rig {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(calc(100% - 32px), 392px);
+  transform-origin: top center;
+  animation:
+    af-signboard-drop 560ms cubic-bezier(0.22, 1.18, 0.36, 1) forwards,
+    af-signboard-sway 3.6s ease-in-out 560ms infinite;
+}
+
+.af-transition-curtain.is-focusing .af-hanging-rig {
+  animation: af-signboard-hoist 280ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
+.af-hanging-cords {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  justify-content: space-between;
+  width: 224px;
+  height: clamp(82px, 17vh, 148px);
+  margin-bottom: -22px;
+  pointer-events: none;
+}
+
+.af-cord {
+  width: 3px;
+  height: 100%;
+  border-radius: 9999px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.14);
+}
+
+.af-cord.left {
+  background: linear-gradient(180deg, #4f46e5 0%, #a855f7 60%, #ec4899 100%);
+}
+
+.af-cord.right {
+  background: linear-gradient(180deg, #7c3aed 0%, #ec4899 58%, #f59e0b 100%);
+}
+
+.af-hanging-board {
+  position: relative;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+  border: 1px solid #ffffff;
+  border-radius: 24px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(148, 163, 184, 0.2),
+    0 24px 52px -12px rgba(79, 70, 229, 0.2),
+    0 8px 20px -4px rgba(15, 23, 42, 0.08);
+}
+
+.af-board-grommets {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  width: 224px;
+  margin: 10px auto 0;
+}
+
+.af-grommet {
+  position: relative;
+  z-index: 4;
+  width: 12px;
+  height: 12px;
+  margin-left: -4.5px;
+  margin-right: -4.5px;
+  border-radius: 9999px;
+  background: #ffffff;
+  border: 2.5px solid #cbd5e1;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.12),
+    inset 0 1.5px 2px rgba(15, 23, 42, 0.16);
+}
+
+.af-board-body {
+  padding: 10px 26px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.af-board-room-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 9999px;
+  background: var(--af-indigo-50);
+  border: 1px solid var(--af-indigo-200);
+  color: var(--af-indigo);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.af-board-room-pill span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.af-board-room-pill .af-live-dot {
+  color: var(--af-emerald);
+}
+
+.af-board-emblem-wrap {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  margin: 16px 0 14px;
+  display: grid;
+  place-items: center;
+}
+
+.af-board-halo {
+  position: absolute;
+  inset: -7px;
+  border-radius: 9999px;
+  border: 2px dashed rgba(99, 102, 241, 0.42);
+  animation: entry-spin 8s linear infinite;
+}
+
+.af-board-emblem {
+  width: 56px;
+  height: 56px;
+  border-radius: 17px;
+  background: linear-gradient(145deg, #ffffff 0%, #eef2ff 100%);
+  border: 1px solid var(--af-indigo-100);
+  box-shadow: 0 8px 20px -4px rgba(79, 70, 229, 0.18);
+  display: grid;
+  place-items: center;
+}
+
+.af-board-emblem img {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+}
+
+.af-board-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: var(--af-ink);
+}
+
+.af-board-subtitle {
+  margin: 6px 0 18px;
+  min-height: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--af-subtle);
+}
+
+.af-board-shimmer {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--af-well);
+  overflow: hidden;
+}
+
+.af-board-shimmer span {
+  display: block;
+  width: 48%;
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--af-ribbon-gradient);
+  animation: af-shimmer-slide 1.4s ease-in-out infinite;
+}
+
+/* Room Chrome Reveal after Focus Pull */
+.af-room-chrome-pop {
+  animation: af-chrome-reveal 260ms var(--entry-ease) both;
+}
+
+@keyframes af-signboard-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-110%) rotate(-3deg);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(10px) rotate(1.3deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) rotate(0deg);
+  }
+}
+
+@keyframes af-signboard-sway {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(0.9deg); }
+  75% { transform: rotate(-0.9deg); }
+}
+
+@keyframes af-signboard-hoist {
+  to {
+    opacity: 0;
+    transform: translateY(-125%) scale(0.96);
+  }
+}
+
+@keyframes af-shimmer-slide {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(240%); }
+}
+
+@keyframes af-roller-sweep {
+  0% { transform: rotate(-11deg) translateX(-28%); }
+  100% { transform: rotate(-11deg) translateX(22%); }
+}
+
+@keyframes af-knock-ripple {
+  0% { transform: scale(0.28); opacity: 0.78; }
+  65% { transform: scale(1.25); opacity: 0; }
+  100% { transform: scale(1.3); opacity: 0; }
+}
+
+@keyframes af-mallet-tap {
+  0%, 100% { transform: scale(0.85) rotate(-18deg); opacity: 0.4; }
+  22% { transform: scale(1.15) rotate(8deg); opacity: 0.95; }
+  45% { transform: scale(0.9) rotate(-14deg); opacity: 0.45; }
+}
+
+@keyframes af-sticky-place-a {
+  0% { transform: translate(-18px, 16px) rotate(-10deg) scale(0.92); }
+  100% { transform: translate(22px, -12px) rotate(-2deg) scale(1); }
+}
+
+@keyframes af-sticky-place-b {
+  0% { transform: translate(18px, -14px) rotate(9deg) scale(0.92); }
+  100% { transform: translate(-20px, 14px) rotate(2deg) scale(1); }
+}
+
+@keyframes af-worker-a {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(110px, -70px); }
+}
+
+@keyframes af-worker-b {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(-105px, 64px); }
+}
+
+@keyframes af-corner-breathe {
+  0%, 100% { opacity: 0.25; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.94); }
+}
+
+@keyframes af-chrome-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .entry-spin,
   .af-live-dot::before,
   .af-drift-a,
-  .af-drift-b {
+  .af-drift-b,
+  .af-egg-roller,
+  .af-knock-ring,
+  .af-knock-mallet,
+  .af-egg-sticky,
+  .af-egg-worker,
+  .af-egg-corner,
+  .af-board-halo,
+  .af-board-shimmer span,
+  .af-hanging-rig,
+  .af-room-chrome-pop {
     animation: none;
   }
   .entry-button,
@@ -2430,7 +2966,9 @@
   .af-portal-stack::before,
   .af-portal-stack::after,
   .af-easel-stage,
-  .studio-keycaps input {
+  .studio-keycaps input,
+  .af-curtain-glass,
+  .af-backstage-workshop {
     transition: none;
   }
 }

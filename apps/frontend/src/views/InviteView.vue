@@ -12,6 +12,7 @@
 	import { toast } from "vue-sonner";
 	import { useUserStore } from "../store/userStore";
 	import { useAccountStore } from "../store/accountStore";
+	import { roomTransition } from "../states/roomTransitionState";
 	import { getInviteMeta } from "../service/sessionApi";
 	import { apiUrl } from "../config/endpoints";
 	import AccountPanel from "../components/AccountPanel.vue";
@@ -91,13 +92,17 @@
 					password: password.value,
 					inviteToken: token,
 				}, { headers: accountStore.token ? accountStore.headers() : {} })
-				.then((res) => {
+				.then(async (res) => {
 					if (res.data.code === 200) {
 						localStorage.setItem("wb_username", username.value);
 						userStore.setToken(res.data.data.sessionToken || res.data.data.token);
 						userStore.setSessionExpiresAt(res.data.data.expiresAt ?? null);
 						userStore.setRoomRole(res.data.data.role || "editor");
-						router.push({ name: "room" });
+						await roomTransition.beginRoomEntryTransition({
+							roomId: roomId.value,
+							roomName: roomName.value,
+						});
+						await router.push({ name: "room" });
 					} else {
 						console.error("Error joining room: ", res.data.msg || "未知错误");
 					}
@@ -125,7 +130,7 @@
 </script>
 
 <template>
- <div class="entry-app af-invite-scene">
+ <div class="entry-app af-invite-scene" :class="{ 'is-stage-clearing': roomTransition.isClearingStage.value }">
   <!-- Sweeping Aevia Prismatic Ribbon Artwork Backdrop -->
   <svg class="af-invite-ribbon-bg" viewBox="0 0 1440 900" fill="none" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
    <defs>
