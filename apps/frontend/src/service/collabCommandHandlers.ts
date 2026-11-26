@@ -554,9 +554,8 @@ export const createCollabCommandHandlers = (options: CollabMessageDispatcherOpti
 		}
 		if (initStreamState.commandsReady) return;
 
-		const commandsById = new Map(
-			initStreamState.commandsBuffer.map((command) => [command.id, command] as const)
-		);
+		const commandsById = new Map<string, Command>();
+		for (const command of initStreamState.commandsBuffer) commandsById.set(command.id, command);
 		for (const command of initStreamState.liveCommands) commandsById.set(command.id, command);
 		for (const command of options.getInitLocalCommands?.() ?? []) commandsById.set(command.id, command);
 		const mergedCommands = Array.from(commandsById.values());

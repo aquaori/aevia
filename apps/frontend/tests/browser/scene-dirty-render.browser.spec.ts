@@ -451,4 +451,186 @@ describe("SceneEngine dirty rendering", () => {
 		}
 		expect(different).toBe(0);
 	});
+
+	it("preserves pixel equivalence with SettledPrefixCache across dense tail ops, highlighter/eraser, interleaved tail, and prefix invalidation", () => {
+		const dirtyEngine = new SceneEngine();
+		const fullEngine = new SceneEngine();
+		const maxPremultipliedDiff = (actual: Uint8ClampedArray, expected: Uint8ClampedArray) => {
+			let maxDiff = 0;
+			for (let i = 0; i < actual.length; i += 4) {
+				const aAlpha = actual[i + 3]!;
+				const eAlpha = expected[i + 3]!;
+				maxDiff = Math.max(maxDiff, Math.abs(aAlpha - eAlpha));
+				for (let c = 0; c < 3; c += 1) {
+					const aPremul = Math.round((actual[i + c]! * aAlpha) / 255);
+					const ePremul = Math.round((expected[i + c]! * eAlpha) / 255);
+					maxDiff = Math.max(maxDiff, Math.abs(aPremul - ePremul));
+				}
+			}
+			return maxDiff;
+		};
+
+		const applyBoth = (op: SceneOperationEnvelopeV2) => {
+			dirtyEngine.applyOperation(op);
+			fullEngine.applyOperation(op);
+		};
+
+		// Seed > 600 overlapping dense strokes to cross PREFIX_CACHE_MIN_ATOMS (512):
+		// half inside the active tail region and half outside so dense candidate filtering runs
+		// without slicing quadratic curves across software Skia's dirty-clip boundary.
+		for (let strokeIndex = 0; strokeIndex < 80; strokeIndex += 1) {
+			const inTailBand = strokeIndex % 2 === 0;
+			const baseX = inTailBand ? 0.19 : 0.68;
+			const spanX = inTailBand ? 0.22 : 0.22;
+			const baseY = (inTailBand ? 0.20 : 0.56) + ((strokeIndex % 8) * 0.02);
+			const points = Array.from({ length: 10 }, (_, ptIndex) => ({
+				x: baseX + (ptIndex / 9) * spanX,
+				y: baseY + ((ptIndex % 2) * 0.015),
+				p: 0.5,
+				lamport: 10 + strokeIndex * 10 + ptIndex,
+			}));
+			applyBoth({
+				schemaVersion: 2,
+				opId: `seed-${strokeIndex}`,
+				elementId: `seed-${strokeIndex}`,
+				actorId: strokeIndex % 2 === 0 ? "actor-a" : "actor-b",
+				roomId: "room",
+				pageId: 0,
+				lamport: 10 + strokeIndex * 10,
+				historyGroupId: `hg-seed-${strokeIndex}`,
+				kind: "element.create",
+				payload: {
+					descriptor: {
+						elementKind: "path",
+						recipeId: "stroke",
+						toolId: "pen",
+						style: { color: strokeIndex % 3 === 0 ? "#1d4ed8" : "#0f172a", size: 4 },
+					},
+					points,
+					isComplete: true,
+				},
+			});
+		}
+
+		const dirtyCtx = createCanvasContext();
+		const fullCtx = createCanvasContext();
+		dirtyEngine.renderFull(dirtyCtx, WIDTH, HEIGHT);
+		fullEngine.renderFull(fullCtx, WIDTH, HEIGHT);
+		expect(dirtyEngine.hasValidPrefixCache()).toBe(true);
+
+		// Add localized tail highlighter (multiply) + eraser stroke (destination-out) over dense strokes:
+		// SettledPrefixCache should avoid repainting the settled background atoms.
+		const tailRegion = { minX: 0.16 * WIDTH, minY: 0.16 * HEIGHT, maxX: 0.45 * WIDTH, maxY: 0.40 * HEIGHT, width: 0.29 * WIDTH, height: 0.24 * HEIGHT };
+		applyBoth({
+			schemaVersion: 2,
+			opId: "tail-hl",
+			elementId: "tail-hl",
+			actorId: "actor-a",
+			roomId: "room",
+			pageId: 0,
+			lamport: 2000,
+			historyGroupId: "hg-tail-hl",
+			kind: "element.create",
+			payload: {
+				descriptor: {
+					elementKind: "path",
+					recipeId: "stroke",
+					toolId: "highlighter",
+					style: { color: "#facc15", size: 18, opacity: 0.35 },
+				},
+				points: [
+					{ x: 0.22, y: 0.2, p: 0.5, lamport: 2000 },
+					{ x: 0.32, y: 0.28, p: 0.5, lamport: 2001 },
+					{ x: 0.42, y: 0.35, p: 0.5, lamport: 2002 },
+				],
+				isComplete: true,
+			},
+		});
+		const tailMetrics = dirtyEngine.renderDirtyRegions(dirtyCtx, [tailRegion], WIDTH, HEIGHT);
+		fullEngine.renderFull(fullCtx, WIDTH, HEIGHT);
+		expect(tailMetrics.mode).toBe("dirty");
+		expect(tailMetrics.candidateAtoms).toBeGreaterThan(50);
+		expect(tailMetrics.renderedAtoms).toBeLessThan(tailMetrics.candidateAtoms);
+		expect(tailMetrics.renderedAtoms).toBeLessThan(280);
+		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+
+		applyBoth({
+			schemaVersion: 2,
+			opId: "tail-eraser",
+			elementId: "tail-eraser",
+			actorId: "actor-b",
+			roomId: "room",
+			pageId: 0,
+			lamport: 2010,
+			historyGroupId: "hg-tail-eraser",
+			kind: "element.create",
+			payload: {
+				descriptor: {
+					elementKind: "path",
+					recipeId: "stroke",
+					toolId: "eraser",
+					style: { color: "#000000", size: 22 },
+				},
+				points: [
+					{ x: 0.24, y: 0.24, p: 0.5, lamport: 2010 },
+					{ x: 0.4, y: 0.32, p: 0.5, lamport: 2011 },
+				],
+				isComplete: true,
+			},
+		});
+		const eraserMetrics = dirtyEngine.renderDirtyRegions(dirtyCtx, [tailRegion], WIDTH, HEIGHT);
+		fullEngine.renderFull(fullCtx, WIDTH, HEIGHT);
+		expect(eraserMetrics.mode).toBe("dirty");
+		expect(eraserMetrics.renderedAtoms).toBeLessThan(eraserMetrics.candidateAtoms);
+		expect(eraserMetrics.renderedAtoms).toBeLessThan(280);
+		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+
+		// Interleaved peer append sorted just BEFORE maxOrder (tail margin rebuild trigger):
+		applyBoth({
+			schemaVersion: 2,
+			opId: "interleaved-tail",
+			elementId: "interleaved-tail",
+			actorId: "actor-a",
+			roomId: "room",
+			pageId: 0,
+			lamport: 2005,
+			historyGroupId: "hg-interleaved-tail",
+			kind: "element.create",
+			payload: {
+				descriptor: {
+					elementKind: "path",
+					recipeId: "stroke",
+					toolId: "pen",
+					style: { color: "#dc2626", size: 5 },
+				},
+				points: [
+					{ x: 0.25, y: 0.34, p: 0.5, lamport: 2005 },
+					{ x: 0.41, y: 0.21, p: 0.5, lamport: 2006 },
+				],
+				isComplete: true,
+			},
+		});
+		dirtyEngine.renderDirtyRegions(dirtyCtx, [tailRegion], WIDTH, HEIGHT);
+		fullEngine.renderFull(fullCtx, WIDTH, HEIGHT);
+		expect(dirtyEngine.hasValidPrefixCache()).toBe(true);
+		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+
+		// Prefix invalidation via history undo of an early prefix element:
+		const seedBounds = dirtyEngine.getElementBounds("seed-0")!;
+		applyBoth({
+			schemaVersion: 2,
+			opId: "undo-seed-0",
+			elementId: "seed-0",
+			actorId: "actor-a",
+			roomId: "room",
+			pageId: 0,
+			lamport: 2020,
+			historyGroupId: "hg-undo-seed-0",
+			kind: "history.toggle",
+			payload: { targetHistoryGroupId: "hg-seed-0", enabled: false },
+		});
+		dirtyEngine.renderDirtyRegions(dirtyCtx, [pixelRect(seedBounds)], WIDTH, HEIGHT);
+		fullEngine.renderFull(fullCtx, WIDTH, HEIGHT);
+		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+	});
 });

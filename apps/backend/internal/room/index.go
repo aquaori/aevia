@@ -6,13 +6,25 @@ import (
 	"collaborative-whiteboard/apps/backend/internal/domain"
 )
 
-const pointBlockSize = 2000
+const (
+	pointBlockSize              = 2000
+	maxPendingOrphanFragments   = 2048
+	maxPendingOrphansPerElement = 512
+)
 
 type PagePointIndex struct {
-	version         int
-	pages           map[int]*pagePointBlocks
-	locators        map[string]commandPointLocator
-	scenePathStyles map[string]scenePathStyle
+	version              int
+	pages                map[int]*pagePointBlocks
+	locators             map[string]commandPointLocator
+	scenePathStyles      map[string]scenePathStyle
+	pendingFragments     map[string][]pendingSceneFragment
+	pendingTotal         int
+	quarantinedFragments uint64
+}
+
+type pendingSceneFragment struct {
+	cmdID    string
+	fragment domain.ScenePathFragment
 }
 
 type commandPointLocator struct {
@@ -40,9 +52,10 @@ type pagePointBlocks struct {
 
 func NewPagePointIndex(commands []domain.Command) *PagePointIndex {
 	idx := &PagePointIndex{
-		pages:           make(map[int]*pagePointBlocks),
-		locators:        make(map[string]commandPointLocator),
-		scenePathStyles: make(map[string]scenePathStyle),
+		pages:            make(map[int]*pagePointBlocks),
+		locators:         make(map[string]commandPointLocator),
+		scenePathStyles:  make(map[string]scenePathStyle),
+		pendingFragments: make(map[string][]pendingSceneFragment),
 	}
 	// Persisted commands are held in a map by the room state and therefore have
 	// no reliable iteration order. Collect create metadata first so an append can
@@ -120,14 +133,27 @@ func (i *PagePointIndex) upsertScenePathFragment(cmdID string, fragment domain.S
 	if locator, exists := i.locators[cmdID]; exists && locator.immutableV2 {
 		return
 	}
+	var pending []pendingSceneFragment
 	if fragment.IsCreate {
 		i.scenePathStyles[fragment.ElementID] = scenePathStyle{
 			pageID: fragment.PageID, tool: fragment.Tool, color: fragment.Color, size: fragment.Size, strokePattern: fragment.StrokePattern,
 			createOrder: sceneOrderKey{Lamport: fragment.Lamport, OpID: fragment.OperationID},
 		}
+		if queued := i.pendingFragments[fragment.ElementID]; len(queued) > 0 {
+			pending = queued
+			delete(i.pendingFragments, fragment.ElementID)
+			i.pendingTotal -= len(pending)
+			if i.pendingTotal < 0 {
+				i.pendingTotal = 0
+			}
+		}
 	}
 	style, ok := i.scenePathStyles[fragment.ElementID]
-	if !ok || style.pageID != fragment.PageID {
+	if !ok {
+		i.enqueuePendingFragment(cmdID, fragment)
+		return
+	}
+	if style.pageID != fragment.PageID {
 		return
 	}
 	flatPoints := make([]domain.FlatPoint, 0, len(fragment.Points))
@@ -148,6 +174,61 @@ func (i *PagePointIndex) upsertScenePathFragment(cmdID string, fragment domain.S
 		pageID: fragment.PageID, points: len(fragment.Points), lastTool: style.tool,
 		pointCmdID: fragment.ElementID, immutableV2: true, createOrder: style.createOrder,
 	}
+	if len(pending) > 0 {
+		sort.Slice(pending, func(a, b int) bool {
+			if pending[a].fragment.Lamport != pending[b].fragment.Lamport {
+				return pending[a].fragment.Lamport < pending[b].fragment.Lamport
+			}
+			if pending[a].fragment.OperationID != pending[b].fragment.OperationID {
+				return pending[a].fragment.OperationID < pending[b].fragment.OperationID
+			}
+			return pending[a].fragment.SourceStart < pending[b].fragment.SourceStart
+		})
+		for _, item := range pending {
+			i.upsertScenePathFragment(item.cmdID, item.fragment)
+		}
+	}
+}
+
+func (i *PagePointIndex) enqueuePendingFragment(cmdID string, fragment domain.ScenePathFragment) {
+	if i.pendingFragments == nil {
+		i.pendingFragments = make(map[string][]pendingSceneFragment)
+	}
+	existing := i.pendingFragments[fragment.ElementID]
+	for idx, item := range existing {
+		if item.cmdID == cmdID {
+			existing[idx] = pendingSceneFragment{cmdID: cmdID, fragment: fragment}
+			return
+		}
+	}
+	if len(existing) >= maxPendingOrphansPerElement || i.pendingTotal >= maxPendingOrphanFragments {
+		i.quarantinedFragments++
+		return
+	}
+	i.pendingFragments[fragment.ElementID] = append(existing, pendingSceneFragment{cmdID: cmdID, fragment: fragment})
+	i.pendingTotal++
+}
+
+func (i *PagePointIndex) PendingFragmentCount() int {
+	return i.pendingTotal
+}
+
+func (i *PagePointIndex) DroppedOrphanCount() uint64 {
+	return i.quarantinedFragments
+}
+
+func (i *PagePointIndex) QuarantinedElementIDs() []string {
+	if len(i.pendingFragments) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(i.pendingFragments))
+	for elementID, entries := range i.pendingFragments {
+		if len(entries) > 0 {
+			ids = append(ids, elementID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func canAppendIndexPoints(locator commandPointLocator, pageID, pointCount int, deleted bool, tool string) bool {
@@ -218,6 +299,28 @@ func (i *PagePointIndex) Remove(cmdID string) {
 			delete(i.pages, pageID)
 		}
 	}
+	for elementID, pending := range i.pendingFragments {
+		kept := pending[:0]
+		removed := 0
+		for _, item := range pending {
+			if item.cmdID == cmdID {
+				removed++
+				continue
+			}
+			kept = append(kept, item)
+		}
+		if removed > 0 {
+			i.pendingTotal -= removed
+			if i.pendingTotal < 0 {
+				i.pendingTotal = 0
+			}
+			if len(kept) == 0 {
+				delete(i.pendingFragments, elementID)
+			} else {
+				i.pendingFragments[elementID] = kept
+			}
+		}
+	}
 	if changed {
 		i.version++
 	}
@@ -238,13 +341,37 @@ func (i *PagePointIndex) ClearPage(pageID int) {
 		}
 		i.version++
 	}
+	for elementID, pending := range i.pendingFragments {
+		kept := pending[:0]
+		removed := 0
+		for _, item := range pending {
+			if item.fragment.PageID == pageID {
+				removed++
+				continue
+			}
+			kept = append(kept, item)
+		}
+		if removed > 0 {
+			i.pendingTotal -= removed
+			if i.pendingTotal < 0 {
+				i.pendingTotal = 0
+			}
+			if len(kept) == 0 {
+				delete(i.pendingFragments, elementID)
+			} else {
+				i.pendingFragments[elementID] = kept
+			}
+		}
+	}
 }
 
 func (i *PagePointIndex) ClearAll() {
-	if len(i.pages) > 0 {
+	if len(i.pages) > 0 || len(i.pendingFragments) > 0 {
 		i.pages = make(map[int]*pagePointBlocks)
 		i.locators = make(map[string]commandPointLocator)
 		i.scenePathStyles = make(map[string]scenePathStyle)
+		i.pendingFragments = make(map[string][]pendingSceneFragment)
+		i.pendingTotal = 0
 		i.version++
 	}
 }

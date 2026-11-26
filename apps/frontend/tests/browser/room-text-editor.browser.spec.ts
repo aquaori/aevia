@@ -114,4 +114,33 @@ describe("RoomTextEditor canvas placement", () => {
 		expect(onBoxChange).toHaveBeenCalledOnce();
 		wrapper.unmount();
 	});
+
+	it("applies remote undo/delete patch cleanly after IME composition finishes (H55/H58)", async () => {
+		const wrapper = mount(RoomTextEditor, { attachTo: document.body });
+		let remoteState = "Hello";
+		const onRemoteText = vi.fn(() => remoteState);
+		const onChange = vi.fn();
+		void wrapper.vm.open({
+			kind: "text",
+			elementId: "shared-undo",
+			box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 },
+			initialText: "Hello",
+			onRemoteText,
+			onChange,
+		});
+		await nextTick();
+		const input = document.querySelector<HTMLTextAreaElement>("textarea")!;
+		input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+		remoteState = "Hello world";
+		wrapper.vm.notifyRemotePatch("shared-undo");
+		remoteState = "Hell";
+		wrapper.vm.notifyRemotePatch("shared-undo");
+		expect(onRemoteText).not.toHaveBeenCalled();
+		input.value = "Hello中";
+		input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+		await nextTick();
+		expect(onChange).toHaveBeenCalledWith("Hello中", "ime");
+		expect(input.value).toBe("Hell");
+		wrapper.unmount();
+	});
 });

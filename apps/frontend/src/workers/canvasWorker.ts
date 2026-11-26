@@ -13,6 +13,7 @@ import { sortInSteps } from "../scene/sceneCore";
 import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
 import { encodeRenderIR } from "../scene/renderIRCodec";
 import { SceneBatchRing } from "./sceneBatchRing";
+import { coalesceFramePlan, type FramePlan } from "./taskTypes";
 import { WorkerTaskScheduler } from "./workerTaskScheduler";
 import { labDrainMarks, labEnabled, labMark, labSetEnabled } from "../instrumentation/labMarks";
 import {
@@ -84,11 +85,30 @@ const sceneEngine = new SceneEngine();
 let exportedRenderFrame: RenderIRFrame | null = null;
 let exportedRenderEpoch = -1;
 let presentedRevision: number | null = null;
+let unpaintedSceneState = false;
+let stagedRebuildActive = false;
 let processedDispatchSeq = 0;
 let projectionGeneration = 0;
+let framePlanSequence = 0;
+let pendingFramePlan: FramePlan | null = null;
 const taskScheduler = new WorkerTaskScheduler();
 let dependencyTimer: ReturnType<typeof setTimeout> | undefined;
 let sceneSnapshotPending = false;
+const commitPresentedRevision = () => {
+	if (
+		mainCtx &&
+		!unpaintedSceneState &&
+		!stagedRebuildActive &&
+		!sceneSnapshotPending &&
+		pendingSceneDirty.length === 0 &&
+		currentTransformingIds.size === 0 &&
+		!sceneEngine.needsResync &&
+		!sceneEngine.hasPendingDependencies() &&
+		!sceneEngine.hasQuarantinedElements()
+	) {
+		presentedRevision = sceneEngine.getSceneRevision();
+	}
+};
 const checkSceneDependencies = () => {
 	if (sceneSnapshotPending || !sceneEngine.hasPendingDependencies() || dependencyTimer) return;
 	dependencyTimer = setTimeout(() => {
@@ -358,6 +378,10 @@ const appendInitRenderBinaryChunkToCanvas = (data: InitRenderBinaryChunkData) =>
 };
 
 const renderFullScene = () => {
+	if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
+	pendingSceneRenderFrame = null;
+	pendingSceneDirty = [];
+	pendingFramePlan = null;
 	if (!mainCtx) return 0;
 	const paintedRefs = sceneEngine.renderFull(
 		mainCtx,
@@ -366,11 +390,15 @@ const renderFullScene = () => {
 		currentTransformingIds
 	);
 	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
-	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
+	unpaintedSceneState = false;
+	commitPresentedRevision();
 	return paintedRefs;
 };
 
 function* renderFullSceneSteps(): Generator<void, number> {
+	if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
+	pendingSceneRenderFrame = null;
+	pendingSceneDirty = [];
 	if (!mainCtx || !offscreenCanvas) return 0;
 	const staging = new OffscreenCanvas(offscreenCanvas.width, offscreenCanvas.height);
 	const stagingCtx = staging.getContext("2d");
@@ -385,7 +413,8 @@ function* renderFullSceneSteps(): Generator<void, number> {
 	mainCtx.drawImage(staging, 0, 0);
 	mainCtx.restore();
 	if (paintedRefs > 0) markWorkerRenderComplete(paintedRefs);
-	if (currentTransformingIds.size === 0 && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
+	unpaintedSceneState = false;
+	commitPresentedRevision();
 	return paintedRefs;
 }
 
@@ -395,6 +424,11 @@ const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdI
 	activeStrokeIds.clear();
 	currentPageId = pageId;
 	currentTransformingIds = new Set(transformingCmdIds);
+	stagedRebuildActive = true;
+	if (!renderAfter) {
+		unpaintedSceneState = true;
+		presentedRevision = null;
+	}
 	let metadataIndex = 0;
 	const steps = sceneEngine.rebuildFromCommandsSteps(commands, pageId);
 	let rebuildComplete = false;
@@ -412,6 +446,7 @@ const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdI
 			if (!rebuildComplete) {
 				if (!steps.next().done) continue;
 				rebuildComplete = true;
+				stagedRebuildActive = false;
 				sceneEngine.quarantineMissingElements(quarantinedIds);
 				if (renderAfter) renderSteps = renderFullSceneSteps();
 			}
@@ -421,7 +456,7 @@ const syncSceneCommands = (commands: Command[], pageId: number, transformingCmdI
 			return;
 		}
 		sceneTaskInProgress = true;
-		taskScheduler.schedule("foreground", runSlice);
+		taskScheduler.schedule("reliable-ordered", runSlice);
 	};
 	runSlice();
 };
@@ -514,6 +549,8 @@ const renderDirtyRect = (dirtyRect: Rect, transformingCmdIds: string[]) => {
 		viewport.height,
 		currentTransformingIds
 	);
+	unpaintedSceneState = false;
+	commitPresentedRevision();
 };
 
 const renderDirtyRegions = (dirtyRects: Rect[], transformingCmdIds: string[]) => {
@@ -526,6 +563,8 @@ const renderDirtyRegions = (dirtyRects: Rect[], transformingCmdIds: string[]) =>
 		viewport.height,
 		currentTransformingIds
 	);
+	unpaintedSceneState = false;
+	commitPresentedRevision();
 };
 
 // Keep scene messages ordered while long operations run in bounded slices.
@@ -634,30 +673,36 @@ const elementBounds = (ids: ReadonlySet<string>) => {
 
 let pendingSceneDirty: Rect[] = [];
 let pendingSceneRenderFrame: number | null = null;
-let pendingSceneBaseRevision: number | null = null;
 
-const flushSceneRender = () => {
+const flushSceneRender = (allowDuringSceneTask = false) => {
+	// Animation callbacks can run between slices; do not paint a half-built scene.
+	if (!allowDuringSceneTask && sceneTaskInProgress) return;
 	if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
 	pendingSceneRenderFrame = null;
-	// Animation callbacks can run between slices; do not paint a half-built scene.
-	if (sceneTaskInProgress) return;
-	if (pendingSceneDirty.length === 0 || !mainCtx) return;
+	if (pendingSceneDirty.length === 0 || !mainCtx) {
+		return;
+	}
 	const regions = pendingSceneDirty;
+	const plan = pendingFramePlan;
 	pendingSceneDirty = [];
+	pendingFramePlan = null;
+	if (plan?.fullScene) {
+		renderFullScene();
+		return;
+	}
 	sceneEngine.renderDirtyRegions(mainCtx, regions, viewport.width, viewport.height, currentTransformingIds);
-	if (currentTransformingIds.size === 0 && presentedRevision === pendingSceneBaseRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
-	pendingSceneBaseRevision = null;
+	unpaintedSceneState = false;
+	commitPresentedRevision();
 };
 
 function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<void, boolean> {
-	if (operation.kind === "element.transform" || operation.kind === "page.clear") flushSceneRender();
-	const previousRevision = sceneEngine.getSceneRevision();
+	if (operation.kind === "element.transform" || operation.kind === "page.clear") flushSceneRender(true);
 	const historyImpact = operation.kind === "history.toggle"
 		? sceneEngine.getHistoryImpact(operation.payload.targetHistoryGroupId)
 		: null;
 	const ids = new Set(historyImpact?.elementIds ?? operationElementIds(operation));
 	const appendOnly = sceneEngine.canAppendWithoutRebuild(operation);
-	const canPaintNewAtoms = currentTransformingIds.size === 0 && pendingSceneDirty.length === 0 &&
+	const canPaintNewAtoms = currentTransformingIds.size === 0 && pendingSceneDirty.length === 0 && !unpaintedSceneState &&
 		!sceneEngine.operationMayRebuild(operation) &&
 		(operation.kind === "element.create" && operation.payload.descriptor.elementKind === "path" && operation.payload.descriptor.toolId === "pen" ||
 			operation.kind === "element.append" && sceneEngine.canAppendWithoutRebuild(operation, true));
@@ -667,20 +712,26 @@ function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<v
 	yield* sceneEngine.applyOperationSteps(operation);
 	if (sceneEngine.needsResync) self.postMessage({ type: "scene-resync-required", reason: "live-scene-conflict" });
 	checkSceneDependencies();
-	if (!mainCtx || operation.pageId !== currentPageId) return false;
+	if (!mainCtx || operation.pageId !== currentPageId) {
+		if (mainCtx && presentedRevision !== null) commitPresentedRevision();
+		return false;
+	}
 	if (operation.kind === "page.clear" || historyImpact?.pageWide) {
-		flushSceneRender();
+		flushSceneRender(true);
 		yield* renderFullSceneSteps();
 		return true;
 	}
 	if (canPaintNewAtoms && sceneEngine.renderNewPenAtomsOnTop(mainCtx, firstNewRef, previousAtomOrder, viewport.width, viewport.height)) {
-		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
+		commitPresentedRevision();
 		return true;
 	}
 	const addedBounds = sceneEngine.getAtomBoundsSince(firstNewRef, ids);
 	const newBounds = addedBounds ?? (appendOnly ? null : elementBounds(ids));
 	const dirty = mergeBounds(oldBounds, newBounds);
-	if (!dirty) return false;
+	if (!dirty) {
+		if (presentedRevision !== null) commitPresentedRevision();
+		return false;
+	}
 	const pixelBounds: Rect = {
 		minX: dirty.minX * viewport.width,
 		minY: dirty.minY * viewport.height,
@@ -690,17 +741,22 @@ function* renderSceneOperation(operation: SceneOperationEnvelopeV2): Generator<v
 		height: dirty.height * viewport.height,
 	};
 	if (operation.kind === "element.transform") {
-		flushSceneRender();
+		flushSceneRender(true);
 		sceneEngine.renderDirty(mainCtx, pixelBounds, viewport.width, viewport.height, new Set());
-		if (presentedRevision === previousRevision && !sceneEngine.needsResync && !sceneEngine.hasPendingDependencies() && !sceneEngine.hasQuarantinedElements()) presentedRevision = sceneEngine.getSceneRevision();
+		commitPresentedRevision();
 	} else {
-		if (pendingSceneDirty.length === 0) pendingSceneBaseRevision = previousRevision;
+		pendingFramePlan = coalesceFramePlan(pendingFramePlan, {
+			frameId: ++framePlanSequence,
+			targetRevision: sceneEngine.getSceneRevision(),
+			dirtyRects: [pixelBounds],
+			transformingIds: Array.from(currentTransformingIds),
+		});
 		if (pendingSceneDirty.length < 8) pendingSceneDirty.push(pixelBounds);
 		else {
 			const combined = pendingSceneDirty.reduce<AabbBox | null>((bounds, rect) => mergeBounds(bounds, rect), pixelBounds);
 			pendingSceneDirty = combined ? [combined] : [];
 		}
-		if (pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
+		if (pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(() => flushSceneRender());
 	}
 	return true;
 }
@@ -780,7 +836,22 @@ const handleWorkerMessage = (event: MessageEvent) => {
 		drainDeferredMessages();
 		return;
 	}
-	if (type !== "update-command-state" || data?.cmd?.type !== "scene-op") flushSceneRender();
+	if (
+		type === "resize" ||
+		type === "render-full" ||
+		type === "begin-init-stream" ||
+		type === "finish-init-stream" ||
+		type === "render-increment-batch" ||
+		type === "finish-command-stroke" ||
+		type === "sync-scene" ||
+		type === "render-flat-points-scene" ||
+		type === "render-dirty" ||
+		type === "render-dirty-regions" ||
+		type === "rerender-scene" ||
+		type === "dispose"
+	) {
+		flushSceneRender();
+	}
 
 	if (type === "lab-configure") {
 		labSetEnabled(data?.enabled === true);
@@ -811,6 +882,8 @@ const handleWorkerMessage = (event: MessageEvent) => {
 
 	if (type === "flat-points") {
 		const generation = ++projectionGeneration;
+		taskScheduler.cancelEpoch(generation - 1);
+		taskScheduler.setActiveEpoch(generation);
 		const projection = new SceneEngine();
 		const steps = projection.rebuildFromCommandsSteps(data.commands as Command[], data.pageId);
 		let exportSteps: Generator<void, FlatPoint[]> | null = null;
@@ -826,9 +899,9 @@ const handleWorkerMessage = (event: MessageEvent) => {
 				self.postMessage({ type: "flat-points-result", points: result.value, requestId: data.requestId });
 				return;
 			}
-			taskScheduler.schedule("background", runProjectionSlice);
+			taskScheduler.schedule("background", runProjectionSlice, { key: "flat-points", epoch: generation });
 		};
-		taskScheduler.schedule("background", runProjectionSlice);
+		taskScheduler.schedule("background", runProjectionSlice, { key: "flat-points", epoch: generation });
 		return;
 	}
 
@@ -844,12 +917,16 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "begin-init-stream") {
+		if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
+		pendingSceneRenderFrame = null;
+		pendingSceneDirty = [];
 		sceneSnapshotPending = true;
 		if (dependencyTimer) clearTimeout(dependencyTimer);
 		dependencyTimer = undefined;
 		exportedRenderFrame = null;
 		exportedRenderEpoch = -1;
 		presentedRevision = null;
+		unpaintedSceneState = true;
 		initStreamValid = true;
 		if (typeof data?.pageId === "number") {
 			currentPageId = data.pageId;
@@ -917,6 +994,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 		ensureInitCanvasStarted();
 		const tailRefs = sceneEngine.finishAllOpenStrokes();
 		if (mainCtx) sceneEngine.renderAtomRefs(mainCtx, tailRefs, viewport.width, viewport.height);
+		sceneSnapshotPending = false;
 		initRenderFinished = true;
 		sceneEngine.endBulkLoad();
 		// Reconcile single-point and translucent strokes after their streamed atoms
@@ -1164,7 +1242,17 @@ const handleWorkerMessage = (event: MessageEvent) => {
 	}
 
 	if (type === "dispose") {
+		if (pendingSceneRenderFrame !== null) cancelAnimationFrame(pendingSceneRenderFrame);
+		pendingSceneRenderFrame = null;
+		pendingSceneDirty = [];
+		pendingFramePlan = null;
+		stagedRebuildActive = false;
+		sceneSnapshotPending = false;
+		presentedRevision = null;
+		unpaintedSceneState = false;
 		projectionGeneration += 1;
+		taskScheduler.cancelEpoch(projectionGeneration);
+		taskScheduler.setActiveEpoch(projectionGeneration);
 		exportedRenderFrame = null;
 		exportedRenderEpoch = -1;
 		activeStrokeIds.clear();
@@ -1187,7 +1275,7 @@ const handleWorkerMessage = (event: MessageEvent) => {
 
 function drainDeferredMessages() {
 	if (drainingMessages || sceneTaskInProgress) return;
-	if (pendingSceneDirty.length > 0 && pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(flushSceneRender);
+	if (pendingSceneDirty.length > 0 && pendingSceneRenderFrame === null) pendingSceneRenderFrame = requestAnimationFrame(() => flushSceneRender());
 	drainingMessages = true;
 	const runSlice = (deadline = performance.now() + 4) => {
 		while (!sceneTaskInProgress && (activeSceneBatch !== null || deferredMessageHead < deferredMessages.length)) {

@@ -44,6 +44,10 @@ type pageReviewRequest struct {
 	Reply chan PageReview
 }
 
+type causalDiagnosticsRequest struct {
+	Reply chan CausalDiagnostics
+}
+
 type drainingMessage struct {
 	Reason string
 }
@@ -77,12 +81,13 @@ type PageReviewItem struct {
 	CollaboratorCount int `json:"collaboratorCount"`
 }
 
-func (joinMessage) isActorMessage()        {}
-func (leaveMessage) isActorMessage()       {}
-func (notifyUserMessage) isActorMessage()  {}
-func (clientEventMessage) isActorMessage() {}
-func (pageChangeMessage) isActorMessage()  {}
-func (snapshotRequest) isActorMessage()    {}
-func (pageReviewRequest) isActorMessage()  {}
-func (drainingMessage) isActorMessage()    {}
-func (shutdownMessage) isActorMessage()    {}
+func (joinMessage) isActorMessage()              {}
+func (leaveMessage) isActorMessage()             {}
+func (notifyUserMessage) isActorMessage()        {}
+func (clientEventMessage) isActorMessage()       {}
+func (pageChangeMessage) isActorMessage()        {}
+func (snapshotRequest) isActorMessage()          {}
+func (pageReviewRequest) isActorMessage()        {}
+func (causalDiagnosticsRequest) isActorMessage() {}
+func (drainingMessage) isActorMessage()          {}
+func (shutdownMessage) isActorMessage()          {}

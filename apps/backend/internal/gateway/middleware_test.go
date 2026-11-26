@@ -103,6 +103,22 @@ func TestWithCORSHandlesPreflight(t *testing.T) {
 		t.Fatalf("expected 204, got %d", recorder.Code)
 	}
 
+	// H57: verify preflight explicitly advertises DELETE for /v2/rooms/{roomId}.
+	deletePreflight := httptest.NewRequest("OPTIONS", "/v2/rooms/777001", nil)
+	deletePreflight.Header.Set("Origin", "https://app.example")
+	deletePreflight.Header.Set("Access-Control-Request-Method", "DELETE")
+	deleteRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRecorder, deletePreflight)
+	if deleteRecorder.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for DELETE preflight, got %d", deleteRecorder.Code)
+	}
+	allowMethods := deleteRecorder.Header().Get("Access-Control-Allow-Methods")
+	for _, method := range []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"} {
+		if !strings.Contains(allowMethods, method) {
+			t.Fatalf("expected %q in Access-Control-Allow-Methods, got %q", method, allowMethods)
+		}
+	}
+
 	// A disallowed origin must not even receive a successful preflight.
 	badRequest := httptest.NewRequest("OPTIONS", "/join-room", nil)
 	badRequest.Header.Set("Origin", "https://evil.example")

@@ -259,6 +259,29 @@ export class SceneCore implements SceneCorePort {
 	getQuarantinedElementIds(): string[] {
 		return [...this.quarantinedMissingElements].filter((id) => !this.elements.has(id) && (this.pendingTextOperations.has(id) || this.pendingAppends.has(id)));
 	}
+
+	getPendingDiagnostics() {
+		const reasons: Array<"missing-create-path" | "missing-create-text" | "missing-range-path"> = [];
+		let pendingAppendOps = 0;
+		for (const [id, ops] of this.pendingAppends) {
+			if (this.quarantinedMissingElements.has(id) && !this.elements.has(id)) continue;
+			pendingAppendOps += ops.length;
+			const reason = this.elements.has(id) ? "missing-range-path" : "missing-create-path";
+			if (!reasons.includes(reason)) reasons.push(reason);
+		}
+		let pendingTextOps = 0;
+		for (const [id, ops] of this.pendingTextOperations) {
+			if (this.quarantinedMissingElements.has(id) && !this.elements.has(id)) continue;
+			pendingTextOps += ops.length;
+			if (!reasons.includes("missing-create-text")) reasons.push("missing-create-text");
+		}
+		return {
+			pendingAppendOps,
+			pendingTextOps,
+			quarantinedIds: this.getQuarantinedElementIds(),
+			reasons,
+		};
+	}
 	private readonly legacyElementIds = new Set<string>();
 	private readonly hydratedThrough = new Map<string, number>();
 	private readonly legacyDeleted = new Map<string, boolean>();
@@ -278,8 +301,10 @@ export class SceneCore implements SceneCorePort {
 	protected maxStrokeWidth = 1;
 	protected visibleAtomCount = 0;
 	protected dirtyFullMode = false;
-	private bulkLoading = false;
+	protected bulkLoading = false;
 	private deferCompaction = false;
+
+	protected onPrefixMayInvalidate(_order?: RenderOrderKey, _fullReset = false, _fromAppend = false) {}
 
 	reset(pageId = this.pageId) {
 		this.renderFullRequired = true;
@@ -317,6 +342,7 @@ export class SceneCore implements SceneCorePort {
 		this.dirtyFullMode = false;
 		this.bulkLoading = false;
 		this.deferCompaction = false;
+		this.onPrefixMayInvalidate(undefined, true);
 	}
 
 	beginBulkLoad() {
@@ -335,7 +361,11 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	setPage(pageId: number) {
-		if (pageId !== this.pageId) { this.materializedRevision += 1; this.renderFullRequired = true; }
+		if (pageId !== this.pageId) {
+			this.materializedRevision += 1;
+			this.renderFullRequired = true;
+			this.onPrefixMayInvalidate(undefined, true);
+		}
 		this.pageId = pageId;
 	}
 
@@ -948,6 +978,7 @@ export class SceneCore implements SceneCorePort {
 			this.spatial.addAtom(element.id, ref, transformBounds(element.matrix, stored.bounds));
 		}
 		if (this.isElementBaseVisible(element)) this.visibleAtomCount += 1;
+		this.onPrefixMayInvalidate(stored.order, false, true);
 		return ref;
 	}
 
@@ -1163,6 +1194,7 @@ export class SceneCore implements SceneCorePort {
 					if (element && !element.deleted) {
 						if (this.isElementBaseVisible(element)) this.visibleAtomCount -= element.atomRefs.length;
 						element.deleted = true;
+						this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
 					}
 				}
 				break;
@@ -1171,6 +1203,7 @@ export class SceneCore implements SceneCorePort {
 				break;
 			case "history.toggle":
 				this.historyEnabled.set(operation.payload.targetHistoryGroupId, operation.payload.enabled);
+				this.onPrefixMayInvalidate(undefined, true);
 				break;
 			case "page.clear":
 				this.applyPageClear(operation.pageId, operation.payload.before);
@@ -1200,6 +1233,7 @@ export class SceneCore implements SceneCorePort {
 				atom.toolId = payload.descriptor.toolId;
 				atom.style = payload.descriptor.style;
 			}
+			this.onPrefixMayInvalidate({ ...order, subIndex: -1 });
 			return;
 		}
 		if (hydrated) return;
@@ -1343,6 +1377,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private rebuildTextAtoms(element: SceneElementState) {
+		this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
 		this.elementBoundsCache.delete(element.id);
 		this.staleAtomCount += element.atomRefs.length;
 		if (this.isElementBaseVisible(element)) this.visibleAtomCount -= element.atomRefs.length;
@@ -1439,6 +1474,7 @@ export class SceneCore implements SceneCorePort {
 	private applyElementMatrix(elementId: string, delta: AffineMatrix) {
 		const element = this.elements.get(elementId);
 		if (!element || delta.some((value) => !Number.isFinite(value))) return;
+		this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
 		this.elementBoundsCache.delete(elementId);
 		element.matrix = multiplyMatrices(delta, element.matrix);
 		this.maxStrokeWidth = Math.max(this.maxStrokeWidth, element.descriptor.style.size * matrixScale(element.matrix));
@@ -1449,6 +1485,7 @@ export class SceneCore implements SceneCorePort {
 		this.elementBoundsCache.delete(elementId);
 		const element = this.elements.get(elementId);
 		if (!element) return;
+		this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
 		element.descriptor = {
 			...element.descriptor,
 			box: textBox && (element.descriptor.elementKind === "text" || element.descriptor.elementKind === "sticky") ? { ...textBox } : element.descriptor.box,
@@ -1472,18 +1509,25 @@ export class SceneCore implements SceneCorePort {
 			if (!element.deleted) {
 				if (this.isElementBaseVisible(element)) this.visibleAtomCount -= element.atomRefs.length;
 				element.deleted = true;
+				this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
 			}
 			return;
 		}
-		if (target.mask) { element.eraseMasks.push(target.mask); return; }
+		if (target.mask) {
+			element.eraseMasks.push(target.mask);
+			this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
+			return;
+		}
 		if (!target.atomId || !target.intervals) return;
 		const current = element.erasedIntervals.get(target.atomId) ?? [];
 		element.erasedIntervals.set(target.atomId, mergeQuantizedIntervals([...current, ...target.intervals]));
+		this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
 	}
 
 	private applyPageClear(pageId: number, before: RenderOrderKey) {
 		const current = this.pageClearBefore.get(pageId);
 		if (current && compareRenderOrder(current, before) >= 0) return;
+		this.onPrefixMayInvalidate(undefined, true);
 		for (const element of this.elements.values()) {
 			if (element.pageId !== pageId || element.deleted) continue;
 			const wasVisible = !current || compareRenderOrder(element.createOrder, current) > 0;
@@ -1494,6 +1538,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private *rebuildV2ElementsSteps(): Generator<void> {
+		this.onPrefixMayInvalidate(undefined, true);
 		this.elementCheckpoints.clear();
 		this.elementBoundsCache.clear();
 		let work = 0;
@@ -1533,6 +1578,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private rebuildLegacyElement(command: Command) {
+		this.onPrefixMayInvalidate(undefined, true);
 		this.elementBoundsCache.delete(command.id);
 		const previous = this.elements.get(command.id);
 		if (previous) {
@@ -1557,6 +1603,7 @@ export class SceneCore implements SceneCorePort {
 	}
 
 	private *compactIndexesSteps(): Generator<void> {
+		this.onPrefixMayInvalidate(undefined, true);
 		let work = 0;
 		const activeAtoms: RenderAtom[] = [];
 		for (const element of this.elements.values()) {

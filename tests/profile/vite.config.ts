@@ -4,12 +4,15 @@ import ts from "typescript";
 import app from "../../apps/frontend/vite.config";
 
 const selected: Record<string, readonly string[]> = {
-	sceneEngine: ["renderFull", "renderDirtyRegions", "orderDirtyCandidates", "renderAtomRefs"],
-	sceneCore: ["queryDirtyCandidates", "applyOperation", "endBulkLoad", "getElementBounds", "getAtomBoundsSince"],
+	sceneEngine: ["renderFull", "renderDirtyRegions", "orderDirtyCandidates", "renderAtomRefs", "renderNewPenAtomsOnTop"],
+	sceneCore: ["applyOperation", "queryDirtyCandidates", "computeEraseTargets", "hitTestTopmost", "queryElements", "getRenderIR", "getRenderIRDelta", "endBulkLoad", "getElementBounds", "getAtomBoundsSince", "getHistoryImpact"],
+	renderIRCodec: ["encodeRenderIR", "decodeRenderIR"],
 	canvasIRRenderer: ["renderIRItems"],
 	canvasWorker: ["flushSceneRender", "runSlice", "runOperationSlice"],
 	renderWorkerBridge: ["flushSceneBatch"],
 	collabCommandHandlers: ["handleInitMeta", "handleInitComplete", "handlePushCommand", "flushInitRenderChunks", "flushInitCommandChunks"],
+	roomCollabTransport: ["send", "requestPageHistory"],
+	localCommandService: ["pushCommand", "undo", "redo", "clearCanvas"],
 };
 
 function avoidDiagnosticRepaint(): Plugin {
