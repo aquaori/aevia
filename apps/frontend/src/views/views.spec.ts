@@ -42,9 +42,14 @@ describe("Entry views (HomeView and InviteView)", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("HomeView handles guest join & authenticated room list, transfer response, and room creation", async () => {
+	it("HomeView handles signed-in 1-step room creation, quick-join, gallery search/filter/view-switch, unlock modal, transfer, and settings", async () => {
 		const router = await makeRouter("/");
 		const pushSpy = vi.spyOn(router, "push");
+		const writeTextSpy = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText: writeTextSpy },
+		});
 		const account = useAccountStore();
 		account.token = "tok-acc";
 		account.account = { id: "u1", username: "owner", nickname: "Owner" };
@@ -65,7 +70,14 @@ describe("Entry views (HomeView and InviteView)", () => {
 				};
 			}
 			if (url.endsWith("/v2/rooms")) {
-				return { data: { data: [{ roomId: "123456", name: "My Board", role: "owner", passwordRequired: false }] } };
+				return {
+					data: {
+						data: [
+							{ roomId: "123456", name: "My Board", role: "owner", passwordRequired: false },
+							{ roomId: "654321", name: "Team Sprint", role: "editor", passwordRequired: true },
+						],
+					},
+				};
 			}
 			if (url.includes("/v2/transfers")) {
 				return { data: { data: [{ roomId: "654321", roomName: "Shared", ownerNickname: "Bob" }] } };
@@ -74,12 +86,17 @@ describe("Entry views (HomeView and InviteView)", () => {
 				return { data: { data: { roomId: "998877" } } };
 			}
 			if (url.includes("/check-room")) {
-				return { data: { data: { status: false } } };
+				const exists = url.includes("123456");
+				return { data: { data: { status: exists } } };
 			}
 			return { data: { data: {} } };
 		});
-		const postSpy = vi.spyOn(axios, "post").mockImplementation(async (url: string) => {
+		const postSpy = vi.spyOn(axios, "post").mockImplementation(async (url: string, body?: unknown) => {
 			if (url.includes("/admission")) {
+				const payload = body as { password?: string } | undefined;
+				if (url.includes("/654321/") && payload?.password !== "secret") {
+					throw { response: { data: { msg: "Password incorrect" } } };
+				}
 				return { data: { data: { sessionToken: "ws-sess", expiresAt: 999999999, role: "owner" } } };
 			}
 			return { data: { data: {} } };
@@ -90,45 +107,122 @@ describe("Entry views (HomeView and InviteView)", () => {
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain("My Board");
+		expect(wrapper.text()).toContain("Team Sprint");
 		expect(wrapper.text()).toContain("Bob 邀请你接任");
+		expect(wrapper.text()).toContain("#998·877");
 
-		// Switch to create mode & advance to step 2 & submit
-		const tabs = wrapper.findAll(".entry-tabs button");
-		await tabs[1]!.trigger("click");
-		await flushPromises();
-		await wrapper.find(".entry-action-card button.primary").trigger("click");
-		await flushPromises();
-		const roomNameInput = wrapper.findAll('.entry-action-card input').find((i) => i.attributes("placeholder") === "输入房间名称");
-		await roomNameInput?.setValue("New Board");
-		await wrapper.find(".entry-action-card button.primary").trigger("click");
-		await flushPromises();
+		// Gallery: filter by role, search, toggle view mode, copy code
+		const filterButtons = wrapper.findAll(".studio-filter-pills button");
+		await filterButtons[1]!.trigger("click");
+		expect(wrapper.text()).toContain("My Board");
+		expect(wrapper.text()).not.toContain("Team Sprint");
+		await filterButtons[0]!.trigger("click");
+		await wrapper.find(".studio-search-box input").setValue("654321");
+		expect(wrapper.text()).not.toContain("My Board");
+		expect(wrapper.text()).toContain("Team Sprint");
+		await wrapper.find(".studio-search-clear").trigger("click");
+		expect(wrapper.text()).toContain("My Board");
 
-		expect(postSpy).toHaveBeenCalledWith(expect.stringContaining("/v2/rooms"), expect.any(Object), expect.any(Object));
+		const viewButtons = wrapper.findAll(".studio-view-switch button");
+		await viewButtons[1]!.trigger("click");
+		expect(wrapper.find(".entry-room-list.list-mode").exists()).toBe(true);
+		await viewButtons[0]!.trigger("click");
+		expect(wrapper.find(".entry-room-list.grid-mode").exists()).toBe(true);
+
+		await wrapper.find(".entry-code-chip").trigger("click");
+		await flushPromises();
+		expect(writeTextSpy).toHaveBeenCalledWith("123456");
+
+		// 1-click entry into password-free saved room
+		await wrapper.find(".entry-room-link").trigger("click");
+		await flushPromises();
+		expect(postSpy).toHaveBeenCalledWith(expect.stringContaining("/v2/rooms/123456/admission"), expect.any(Object), expect.any(Object));
 		expect(pushSpy).toHaveBeenCalledWith({ name: "room" });
 
-		// Return to step 1 so .entry-digits is rendered, then test OTP paste, transfer response, and settings modal
-		await wrapper.find(".entry-back-row button").trigger("click");
+		// Clicking password-protected saved room opens Quick Unlock modal
+		const roomLinks = wrapper.findAll(".entry-room-link");
+		await roomLinks[1]!.trigger("click");
 		await flushPromises();
-		const otp = wrapper.find('.entry-digits input');
-		if (otp.exists()) {
-			await otp.trigger("paste", {
-				clipboardData: { getData: () => "123456" },
-			});
-		}
+		expect(wrapper.text()).toContain("进入「Team Sprint」");
+		await wrapper.find('.entry-dialog input[placeholder="输入房间密码"]').setValue("secret");
+		await wrapper.find(".entry-dialog button.primary").trigger("click");
+		await flushPromises();
+		expect(postSpy).toHaveBeenCalledWith(expect.stringContaining("/v2/rooms/654321/admission"), expect.objectContaining({ password: "secret" }), expect.any(Object));
+
+		// 1-step room creation via starter preset & advanced drawer
+		await wrapper.find(".studio-preset-chip").trigger("click");
+		await wrapper.find('[data-testid="toggle-create-advanced"]').trigger("click");
+		expect(wrapper.find(".studio-advanced-drawer").exists()).toBe(true);
+		await wrapper.find('[data-testid="create-room-submit"]').trigger("click");
+		await flushPromises();
+		expect(postSpy).toHaveBeenCalledWith(
+			expect.stringContaining("/v2/rooms"),
+			expect.objectContaining({ roomId: "998877", roomName: "产品架构评审" }),
+			expect.any(Object),
+		);
+
+		// 1-step Quick-Join: paste #123 456 -> live probe exists -> join
+		const keycaps = wrapper.findAll(".studio-keycaps input");
+		await keycaps[0]!.trigger("paste", {
+			clipboardData: { getData: () => "#123 456" },
+		});
+		await flushPromises();
+		expect((keycaps[0]!.element as HTMLInputElement).value).toBe("1");
+		expect(wrapper.text()).toContain("房间在线");
+		await wrapper.find('[data-testid="join-room-submit"]').trigger("click");
+		await flushPromises();
+		expect(pushSpy).toHaveBeenCalledWith({ name: "room" });
+
+		// Transfer response & RoomSettings modal
 		const noticeButtons = wrapper.findAll(".entry-notices button");
-		if (noticeButtons[0]) {
-			await noticeButtons[0].trigger("click");
-			await flushPromises();
-		}
-		const settingsTrigger = wrapper.find('.entry-room-row .entry-icon-button');
-		if (settingsTrigger.exists()) {
-			await settingsTrigger.trigger("click");
-			await flushPromises();
-		}
+		await noticeButtons[0]!.trigger("click");
+		await flushPromises();
+		const settingsTrigger = wrapper.find(".entry-room-row .entry-icon-button");
+		await settingsTrigger.trigger("click");
+		await flushPromises();
+		expect(wrapper.text()).toContain("房间设置");
 		wrapper.unmount();
 	});
 
-	it("InviteView loads invite metadata, handles 404/error states, and admits user into room", async () => {
+	it("HomeView handles 1-screen guest spatial stage boarding and password auto-reveal", async () => {
+		const router = await makeRouter("/");
+		const pushSpy = vi.spyOn(router, "push");
+		vi.spyOn(axios, "get").mockResolvedValue({ data: { data: { status: true } } });
+		const postSpy = vi.spyOn(axios, "post")
+			.mockRejectedValueOnce({ response: { data: { msg: "Password incorrect" } } })
+			.mockResolvedValueOnce({ data: { data: { sessionToken: "guest-sess", expiresAt: 999999, role: "editor" } } });
+
+		const wrapper = mount(HomeView, {
+			global: { plugins: [router], stubs: { Teleport: true } },
+		});
+		await flushPromises();
+		expect(wrapper.text()).toContain("加入协作画布");
+		expect(wrapper.text()).toContain("试笔画布");
+
+		const keycaps = wrapper.findAll(".studio-keycaps input");
+		await keycaps[0]!.trigger("paste", { clipboardData: { getData: () => "246810" } });
+		await flushPromises();
+		expect(wrapper.text()).toContain("房间在线");
+
+		await wrapper.find('input[placeholder="输入名字"]').setValue("Guest Lin");
+		await wrapper.find('[data-testid="guest-join-submit"]').trigger("click");
+		await flushPromises();
+		// Auto-reveals password field on Password incorrect
+		expect(wrapper.find('input[placeholder="输入房间密码"]').exists()).toBe(true);
+
+		await wrapper.find('input[placeholder="输入房间密码"]').setValue("pass123");
+		await wrapper.find('[data-testid="guest-join-submit"]').trigger("click");
+		await flushPromises();
+		expect(postSpy).toHaveBeenLastCalledWith(
+			expect.stringContaining("/v2/rooms/246810/admission"),
+			expect.objectContaining({ userName: "Guest Lin", password: "pass123" }),
+			expect.any(Object),
+		);
+		expect(pushSpy).toHaveBeenCalledWith({ name: "room" });
+		wrapper.unmount();
+	});
+
+	it("InviteView renders perforated boarding pass, handles password reveal, error states, and admits user", async () => {
 		const router = await makeRouter("/invite/inv-token-123");
 		const pushSpy = vi.spyOn(router, "push");
 		vi.spyOn(sessionApi, "getInviteMeta").mockResolvedValue({
@@ -136,22 +230,39 @@ describe("Entry views (HomeView and InviteView)", () => {
 			roomName: "Invite Board",
 			passwordRequired: false,
 		});
-		const postSpy = vi.spyOn(axios, "post").mockResolvedValue({
-			data: { code: 200, data: { sessionToken: "sess-1", expiresAt: 999999, role: "editor" } },
-		});
+		const postSpy = vi.spyOn(axios, "post")
+			.mockRejectedValueOnce({ response: { data: { msg: "Password incorrect" } } })
+			.mockResolvedValueOnce({
+				data: { code: 200, data: { sessionToken: "sess-1", expiresAt: 999999, role: "editor" } },
+			});
 
 		const wrapper = mount(InviteView, {
-			global: { plugins: [router] },
+			global: { plugins: [router], stubs: { Teleport: true } },
 		});
 		await flushPromises();
 		expect(wrapper.text()).toContain("Invite Board");
+		expect(wrapper.text()).toContain("免密直接通行");
 
 		await wrapper.find('input[placeholder="输入名字"]').setValue("Guest User");
 		await wrapper.find("button.entry-button.primary").trigger("click");
 		await flushPromises();
+		expect(wrapper.find('input[placeholder="输入房间密码"]').exists()).toBe(true);
 
-		expect(postSpy).toHaveBeenCalled();
+		await wrapper.find('input[placeholder="输入房间密码"]').setValue("room-pw");
+		await wrapper.find("button.entry-button.primary").trigger("click");
+		await flushPromises();
+
+		expect(postSpy).toHaveBeenCalledTimes(2);
 		expect(pushSpy).toHaveBeenCalledWith({ name: "room" });
+		wrapper.unmount();
+
+		vi.spyOn(sessionApi, "getInviteMeta").mockRejectedValueOnce(new Error("404"));
+		const errWrapper = mount(InviteView, {
+			global: { plugins: [router], stubs: { Teleport: true } },
+		});
+		await flushPromises();
+		expect(errWrapper.text()).toContain("邀请链接无效或已过期");
+		errWrapper.unmount();
 	});
 
 	it("RoomView mounts, wires session/worker/transport, handles visibilitychange, and unmounts cleanly", async () => {

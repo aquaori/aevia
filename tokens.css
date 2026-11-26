@@ -1,25 +1,116 @@
-/* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app */
+/* Aevia · Living Canvas Desk Design System Tokens */
 :root {
-  --entry-paper: oklch(97.4% 0.006 270); --entry-surface: oklch(99.9% 0.001 270);
-  --entry-ink: oklch(25% 0.021 270); --entry-muted: oklch(51% 0.019 270);
-  --entry-rule: oklch(90.7% 0.009 270); --entry-soft: oklch(96% 0.008 275);
-  --entry-accent: oklch(49% 0.15 275); --entry-accent-soft: oklch(95% 0.022 275);
-  --entry-elevation: oklch(30% 0.025 270 / .08); --entry-elevation-soft: oklch(30% 0.025 270 / .035);
-  --entry-accent-rule: oklch(89% 0.028 275); --entry-control-hover: oklch(96.4% .008 275);
-  --entry-overlay: oklch(25% .025 270 / .38); --entry-dialog-shadow: oklch(20% .03 270 / .18);
-  --entry-card-shadow: oklch(35% .025 270 / .07); --entry-card-shadow-soft: oklch(35% .025 270 / .04);
-  --entry-tab-shadow: oklch(30% .02 270 / .08); --entry-switch-off: oklch(81% .01 270);
-  --entry-danger: oklch(53% 0.2 25); --entry-danger-soft: oklch(97% 0.015 25);
-  --entry-font: "Segoe UI", "Microsoft YaHei UI", sans-serif;
-  --entry-radius: 12px; --entry-control-radius: 8px;
-  --entry-ease: cubic-bezier(.2, 0, 0, 1);
-  --color-paper: var(--entry-paper); --color-paper-2: var(--entry-soft);
-  --color-ink: var(--entry-ink); --color-ink-2: var(--entry-muted);
-  --color-rule: var(--entry-rule); --color-accent: var(--entry-accent);
-  --color-focus: var(--entry-accent); --font-display: var(--entry-font); --font-body: var(--entry-font);
-  --space-3xs: .25rem; --space-2xs: .5rem; --space-xs: .75rem; --space-sm: 1rem;
-  --space-md: 1.5rem; --space-lg: 2rem; --space-xl: 3rem; --space-2xl: 4.5rem;
-  --text-xs: .75rem; --text-sm: .875rem; --text-md: 1rem; --text-lg: 1.25rem;
-  --ease-out: var(--entry-ease); --ease-in: cubic-bezier(.4, 0, 1, 1); --ease-in-out: cubic-bezier(.4, 0, .2, 1);
-  --dur-short: 150ms; --dur-medium: 250ms; --radius-card: var(--entry-radius); --radius-input: var(--entry-control-radius);
+  /* Daylight Studio Paper & Frosted Surfaces */
+  --af-canvas: #f8f9fc;
+  --af-surface: #ffffff;
+  --af-glass: rgba(255, 255, 255, 0.88);
+  --af-glass-strong: rgba(255, 255, 255, 0.94);
+  --af-well: #f1f5f9;
+  --af-well-hover: #e2e8f0;
+
+  /* Slate Typography Hierarchy */
+  --af-ink: #0f172a;
+  --af-ink-2: #334155;
+  --af-muted: #475569;
+  --af-subtle: #64748b;
+  --af-faint: #94a3b8;
+
+  /* Brand Indigo + Logo Prismatic Ribbon */
+  --af-indigo: #4f46e5;
+  --af-indigo-hover: #4338ca;
+  --af-indigo-light: #6366f1;
+  --af-indigo-50: #eef2ff;
+  --af-indigo-100: #e0e7ff;
+  --af-indigo-200: #c7d2fe;
+  --af-indigo-300: #a5b4fc;
+  --af-indigo-ring: rgba(99, 102, 241, 0.16);
+  --af-ribbon-gradient: linear-gradient(90deg, #2563eb 0%, #7c3aed 36%, #ec4899 70%, #f59e0b 100%);
+
+  /* Semantic Status & Sticky Paper Tones */
+  --af-emerald: #10b981;
+  --af-emerald-text: #047857;
+  --af-emerald-bg: #ecfdf5;
+  --af-emerald-border: #a7f3d0;
+  --af-amber: #f59e0b;
+  --af-amber-text: #b45309;
+  --af-amber-bg: #fffbeb;
+  --af-amber-border: #fde68a;
+  --af-rose: #e11d48;
+  --af-rose-bg: #fff1f2;
+  --af-rose-border: #fecdd3;
+
+  --af-note-yellow: #fef9c3;
+  --af-note-yellow-border: #fde047;
+  --af-note-pink: #fce7f3;
+  --af-note-pink-border: #f9a8d4;
+  --af-note-indigo: #eef2ff;
+  --af-note-indigo-border: #c7d2fe;
+
+  /* Borders & Layered Physical Shadows */
+  --af-border: rgba(226, 232, 240, 0.92);
+  --af-border-strong: rgba(203, 213, 225, 0.95);
+  --af-glass-border: rgba(255, 255, 255, 0.95);
+  --af-island-shadow:
+    0 0 0 1px rgba(148, 163, 184, 0.18),
+    0 10px 30px -8px rgba(15, 23, 42, 0.08),
+    0 2px 6px rgba(15, 23, 42, 0.03);
+  --af-island-shadow-hover:
+    0 0 0 1px rgba(129, 140, 248, 0.5),
+    0 18px 38px -10px rgba(79, 70, 229, 0.16),
+    0 4px 12px rgba(15, 23, 42, 0.05);
+
+  /* Shared Entry / AccountPanel / RoomSettings Mappings */
+  --entry-paper: var(--af-canvas);
+  --entry-surface: var(--af-surface);
+  --entry-ink: var(--af-ink);
+  --entry-muted: var(--af-muted);
+  --entry-subtle: var(--af-subtle);
+  --entry-rule: var(--af-border-strong);
+  --entry-soft: var(--af-well);
+  --entry-soft-neutral: var(--af-well);
+  --entry-accent: var(--af-indigo);
+  --entry-accent-hover: var(--af-indigo-hover);
+  --entry-accent-soft: var(--af-indigo-50);
+  --entry-accent-rule: var(--af-indigo-200);
+  --entry-control-hover: var(--af-well);
+  --entry-overlay: rgba(15, 23, 42, 0.36);
+  --entry-dialog-shadow: rgba(15, 23, 42, 0.18);
+  --entry-tab-shadow: rgba(15, 23, 42, 0.06);
+  --entry-switch-off: #cbd5e1;
+  --entry-danger: var(--af-rose);
+  --entry-danger-soft: var(--af-rose-bg);
+  --entry-font: "Plus Jakarta Sans", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", system-ui, sans-serif;
+  --entry-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --entry-radius: 22px;
+  --entry-control-radius: 12px;
+  --entry-ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --color-paper: var(--af-canvas);
+  --color-paper-2: var(--af-well);
+  --color-ink: var(--af-ink);
+  --color-ink-2: var(--af-muted);
+  --color-rule: var(--af-border-strong);
+  --color-accent: var(--af-indigo);
+  --color-focus: var(--af-indigo-light);
+  --font-display: var(--entry-font);
+  --font-body: var(--entry-font);
+  --space-3xs: .25rem;
+  --space-2xs: .5rem;
+  --space-xs: .75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+  --text-xs: .75rem;
+  --text-sm: .875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --ease-out: var(--entry-ease);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --dur-short: 150ms;
+  --dur-medium: 250ms;
+  --radius-card: var(--entry-radius);
+  --radius-input: var(--entry-control-radius);
 }
