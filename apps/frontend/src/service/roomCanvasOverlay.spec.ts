@@ -162,4 +162,53 @@ describe("createRoomCanvasOverlay", () => {
 		vi.advanceTimersByTime(32);
 		expect(opts.requestFlatPoints).toHaveBeenCalled();
 	});
+
+	it("keeps a lazy cursor expiry deadline across active cursor updates without clearing timers every frame", () => {
+		const opts = createOptions();
+		opts.interactionMode.value = "none";
+		opts.selectionRect.value = null;
+		opts.remoteSelectionRects.value.clear();
+		opts.transformAnim.value = null;
+		opts.transformingCmdIds.value.clear();
+		opts.selectedCommandIds.value.clear();
+		opts.productPreview.value = null;
+		opts.remoteCursors.value.delete("u3");
+
+		const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+		const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+
+		const overlay = createRoomCanvasOverlay(opts);
+		const t0 = Date.now();
+		opts.remoteCursors.value.set("u2", {
+			userId: "u2",
+			userName: "Alice",
+			color: "#00f",
+			pageId: 0,
+			x: 0.2,
+			y: 0.2,
+			lastUpdate: t0,
+		});
+		overlay.render();
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+
+		for (let i = 1; i <= 10; i += 1) {
+			vi.advanceTimersByTime(200);
+			opts.remoteCursors.value.set("u2", {
+				userId: "u2",
+				userName: "Alice",
+				color: "#00f",
+				pageId: 0,
+				x: 0.2 + i * 0.02,
+				y: 0.2,
+				lastUpdate: Date.now(),
+			});
+			overlay.render();
+		}
+		expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+		expect(clearTimeoutSpy).toHaveBeenCalledTimes(0);
+
+		// Stop moving cursor and advance past remaining expiry window -> cursor pruned after 10s idle
+		vi.advanceTimersByTime(10500);
+		expect(opts.remoteCursors.value.has("u2")).toBe(false);
+	});
 });

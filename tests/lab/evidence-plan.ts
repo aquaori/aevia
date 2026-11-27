@@ -238,6 +238,17 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			timeoutMs: 1200000,
 			env: ctx.externalEnv,
 		},
+		{
+			id: "external-performance-sustained",
+			title: "Sustained & multi-tool collab stress E2E",
+			description: "Running sustained-stroke, multi-tool-collab-stress, and rich-scene-join against the isolated services.",
+			command: externalRun(ctx, "performance-external", " --case-set=sustained --matrix=false --runs=1 --warmup=0", "sustained"),
+			cwd: ctx.frontendDir,
+			requiresServices: true,
+			freshServices: true,
+			timeoutMs: 1200000,
+			env: ctx.externalEnv,
+		},
 		...boundaryScales.map((scale) => ({
 			id: `external-performance-boundary-full-render-${scale}`,
 			title: `Boundary stress E2E: full-render ${scale} points (fresh database)`,
@@ -347,6 +358,17 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			kind: "external",
 			path: "external/performance-external-resilience-external-results.json",
 		},
+		{
+			id: "performance-external-sustained",
+			stepId: "external-performance-sustained",
+			kind: "external",
+			path: "external/sustained/performance-external-sustained-external-results.json",
+			expectedCases: [
+				EXTERNAL_CASES.sustainedStrokePerformance.id,
+				EXTERNAL_CASES.multiToolCollabStress.id,
+				EXTERNAL_CASES.richSceneJoinPerformance.id,
+			],
+		},
 		...boundaryScales.map((scale) => ({
 			id: `performance-external-boundary-full-render-${scale}`,
 			stepId: `external-performance-boundary-full-render-${scale}`,
@@ -380,6 +402,12 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 			kind: "lab-gate",
 			path: "external/performance-external-resilience-lab-gate.json",
 		},
+		{
+			id: "performance-external-sustained-gate",
+			stepId: "external-performance-sustained",
+			kind: "lab-gate",
+			path: "external/sustained/performance-external-sustained-lab-gate.json",
+		},
 		...boundaryScales.map((scale) => ({
 			id: `performance-external-boundary-full-render-${scale}-gate`,
 			stepId: `external-performance-boundary-full-render-${scale}`,
@@ -401,7 +429,7 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 		{ id: "lab-inventory", stepId: "lab-inventory", kind: "lab-inventory", path: "catalog/lab-inventory.json" },
 	];
 	const performanceSteps = steps.filter(step => step.id !== "go-race" && step.id !== "go-fuzz");
-	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? performanceSteps : ctx.lane === "performance-standard" ? performanceSteps.filter(step => !step.id.startsWith("external-performance-boundary-")) : ctx.lane === "performance-boundary" ? performanceSteps.filter(step => !["external-performance-standard", "external-performance-resilience", "external-e2e"].includes(step.id)) : [
+	const selectedSteps = ctx.lane === "quality" ? steps.filter(step => !step.id.startsWith("external-performance")) : ctx.lane === "performance" ? performanceSteps : ctx.lane === "performance-standard" ? performanceSteps.filter(step => !step.id.startsWith("external-performance-boundary-")) : ctx.lane === "performance-boundary" ? performanceSteps.filter(step => !["external-performance-standard", "external-performance-resilience", "external-performance-sustained", "external-e2e"].includes(step.id)) : [
 		...steps.filter(step => !step.id.startsWith("external-performance") && step.id !== "source-check"),
 		...steps.filter(step => step.id.startsWith("external-performance")),
 		...steps.filter(step => step.id === "source-check"),
@@ -413,8 +441,14 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 export const externalCaseFamilyOf = (id: string): string => {
 	const definition = Object.values(EXTERNAL_CASES).find(item => item.id === id || (item.id === "full-render" && /^full-render-\d+$/.test(id)));
 	if (!definition) throw new Error(`Unknown external case: ${id}`);
-	return id.startsWith("boundary-") ? id : id === EXTERNAL_CASES.networkRecovery.id ? "resilience" :
-		id.startsWith("full-render-") || id === EXTERNAL_CASES.remoteFirstPixelPerformance.id || id === EXTERNAL_CASES.localFirstPixelPerformance.id ? "standard" : "correctness";
+	if (id.startsWith("boundary-")) return id;
+	if (id === EXTERNAL_CASES.networkRecovery.id) return "resilience";
+	if (
+		id === EXTERNAL_CASES.sustainedStrokePerformance.id ||
+		id === EXTERNAL_CASES.multiToolCollabStress.id ||
+		id === EXTERNAL_CASES.richSceneJoinPerformance.id
+	) return "sustained";
+	return id.startsWith("full-render-") || id === EXTERNAL_CASES.remoteFirstPixelPerformance.id || id === EXTERNAL_CASES.localFirstPixelPerformance.id ? "standard" : "correctness";
 };
 
 export const buildExternalSelectionPlans = (

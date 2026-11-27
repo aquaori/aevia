@@ -3,8 +3,15 @@ import { SourceMap } from "node:module";
 import path from "node:path";
 import type { openRoomPage } from "../../apps/frontend/tests/e2e/external/ui-driver";
 import { execFileSync } from "node:child_process";
+import { summarizeTimelineTrace } from "./analysis";
 
 export type Collector = "baseline" | "spans" | "cpu" | "timeline" | "memory";
+export type CollectBrowserOptions = {
+	durationMs?: number;
+	bucketMs?: number;
+	maxTraceBytes?: number;
+	cpuThrottle?: number;
+};
 type Browser = Parameters<typeof openRoomPage>[0];
 type Page = Awaited<ReturnType<typeof openRoomPage>>["page"];
 type CDPSession = Awaited<ReturnType<Browser["newBrowserCDPSession"]>>;
@@ -101,7 +108,14 @@ function mapBrowserSources(rows: ReturnType<typeof bottomUp>, buildDir: string) 
 	return rows.map(row => ({ ...row, name: resolve(row.name), heaviestStack: row.heaviestStack.map(resolve) }));
 }
 
-export async function collectBrowser(browser: Browser, pages: Page[], mode: Collector, dir: string, expectWorker: boolean) {
+export async function collectBrowser(
+	browser: Browser,
+	pages: Page[],
+	mode: Collector,
+	dir: string,
+	expectWorker: boolean,
+	options: CollectBrowserOptions = {}
+) {
 	const sessions: CDPSession[] = [];
 	const cleanup: (() => Promise<unknown>)[] = [];
 	const issues: string[] = [];
@@ -113,6 +127,9 @@ export async function collectBrowser(browser: Browser, pages: Page[], mode: Coll
 	const attach = async (page: Page, index: number) => {
 		const session = await page.context().newCDPSession(page);
 		sessions.push(session);
+		if (options.cpuThrottle && options.cpuThrottle > 1) {
+			await session.send("Emulation.setCPUThrottlingRate", { rate: options.cpuThrottle }).catch(() => undefined);
+		}
 		if (mode === "memory") {
 			const initial = await session.send("Runtime.getHeapUsage");
 			cleanup.push(async () => {
@@ -120,7 +137,7 @@ export async function collectBrowser(browser: Browser, pages: Page[], mode: Coll
 			});
 		}
 	};
-	if (mode === "memory") {
+	if (mode === "memory" || (options.cpuThrottle && options.cpuThrottle > 1)) {
 		for (const [index, page] of pages.entries()) await attach(page, index);
 	}
 	if (mode === "timeline" || mode === "cpu") {
@@ -130,34 +147,81 @@ export async function collectBrowser(browser: Browser, pages: Page[], mode: Coll
 		const events: unknown[] = [];
 		let clipped = false;
 		session.on("Tracing.dataCollected", result => {
-			if (events.length + result.value.length > 120000) { clipped = true; return; }
+			if (events.length + result.value.length > 500000) { clipped = true; return; }
 			for (const event of result.value) events.push(event);
 		});
 		await session.send("Tracing.start", {
-			transferMode: "ReportEvents",
-			traceConfig: { recordMode: "recordContinuously", includedCategories: mode === "cpu" ?
-				["disabled-by-default-v8.cpu_profiler"] :
-				["devtools.timeline", "blink.user_timing", "toplevel", "cc", "v8", "loading"] },
+			transferMode: "ReturnAsStream",
+			traceConfig: {
+				recordMode: "recordContinuously",
+				includedCategories: mode === "cpu"
+					? ["disabled-by-default-v8.cpu_profiler"]
+					: ["devtools.timeline", "blink.user_timing", "toplevel", "cc", "v8", "loading", "disabled-by-default-v8.cpu_profiler"],
+			},
 		});
 		const stopRecording = async () => {
 			await session.send("Tracing.end");
 			const result = await complete;
 			if (result.dataLossOccurred || clipped) issues.push("Chromium trace buffer lost events");
 			const filename = mode === "cpu" ? "chromium-cpu-trace.json" : "chromium-timeline.json";
-			const trace = JSON.stringify({ traceEvents: events });
+			let trace: string;
+			if (result.stream) {
+				const chunks: string[] = [];
+				const maxBytes = options.maxTraceBytes ?? 512 * 1024 * 1024;
+				let totalBytes = 0;
+				while (true) {
+					const chunk = await session.send("IO.read", { handle: result.stream, size: 1024 * 1024 }) as {
+						data: string;
+						eof?: boolean;
+						base64Encoded?: boolean;
+					};
+					const text = chunk.base64Encoded ? Buffer.from(chunk.data, "base64").toString("utf8") : chunk.data;
+					totalBytes += Buffer.byteLength(text, "utf8");
+					if (totalBytes > maxBytes) {
+						clipped = true;
+						issues.push(`Chromium trace stream exceeded maxTraceBytes (${maxBytes})`);
+						break;
+					}
+					chunks.push(text);
+					if (chunk.eof) break;
+				}
+				await session.send("IO.close", { handle: result.stream }).catch(() => undefined);
+				trace = chunks.join("");
+			} else {
+				trace = JSON.stringify({ traceEvents: events });
+			}
 			writeFileSync(path.join(dir, filename), trace);
 			artifacts.push(filename);
+			const buildDir = path.resolve(dir, "../../..", "build");
 			if (mode === "cpu") {
 				const targets = traceCpuTargets(trace);
-				const buildDir = path.resolve(dir, "../../..", "build");
 				targets.forEach((target, index) => put(`chromium-${index}-${target.thread.replace(/[^a-z0-9_-]/gi, "_")}-bottom-up.json`, mapBrowserSources(target.rows, buildDir)));
 				if (expectWorker && !targets.some(target => /worker/i.test(target.thread))) issues.push("No Chromium Worker CPU target identified in this recording");
+			} else if (mode === "timeline") {
+				try {
+					const timelineSummary = summarizeTimelineTrace(trace, { bucketMs: options.bucketMs ?? 5000 });
+					const targets = traceCpuTargets(trace);
+					const topHotspots = targets.map(target => ({
+						thread: target.thread,
+						rows: mapBrowserSources(target.rows, buildDir)
+							.filter(row => !/^\((idle|program|root)\)/.test(row.name))
+							.slice(0, 15)
+							.map(row => ({ name: row.name, selfMs: Math.round(row.selfMs * 100) / 100, totalMs: Math.round(row.totalMs * 100) / 100 })),
+					}));
+					put("chromium-timeline-summary.json", { ...timelineSummary, topHotspots });
+				} catch (error) {
+					issues.push(`Timeline summary parse error: ${String(error)}`);
+				}
 			}
 		};
 		let stopping: Promise<void> | undefined;
 		const stopOnce = () => stopping ??= stopRecording().catch(error => { issues.push(String(error)); });
-		const timer = setTimeout(() => void stopOnce(), 2500);
-		cleanup.push(async () => { clearTimeout(timer); await stopOnce(); });
+		const captureMs = options.durationMs ?? 2500;
+		const timer = captureMs > 0 ? setTimeout(() => void stopOnce(), captureMs) : undefined;
+		cleanup.push(async () => {
+			if (timer) clearTimeout(timer);
+			await stopOnce();
+		});
 	}
 	return async () => {
 		for (const stop of cleanup) {
