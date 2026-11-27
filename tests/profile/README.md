@@ -43,3 +43,4 @@ npm.cmd run test:profile -- --compare=<previous-manifest>
 - 重绘隔离样例将局部笔迹完整包在重绘区内，样例准备、绘制和像素校验在同一次浏览器调用中完成。独立计时只量目标调用，CPU 采样窗口包含准备阶段。此前冒烟中，裁剪边界与笔迹相交，以及将局部重绘拆到后续浏览器调用时，逐像素对照均发现差异，分别见报告 `5f057319-69a8-49c3-93d8-4293eec132d1` 和 `c7cd7da8-274f-4500-92ec-629bf59fe09b`。
 - 动作、模块和验证方式记录在每次清单。待补覆盖包括大房间清屏撤销、增量重连、IndexedDB 断线写入恢复、权限与账号流、文字和便签的并发编辑、完整工具矩阵，以及单笔操作跨 Go、Worker 和像素的完整依赖图。
 - 使用 `go test ./internal/room ./internal/storage -run '^$' -bench '^BenchmarkProfile' -benchtime=200ms -count=3` 从 Go 模块测索引与 SQLite。索引使用旧格式合成点以单独量化点索引。SQLite 测反复更新同一批记录的事务成本。
+- `--set=sustained`（或 `--case=sustained-pair` / `sustained-stroke` / `multi-tool-collab-stress` / `rich-scene-join`）与 `--cpu-throttle=4`：支持流式长窗 Chromium Trace 采集并输出 `chromium-timeline-summary.json`（含 Main/Worker/GPU Busy%、Swap FPS、掉帧率、分桶耗时曲线与 Top Hotspots）。

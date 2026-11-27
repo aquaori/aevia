@@ -623,4 +623,80 @@ describe("SceneCore without browser rendering", () => {
 		});
 		expect(core.getRenderIR().items).toHaveLength(0);
 	});
+
+	it("queryDirtyCandidates fast-paths identity-matrix elements while still tracking transformed elements", () => {
+		const core = new SceneCore();
+		core.applyOperation({
+			schemaVersion: 2,
+			opId: "op-id-1",
+			elementId: "stroke-identity",
+			actorId: "u1",
+			roomId: "r1",
+			historyGroupId: "hg-1",
+			pageId: 0,
+			lamport: 1,
+			kind: "element.create",
+			payload: {
+				descriptor: {
+					elementKind: "path",
+					recipeId: "pen",
+					toolId: "pen",
+					style: { color: "#111111", size: 4 },
+				},
+				points: [
+					{ x: 0.1, y: 0.1, p: 0.5 },
+					{ x: 0.2, y: 0.2, p: 0.5 },
+				],
+				isComplete: true,
+			},
+		});
+		core.applyOperation({
+			schemaVersion: 2,
+			opId: "op-id-2",
+			elementId: "stroke-moved",
+			actorId: "u1",
+			roomId: "r1",
+			historyGroupId: "hg-2",
+			pageId: 0,
+			lamport: 2,
+			kind: "element.create",
+			payload: {
+				descriptor: {
+					elementKind: "path",
+					recipeId: "pen",
+					toolId: "pen",
+					style: { color: "#dc2626", size: 4 },
+				},
+				points: [
+					{ x: 0.1, y: 0.1, p: 0.5 },
+					{ x: 0.2, y: 0.2, p: 0.5 },
+				],
+				isComplete: true,
+			},
+		});
+
+		const originHits = core.queryDirtyCandidates({ minX: 80, minY: 60, maxX: 240, maxY: 180, width: 160, height: 120 }, 1000, 800);
+		expect(originHits.candidateRefs.length).toBeGreaterThanOrEqual(2);
+
+		// Translate stroke-moved to bottom-right and check both regions
+		core.applyOperation({
+			schemaVersion: 2,
+			opId: "op-id-3",
+			elementId: "stroke-moved",
+			actorId: "u1",
+			roomId: "r1",
+			historyGroupId: "hg-3",
+			pageId: 0,
+			lamport: 3,
+			kind: "element.transform",
+			payload: {
+				targets: [{ elementId: "stroke-moved", deltaMatrix: [1, 0, 0, 1, 0.5, 0.5] }],
+			},
+		});
+
+		const topLeft = core.queryDirtyCandidates({ minX: 80, minY: 60, maxX: 240, maxY: 180, width: 160, height: 120 }, 1000, 800);
+		const bottomRight = core.queryDirtyCandidates({ minX: 580, minY: 460, maxX: 740, maxY: 580, width: 160, height: 120 }, 1000, 800);
+		expect(topLeft.candidateRefs.length).toBeGreaterThan(0);
+		expect(bottomRight.candidateRefs.length).toBeGreaterThan(0);
+	});
 });

@@ -19,6 +19,7 @@ import {
 	waitForNonBlankCanvas,
 } from "./canvas-observer";
 import { drawLine, drawLineLowLatency, observeUndoDispatch, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo, waitForPageChangeComplete } from "./ui-driver";
+import { runMultiToolCollabWorkload, runSustainedStrokeWorkload, seedRichScene } from "./sustained-workloads";
 import { readPerformanceObserver } from "./performance-observer";
 import { ensureDir } from "./reporter";
 import {
@@ -261,6 +262,21 @@ const CASE_META: Record<string, { title: string; description: string; category: 
 	[EXTERNAL_CASES.networkRecovery.id]: {
 		title: "Network latency recovery",
 		description: "通过 CDP 网络模拟长延迟和离线恢复，观测页面恢复到可绘制状态的时间。",
+		category: "performance",
+	},
+	[EXTERNAL_CASES.sustainedStrokePerformance.id]: {
+		title: "Sustained long/short stroke",
+		description: "双端长时不断笔绘制衔接高频短笔迹爆发，检验掉帧、输入延迟与新入房参考画布一致性。",
+		category: "performance",
+	},
+	[EXTERNAL_CASES.multiToolCollabStress.id]: {
+		title: "Multi-tool concurrent collab stress",
+		description: "双端高并发混合使用钢笔、铅笔、荧光笔、图形、局部擦除、拖拽变换、文字、便签与撤销重做，校验像素收敛与响应性。",
+		category: "performance",
+	},
+	[EXTERNAL_CASES.richSceneJoinPerformance.id]: {
+		title: "Rich mixed-tool scene join",
+		description: "预置混合笔刷、图形、文字、便签、变换矩阵与擦除遮罩的重型房间，测量迟到加入首屏稳定性与一致性。",
 		category: "performance",
 	},
 };
@@ -584,37 +600,60 @@ const artifactDir = (context: SuiteContext, name: string) => {
 const openBoundaryRoomPage = async (context: SuiteContext, user: { token: string; userName: string }, expectedContent = true) => {
 	const probe = await createBoundaryProbe(context.browser, { cpuThrottle: context.config.cpuThrottle });
 	const loadStartedAt = performance.now();
+	let phase = "init";
+	const pageErrors: string[] = [];
+	const onPageError = (err: Error) => pageErrors.push(err.message);
+	probe.page.on("pageerror", onPageError);
 	try {
 		return await withDeadline((async () => {
+			phase = "goto-home";
 			await probe.page.goto(context.config.frontendUrl);
 			await probe.page.evaluate(({ token, userName }: { token: string; userName: string }) => {
 				sessionStorage.setItem("user", JSON.stringify({ token, userId: "", username: userName }));
 				localStorage.setItem("wb_username", userName);
 			}, { token: user.token, userName: user.userName });
+			phase = "goto-room";
 			await probe.page.goto(`${context.config.frontendUrl}/room`, {
 				waitUntil: "domcontentloaded",
 				timeout: context.config.caseTimeoutMs,
 			});
+			phase = "wait-canvas";
 			await probe.page.locator("canvas").first().waitFor({ timeout: context.config.caseTimeoutMs });
 			if (expectedContent) {
+				phase = "wait-init-stream-final";
 				await probe.page.waitForFunction(() => {
 					const runtime = (window as unknown as { __AEVIA_LAB__?: { marks: { name: string; detail?: { reason?: string } }[] } }).__AEVIA_LAB__;
 					return runtime?.marks.some(mark => mark.name === "aevia.frame.render-complete" && mark.detail?.reason === "init-stream-final");
 				}, undefined, { timeout: context.config.caseTimeoutMs });
-				await waitForNonBlankCanvas(probe.page, { timeoutMs: context.config.caseTimeoutMs });
-			} else { await waitForLabSentinel(probe.page); }
+				phase = "wait-non-blank";
+				await waitForNonBlankCanvas(probe.page, { timeoutMs: Math.min(context.config.caseTimeoutMs, 30000) });
+			} else {
+				phase = "wait-lab-sentinel";
+				await waitForLabSentinel(probe.page);
+			}
+			probe.page.off("pageerror", onPageError);
 			return {
 				probe,
 				roomLoadMs: performance.now() - loadStartedAt,
 			};
 		})(), context.config.caseTimeoutMs, "boundary room initialization");
 	} catch (error) {
+		probe.page.off("pageerror", onPageError);
 		const observedCrash = classifyCrash(probe.crash);
 		const dir = artifactDir(context, `${user.userName.replace(/[^a-zA-Z0-9_-]/g, "_")}-failed-load`);
 		const snapshot = await withDeadline(captureLabSnapshot(probe.page), 5000, "failed-load snapshot").catch(() => null);
-		writeFileSync(path.join(dir, "lab-snapshot.json"), JSON.stringify({ error: errorMessage(error), observedCrash, snapshot }, null, 2));
+		const canvasSample = await withDeadline(probe.page.evaluate(() => ({
+			canvases: Array.from(document.querySelectorAll("canvas")).map((c) => {
+				const r = c.getBoundingClientRect();
+				return { w: c.width, h: c.height, rw: r.width, rh: r.height };
+			}),
+			sample: window.__externalCanvasObserver?.sample({}),
+			ws: (window as unknown as { __labNetworkProbe?: unknown }).__labNetworkProbe,
+		})), 3000, "failed-load canvas").catch(() => null);
+		await withDeadline(probe.page.screenshot({ path: path.join(dir, "failed-load.png") }), 3000, "failed-load png").catch(() => undefined);
+		writeFileSync(path.join(dir, "lab-snapshot.json"), JSON.stringify({ phase, error: errorMessage(error), observedCrash, pageErrors, canvasSample, snapshot }, null, 2));
 		await probe.close().catch(() => undefined);
-		throw Object.assign(new Error(errorMessage(error)), { boundaryCrashType: observedCrash });
+		throw Object.assign(new Error(`${errorMessage(error)} [phase=${phase}]`), { boundaryCrashType: observedCrash });
 	}
 };
 
@@ -1580,6 +1619,103 @@ export const runPerformanceExternal = async (context: SuiteContext): Promise<Cas
 
 	if (context.config.caseSet === "resilience" || context.config.caseSet === "all") {
 		if (isSelected(context, EXTERNAL_CASES.networkRecovery.id)) results.push(await runNetworkRecovery(context));
+	}
+
+	if (context.config.caseSet === "sustained" || context.config.caseSet === "all") {
+		results.push(...(await optionalSampledCase(context, EXTERNAL_CASES.sustainedStrokePerformance.id, async () => {
+			const { roomId, users } = await createRoomWithUsers(context.config, ["SustainedA", "SustainedB"]);
+			const [a, b] = await Promise.all([
+				openRoomPage(context.browser, context.config, users[0]!),
+				openRoomPage(context.browser, context.config, users[1]!),
+			]);
+			try {
+				const workload = await runSustainedStrokeWorkload({
+					browser: context.browser,
+					config: context.config,
+					roomId,
+					pageA: a.page,
+					pageB: b.page,
+					longPhaseMs: 6000,
+					shortPhaseStrokes: 24,
+				});
+				const perf = await readPerformanceObserver(a.page);
+				if (!workload.converged) {
+					throw new Error(`sustained-stroke replay mismatch: diff=${workload.replayDifference}`);
+				}
+				return {
+					...workload,
+					longTaskCount: perf.longTaskCount,
+					longTaskTotalMs: perf.longTaskTotalMs,
+					inputDelayMaxMs: perf.eventDelayMaxMs,
+				};
+			} finally {
+				await Promise.allSettled([a.close(), b.close()]);
+			}
+		})));
+
+		results.push(...(await optionalSampledCase(context, EXTERNAL_CASES.multiToolCollabStress.id, async () => {
+			const { roomId, users } = await createRoomWithUsers(context.config, ["CollabStressA", "CollabStressB"]);
+			const [a, b] = await Promise.all([
+				openRoomPage(context.browser, context.config, users[0]!),
+				openRoomPage(context.browser, context.config, users[1]!),
+			]);
+			try {
+				const workload = await runMultiToolCollabWorkload({
+					browser: context.browser,
+					config: context.config,
+					roomId,
+					pageA: a.page,
+					pageB: b.page,
+				});
+				const perf = await readPerformanceObserver(a.page);
+				if (!workload.converged) {
+					throw new Error(
+						`multi-tool-collab-stress mismatch: interClientDiff=${workload.interClientDiff}, replayDifference=${workload.replayDifference}`
+					);
+				}
+				return {
+					...workload,
+					longTaskCount: perf.longTaskCount,
+					longTaskTotalMs: perf.longTaskTotalMs,
+					inputDelayMaxMs: perf.eventDelayMaxMs,
+				};
+			} finally {
+				await Promise.allSettled([a.close(), b.close()]);
+			}
+		})));
+
+		results.push(...(await optionalSampledCase(context, EXTERNAL_CASES.richSceneJoinPerformance.id, async () => {
+			const { roomId } = await createRoomWithUsers(context.config, ["RichJoinSeedCheck"]);
+			const seeded = await seedRichScene(context.config, roomId, 12000);
+			const [observerUser, refUser] = await Promise.all([
+				joinRoom(context.config, roomId, "RichObserver"),
+				joinRoom(context.config, roomId, "RichReference"),
+			]);
+			const observer = await openMeasuredRoomPage(context.browser, context.config, observerUser);
+			const refPage = await openMeasuredRoomPage(context.browser, { ...context.config, labEnabled: false }, refUser);
+			try {
+				const diff = await compareCanvasPages(observer.page, refPage.page, { threshold: 0.015 });
+				const perf = await readPerformanceObserver(observer.page);
+				if (diff.diffRatio > diff.passThreshold) {
+					throw new Error(`rich-scene-join mismatch: diff=${diff.diffRatio}`);
+				}
+				return {
+					firstNonBlankMs: observer.initialRender.firstNonBlankMs,
+					visuallyStableMs: observer.initialRender.visuallyStableMs,
+					stabilityConfirmedMs: observer.initialRender.stabilityConfirmedMs,
+					nonBlankRatio: observer.initialRender.nonBlankRatio,
+					replayDifference: diff.diffRatio,
+					seededElements: seeded.seededElements,
+					seededPoints: seeded.seededPoints,
+					transformedElements: seeded.transformedElements,
+					erasedElements: seeded.erasedElements,
+					longTaskCount: perf.longTaskCount,
+					longTaskTotalMs: perf.longTaskTotalMs,
+				};
+			} finally {
+				await Promise.allSettled([observer.close(), refPage.close()]);
+			}
+		})));
 	}
 
 	if (context.config.caseSet === "boundary" || context.config.caseSet === "all") {

@@ -36,11 +36,16 @@ export const invertMatrix = (matrix: AffineMatrix): AffineMatrix | null => {
 	];
 };
 
+export const isIdentityMatrix = (matrix: AffineMatrix): boolean =>
+	matrix[0] === 1 &&
+	matrix[1] === 0 &&
+	matrix[2] === 0 &&
+	matrix[3] === 1 &&
+	matrix[4] === 0 &&
+	matrix[5] === 0;
+
 export const transformBounds = (matrix: AffineMatrix, bounds: AabbBox): AabbBox => {
-	if (
-		matrix[0] === 1 && matrix[1] === 0 && matrix[2] === 0 &&
-		matrix[3] === 1 && matrix[4] === 0 && matrix[5] === 0
-	) return bounds;
+	if (isIdentityMatrix(matrix)) return bounds;
 	const points = [
 		transformPoint(matrix, bounds.minX, bounds.minY),
 		transformPoint(matrix, bounds.maxX, bounds.minY),

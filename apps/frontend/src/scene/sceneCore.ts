@@ -17,7 +17,7 @@ import {
 } from "@collaborative-whiteboard/shared";
 import { cutIntervalsForStrokeAtom, mergeQuantizedIntervals } from "./eraseGeometry";
 import { DirtyRegionSet } from "./dirtyRegionSet";
-import { cloneMatrix, invertMatrix, matrixScale, multiplyMatrices, transformBounds, transformPoint, unionBounds } from "./matrix";
+import { cloneMatrix, invertMatrix, isIdentityMatrix, matrixScale, multiplyMatrices, transformBounds, transformPoint, unionBounds } from "./matrix";
 import { RenderOrderIndex } from "./renderOrderIndex";
 import type {
 	BitmapAtom,
@@ -356,7 +356,7 @@ export class SceneCore implements SceneCorePort {
 		for (const atom of this.atoms) {
 			const element = this.elements.get(atom.elementId);
 			if (!element || atom.elementRevision !== element.revision) continue;
-			this.spatial.addAtom(atom.elementId, atom.ref, transformBounds(element.matrix, atom.bounds));
+			this.spatial.addAtom(atom.elementId, atom.ref, element.isIdentityMatrix ? atom.bounds : transformBounds(element.matrix, atom.bounds));
 		}
 	}
 
@@ -651,15 +651,15 @@ export class SceneCore implements SceneCorePort {
 	) {
 		const normalized = this.pixelRectToNormalized(dirtyRect, logicalWidth, logicalHeight);
 		const query = this.spatial.query(normalized);
-		const candidateRefs = query.atomRefs.filter((ref) => {
+		const candidateRefs: number[] = [];
+		for (const ref of query.atomRefs) {
 			const atom = this.atoms[ref];
-			const element = atom ? this.elements.get(atom.elementId) : undefined;
-			return Boolean(
-				atom &&
-				this.isAtomVisible(atom, element, excludedElementIds) &&
-				intersects(transformBounds(element!.matrix, atom.bounds), normalized)
-			);
-		});
+			if (!atom) continue;
+			const element = this.elements.get(atom.elementId);
+			if (!this.isAtomVisible(atom, element, excludedElementIds)) continue;
+			const bounds = element!.isIdentityMatrix ? atom.bounds : transformBounds(element!.matrix, atom.bounds);
+			if (intersects(bounds, normalized)) candidateRefs.push(ref);
+		}
 		if (ordered) candidateRefs.sort((left, right) => compareRenderOrder(this.atoms[left]!.order, this.atoms[right]!.order));
 		return {
 			candidateRefs,
@@ -704,7 +704,7 @@ export class SceneCore implements SceneCorePort {
 				atom &&
 				element &&
 				this.isAtomVisible(atom, element, new Set()) &&
-				intersects(transformBounds(element.matrix, atom.bounds), coarse) &&
+				intersects(element.isIdentityMatrix ? atom.bounds : transformBounds(element.matrix, atom.bounds), coarse) &&
 				this.atomIntersectsBox(atom, element, normalized, logicalWidth, logicalHeight)
 			) ids.add(atom.elementId);
 		}
@@ -787,11 +787,13 @@ export class SceneCore implements SceneCorePort {
 		const cached = this.elementBoundsCache.get(elementId);
 		if (cached) return { ...cached };
 		let bounds: AabbBox | null = (element.descriptor.elementKind === "text" || element.descriptor.elementKind === "sticky") && element.descriptor.box
-			? transformBounds(element.matrix, element.descriptor.box)
+			? (element.isIdentityMatrix ? element.descriptor.box : transformBounds(element.matrix, element.descriptor.box))
 			: null;
 		for (const ref of element.atomRefs) {
 			const atom = this.atoms[ref];
-			if (atom?.elementRevision === element.revision) bounds = unionBounds(bounds, transformBounds(element.matrix, atom.bounds));
+			if (atom?.elementRevision === element.revision) {
+				bounds = unionBounds(bounds, element.isIdentityMatrix ? atom.bounds : transformBounds(element.matrix, atom.bounds));
+			}
 		}
 		if (bounds) this.elementBoundsCache.set(elementId, bounds);
 		return bounds ? { ...bounds } : null;
@@ -808,7 +810,7 @@ export class SceneCore implements SceneCorePort {
 			const element = atom ? this.elements.get(atom.elementId) : undefined;
 			if (!atom || !element || atom.elementRevision !== element.revision) continue;
 			if (elementIds && !elementIds.has(element.id)) continue;
-			bounds = unionBounds(bounds, transformBounds(element.matrix, atom.bounds));
+			bounds = unionBounds(bounds, element.isIdentityMatrix ? atom.bounds : transformBounds(element.matrix, atom.bounds));
 		}
 		return bounds;
 	}
@@ -938,6 +940,7 @@ export class SceneCore implements SceneCorePort {
 			revision: this.revisionSeed.get(id) ?? 0,
 			deleted: false,
 			matrix: cloneMatrix(IDENTITY_MATRIX),
+			isIdentityMatrix: true,
 			points: [],
 			atomRefs: [],
 			erasedIntervals: new Map(),
@@ -972,10 +975,10 @@ export class SceneCore implements SceneCorePort {
 		this.addedRenderAtoms.add(`${stored.elementId.length}:${stored.elementId}${stored.atomId}`);
 		element.atomRefs.push(ref);
 		const cached = this.elementBoundsCache.get(element.id);
-		if (cached) this.elementBoundsCache.set(element.id, unionBounds(cached, transformBounds(element.matrix, stored.bounds))!);
+		if (cached) this.elementBoundsCache.set(element.id, unionBounds(cached, element.isIdentityMatrix ? stored.bounds : transformBounds(element.matrix, stored.bounds))!);
 		this.order.insert(ref);
 		if (!this.bulkLoading) {
-			this.spatial.addAtom(element.id, ref, transformBounds(element.matrix, stored.bounds));
+			this.spatial.addAtom(element.id, ref, element.isIdentityMatrix ? stored.bounds : transformBounds(element.matrix, stored.bounds));
 		}
 		if (this.isElementBaseVisible(element)) this.visibleAtomCount += 1;
 		this.onPrefixMayInvalidate(stored.order, false, true);
@@ -1078,6 +1081,7 @@ export class SceneCore implements SceneCorePort {
 			if (previous && this.isElementBaseVisible(previous)) this.visibleAtomCount -= previous.atomRefs.length;
 			if (previous && this.legacyElementIds.has(elementId)) {
 				previous.matrix = cloneMatrix(IDENTITY_MATRIX);
+				previous.isIdentityMatrix = true;
 				previous.deleted = this.legacyDeleted.get(elementId) ?? false;
 				previous.erasedIntervals.clear();
 				previous.eraseMasks = [];
@@ -1477,8 +1481,9 @@ export class SceneCore implements SceneCorePort {
 		this.onPrefixMayInvalidate({ ...element.createOrder, subIndex: -1 });
 		this.elementBoundsCache.delete(elementId);
 		element.matrix = multiplyMatrices(delta, element.matrix);
+		element.isIdentityMatrix = isIdentityMatrix(element.matrix);
 		this.maxStrokeWidth = Math.max(this.maxStrokeWidth, element.descriptor.style.size * matrixScale(element.matrix));
-		this.spatial.reindexElement(elementId, (ref) => transformBounds(element.matrix, this.atoms[ref]!.bounds));
+		this.spatial.reindexElement(elementId, (ref) => element.isIdentityMatrix ? this.atoms[ref]!.bounds : transformBounds(element.matrix, this.atoms[ref]!.bounds));
 	}
 
 	private applyElementStyle(elementId: string, style: Partial<SceneElementStyle>, textBox?: AabbBox) {
@@ -1558,6 +1563,7 @@ export class SceneCore implements SceneCorePort {
 			}
 			const element = this.elements.get(elementId)!;
 			element.matrix = cloneMatrix(IDENTITY_MATRIX);
+			element.isIdentityMatrix = true;
 			element.deleted = this.legacyDeleted.get(elementId) ?? false;
 			element.erasedIntervals.clear();
 			element.eraseMasks = [];
@@ -1630,7 +1636,7 @@ export class SceneCore implements SceneCorePort {
 		for (const atom of this.atoms) {
 			const element = this.elements.get(atom.elementId)!;
 			this.order.insert(atom.ref);
-			this.spatial.addAtom(atom.elementId, atom.ref, transformBounds(element.matrix, atom.bounds));
+			this.spatial.addAtom(atom.elementId, atom.ref, element.isIdentityMatrix ? atom.bounds : transformBounds(element.matrix, atom.bounds));
 			if (this.isElementBaseVisible(element)) this.visibleAtomCount += 1;
 			if (++work % 128 === 0) yield;
 		}

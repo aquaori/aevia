@@ -400,6 +400,54 @@ export class ProtocolClient {
 
 		return commandId;
 	}
+
+	async sendSceneOperation(options: {
+		elementId: string;
+		kind: string;
+		payload: Record<string, unknown>;
+		opId?: string;
+		pageId?: number;
+		historyGroupId?: string;
+		waitForCommit?: boolean;
+	}) {
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			throw new Error("protocol websocket is not connected");
+		}
+		const opId = options.opId || uuidv4();
+		const pageId = options.pageId ?? 0;
+		const lamport = this.lamport++;
+		const command = {
+			id: opId,
+			type: "scene-op",
+			timestamp: Date.now(),
+			userId: this.user.userId,
+			roomId: this.user.roomId,
+			pageId,
+			isDeleted: false,
+			lamport,
+			box: { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 },
+			schemaVersion: 2,
+			sceneOperation: {
+				schemaVersion: 2,
+				opId,
+				elementId: options.elementId,
+				actorId: this.user.userId,
+				roomId: this.user.roomId,
+				pageId,
+				lamport,
+				historyGroupId: options.historyGroupId ?? options.elementId,
+				kind: options.kind,
+				payload: options.payload,
+			},
+		};
+		const data = { id: opId, cmd: command, lamport };
+		if (options.waitForCommit) {
+			await this.sendRawAndWaitFor("push-cmd", data, "ack.accepted", (message) => message.data?.cmdId === opId);
+		} else {
+			await this.sendJsonAwait({ type: "push-cmd", data });
+		}
+		return opId;
+	}
 }
 
 export const createLinePoints = (
