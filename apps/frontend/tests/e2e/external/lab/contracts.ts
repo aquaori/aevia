@@ -189,6 +189,9 @@ const CASE_CONTRACTS: Record<string, CaseLabContract> = {
 	[EXTERNAL_CASES.redrawFreezeBoundary.id]: { ...SENTINEL_ONLY_CONTRACT(false), runtimeRequired: false, requiredExternalMetrics: ["lastSurvivedConcurrency"] },
 	[EXTERNAL_CASES.remoteFirstPixelPerformance.id]: INCREMENTAL_REMOTE_FIRST_PIXEL_CONTRACT,
 	[EXTERNAL_CASES.localFirstPixelPerformance.id]: LOCAL_REALTIME_FIRST_PIXEL_CONTRACT,
+	[EXTERNAL_CASES.sustainedStrokePerformance.id]: { ...SENTINEL_ONLY_CONTRACT(true), requiredExternalMetrics: ["totalElapsedMsMedian", "replayDifferenceMedian"] },
+	[EXTERNAL_CASES.multiToolCollabStress.id]: { ...SENTINEL_ONLY_CONTRACT(true), requiredExternalMetrics: ["totalElapsedMsMedian", "interClientDiffMedian", "replayDifferenceMedian"] },
+	[EXTERNAL_CASES.richSceneJoinPerformance.id]: { ...SENTINEL_ONLY_CONTRACT(true), requiredExternalMetrics: ["firstNonBlankMsMedian", "visuallyStableMsMedian", "replayDifferenceMedian"] },
 };
 
 const FULL_RENDER_PREFIX = `${EXTERNAL_CASES.fullRenderPerformance.id}-`;

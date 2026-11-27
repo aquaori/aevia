@@ -91,6 +91,7 @@ export interface SceneElementState {
 	revision: number;
 	deleted: boolean;
 	matrix: AffineMatrix;
+	isIdentityMatrix: boolean;
 	points: Point[];
 	atomRefs: number[];
 	erasedIntervals: Map<string, Array<{ start: number; end: number }>>;

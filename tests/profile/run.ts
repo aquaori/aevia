@@ -9,11 +9,12 @@ import { compareCanvasPages, installCanvasObserver, roiAround, waitForBlankCanva
 import { captureLabSnapshot } from "../../apps/frontend/tests/e2e/external/lab/install";
 import { createDistributedStrokePoints, createRoomWithUsers, joinRoom, ProtocolClient } from "../../apps/frontend/tests/e2e/external/protocol-driver";
 import { drawLine, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo, waitForPageChangeComplete } from "../../apps/frontend/tests/e2e/external/ui-driver";
+import { runMultiToolCollabWorkload, runSustainedStrokeWorkload, seedRichScene } from "../../apps/frontend/tests/e2e/external/sustained-workloads";
 import { readSourceIdentity } from "../report/provenance";
 import { resolveChromiumLaunchOptions } from "../browser-launch";
 import { collectBrowser, collectGo, type Collector } from "./collectors";
 import { createOverlay } from "./go-overlay";
-import { criticalPath, summarizeSpans, wireMetrics, type Span, type Wire } from "./analysis";
+import { criticalPath, summarizeSpans, wireMetrics, type Span, type TimelineSummary, type Wire } from "./analysis";
 
 type Clock = { remoteMs: number; beforeMs: number; afterMs: number };
 type Services = { frontendUrl: string; pprofUrl?: string; profileDirectory?: string; profileControl?: (command: "begin" | "clock" | "end", id: string) => Promise<Clock>; stop(): Promise<void> };
@@ -61,6 +62,9 @@ const list = [
 	{ id: "switch-page", scale: 0, module: "分页、流、画布", oracle: "新页空白，返回后原笔迹恢复" },
 	{ id: "rejoin", scale: 10000, module: "快照、刷新恢复", oracle: "刷新前后画布一致" },
 	{ id: "delta-reconnect", scale: 0, module: "断线检测、WebSocket、增量重连与画布", oracle: "断线期间远端画笔在重连后出现在本端" },
+	{ id: "sustained-stroke", scale: 0, module: "长时连笔/高频短笔、Input、Vue、Worker、IndexedDB", oracle: "双端持续长连笔+高频短笔爆发不掉队，与新入房参考画布一致" },
+	{ id: "multi-tool-collab-stress", scale: 0, module: "多工具高并发协同（钢笔/铅笔/荧光笔/图形/擦除/拖拽/文字/便签/历史）", oracle: "双端并发混合工具绘制后双方及新入房画布均收敛" },
+	{ id: "rich-scene-join", scale: 12000, module: "混合图元/变换矩阵/擦除遮罩重型房间进房", oracle: "混合类型场景进房首屏稳定且与参考观察端像素一致" },
 ] as const;
 type Scenario = typeof list[number];
 
@@ -91,9 +95,17 @@ async function seed(config: Config, roomId: string, count: number, distributed: 
 	} finally { client.close(); }
 }
 
-async function runSample(browser: Browser, services: Services, scenario: Scenario, collector: Collector, dir: string): Promise<Sample> {
+async function runSample(
+	browser: Browser,
+	services: Services,
+	scenario: Scenario,
+	collector: Collector,
+	dir: string,
+	cpuThrottle = 1
+): Promise<Sample> {
 	// The existing Lab contract eagerly flushes some worker paints on live edits.
-	const config = parseConfig([`--lab=${scenario.id.startsWith("join-") || scenario.id.startsWith("draw-dense") || ["draw-ring", "draw-transfer", "clear-undo-large"].includes(scenario.id) ? "on" : "off"}`]);
+	const labArg = `--lab=${scenario.id.startsWith("join-") || scenario.id.startsWith("draw-dense") || ["draw-ring", "draw-transfer", "clear-undo-large", "rich-scene-join"].includes(scenario.id) ? "on" : "off"}`;
+	const config = parseConfig([labArg, ...(cpuThrottle > 1 ? [`--cpu-throttle=${cpuThrottle}`] : [])]);
 	const pages: Page[] = [];
 	const wire: Wire[] = [];
 	let wireDropped = 0;
@@ -130,8 +142,13 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 	let stopGo: ReturnType<typeof collectGo> | undefined;
 	const clock: Clock[] = [];
 	const windowId = randomUUID();
+	const isLongWindow = scenario.id === "sustained-stroke" || scenario.id === "multi-tool-collab-stress";
 	const start = async () => {
-		stopBrowser = await collectBrowser(browser, pages, collector, dir, !scenario.id.startsWith("render-"));
+		stopBrowser = await collectBrowser(browser, pages, collector, dir, !scenario.id.startsWith("render-"), {
+			durationMs: isLongWindow ? 25000 : scenario.id === "rich-scene-join" ? 12000 : 2500,
+			bucketMs: isLongWindow ? 2500 : 5000,
+			cpuThrottle,
+		});
 		stopGo = collectGo(services.pprofUrl, collector, dir);
 		if (services.profileControl) {
 			for (let i = 0; i < 3; i++) clock.push(await services.profileControl("clock", randomUUID()));
@@ -173,8 +190,71 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 			}
 		} else {
 			const { roomId, users } = await createRoomWithUsers(config, ["Profile A", "Profile B"]);
-			await seed(config, roomId, scenario.scale, !(scenario.id.startsWith("draw-dense") || ["draw-ring", "draw-transfer"].includes(scenario.id)), scenario.id === "clear-undo-large");
-			if (scenario.id.startsWith("join-") && scenario.scale > 0) {
+			if (scenario.id !== "rich-scene-join") {
+				await seed(config, roomId, scenario.scale, !(scenario.id.startsWith("draw-dense") || ["draw-ring", "draw-transfer"].includes(scenario.id)), scenario.id === "clear-undo-large");
+			}
+			if (scenario.id === "rich-scene-join") {
+				const seeded = await seedRichScene(config, roomId, scenario.scale);
+				const measured = await openMeasuredRoomPage(browser, config, users[0]!, async page => {
+					observe(page);
+					await start();
+				});
+				closers.push(measured.close);
+				const reference = await openMeasuredRoomPage(browser, { ...config, labEnabled: false }, users[1]!);
+				closers.push(reference.close);
+				const diff = await compareCanvasPages(measured.page, reference.page);
+				metrics = {
+					...measured.initialRender,
+					seededElements: seeded.seededElements,
+					seededPoints: seeded.seededPoints,
+					transformedElements: seeded.transformedElements,
+					erasedElements: seeded.erasedElements,
+					replayDifference: diff.diffRatio,
+				};
+				if (diff.diffRatio > 0.015) throw new Error(`Rich scene join canvas mismatch (diff=${diff.diffRatio})`);
+			} else if (scenario.id === "sustained-stroke") {
+				const [a, b] = await Promise.all([openRoomPage(browser, config, users[0]!, observe), openRoomPage(browser, config, users[1]!, observe)]);
+				closers.push(a.close, b.close);
+				await start();
+				const workload = await runSustainedStrokeWorkload({
+					browser,
+					config,
+					roomId,
+					pageA: a.page,
+					pageB: b.page,
+					longPhaseMs: 6000,
+					shortPhaseStrokes: 24,
+					viewport: small,
+				});
+				const transport = wireMetrics(wire);
+				metrics = {
+					...workload,
+					acceptedOperations: transport.committed,
+					matchedJsonSubmissions: transport.submitted,
+					...(transport.acknowledgements.length ? { medianSendToAckMs: median(transport.acknowledgements) } : {}),
+				};
+				if (!workload.converged) throw new Error(`Sustained stroke canvas mismatch (diff=${workload.replayDifference})`);
+			} else if (scenario.id === "multi-tool-collab-stress") {
+				const [a, b] = await Promise.all([openRoomPage(browser, config, users[0]!, observe), openRoomPage(browser, config, users[1]!, observe)]);
+				closers.push(a.close, b.close);
+				await start();
+				const workload = await runMultiToolCollabWorkload({
+					browser,
+					config,
+					roomId,
+					pageA: a.page,
+					pageB: b.page,
+					viewport: small,
+				});
+				const transport = wireMetrics(wire);
+				metrics = {
+					...workload,
+					acceptedOperations: transport.committed,
+					matchedJsonSubmissions: transport.submitted,
+					...(transport.acknowledgements.length ? { medianSendToAckMs: median(transport.acknowledgements) } : {}),
+				};
+				if (!workload.converged) throw new Error(`Multi-tool collab stress mismatch (inter=${workload.interClientDiff}, replay=${workload.replayDifference})`);
+			} else if (scenario.id.startsWith("join-") && scenario.scale > 0) {
 				let inputBeforeInit = false;
 				let strokesFinishedBeforeInit = 0;
 				let sentDuringGate = 0;
@@ -778,6 +858,19 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 			if (result.status === "rejected") issues.push(errorText(result.reason));
 			else if (result.value) { issues.push(...result.value.issues); artifacts.push(...result.value.artifacts); }
 		}
+		if (collector === "timeline" && artifacts.includes("chromium-timeline-summary.json") && metrics) {
+			try {
+				const summary = JSON.parse(fs.readFileSync(path.join(dir, "chromium-timeline-summary.json"), "utf8")) as TimelineSummary;
+				const byThread = new Map(summary.threads.map(row => [row.thread, row]));
+				const main = byThread.get("Main"), worker = byThread.get("Worker"), gpu = byThread.get("GPU");
+				metrics.timelineDurationMs = summary.durationMs;
+				if (main) { metrics.mainBusyPct = main.busyPct; metrics.mainMaxTaskMs = main.maxMs; }
+				if (worker) { metrics.workerBusyPct = worker.busyPct; metrics.workerMaxTaskMs = worker.maxMs; }
+				if (gpu) { metrics.gpuBusyPct = gpu.busyPct; metrics.gpuMaxTaskMs = gpu.maxMs; }
+				metrics.swapFps = summary.fps.swapFps;
+				metrics.dropRatePct = summary.fps.dropRatePct;
+			} catch (error) { issues.push(errorText(error)); }
+		}
 		if (collector === "spans") for (const [index, page] of pages.entries()) {
 			try {
 				const realms = [page, ...page.workers()];
@@ -887,17 +980,19 @@ export async function runDiagnostics(root: string, setup: Setup) {
 		return match ? [[match[1]!, match[2]!] as const] : [];
 	}));
 	const set = options.get("set") ?? "core", mode = options.get("collector") ?? "baseline", caseId = options.get("case");
-	if (!["smoke", "core", "all"].includes(set) || !(mode === "all" || collectors.includes(mode as Collector))) throw new Error("Invalid --set or --collector");
-	if (caseId && !["dense-pair", "decision", "brushes", "text-tools", "transport-pair", "join-contention"].includes(caseId) && !list.some(item => item.id === caseId)) throw new Error(`Unknown profiling case: ${caseId}`);
-	const cases = list.filter(item => caseId ? caseId === "join-contention" ? ["join-100k", "join-100k-active"].includes(item.id) : caseId === "transport-pair" ? ["draw-ring", "draw-transfer"].includes(item.id) : caseId === "text-tools" ? ["edit-text", "edit-sticky"].includes(item.id) : caseId === "brushes" ? ["render-pencil", "render-highlighter"].includes(item.id) : caseId === "decision" ? ["join-100k", "draw-dense", "draw-dense-ready"].includes(item.id) : caseId === "dense-pair" ? ["draw-dense", "draw-dense-ready"].includes(item.id) : item.id === caseId :
+	const cpuThrottle = Math.max(1, Number(options.get("cpu-throttle") || "1"));
+	if (!["smoke", "core", "sustained", "all"].includes(set) || !(mode === "all" || collectors.includes(mode as Collector))) throw new Error("Invalid --set or --collector");
+	if (caseId && !["dense-pair", "decision", "brushes", "text-tools", "transport-pair", "join-contention", "sustained-pair"].includes(caseId) && !list.some(item => item.id === caseId)) throw new Error(`Unknown profiling case: ${caseId}`);
+	const cases = list.filter(item => caseId ? caseId === "join-contention" ? ["join-100k", "join-100k-active"].includes(item.id) : caseId === "transport-pair" ? ["draw-ring", "draw-transfer"].includes(item.id) : caseId === "text-tools" ? ["edit-text", "edit-sticky"].includes(item.id) : caseId === "brushes" ? ["render-pencil", "render-highlighter"].includes(item.id) : caseId === "decision" ? ["join-100k", "draw-dense", "draw-dense-ready"].includes(item.id) : caseId === "dense-pair" ? ["draw-dense", "draw-dense-ready"].includes(item.id) : caseId === "sustained-pair" ? ["sustained-stroke", "multi-tool-collab-stress", "rich-scene-join"].includes(item.id) : item.id === caseId :
 		set === "smoke" ? ["join-10k", "render-dirty"].includes(item.id) :
-			set === "core" ? ["join-10k", "join-50k", "join-100k", "render-direct", "render-dirty", "render-fallback", "draw-dense", "draw-dense-ready"].includes(item.id) : true);
+			set === "sustained" ? ["sustained-stroke", "multi-tool-collab-stress", "rich-scene-join"].includes(item.id) :
+				set === "core" ? ["join-10k", "join-50k", "join-100k", "render-direct", "render-dirty", "render-fallback", "draw-dense", "draw-dense-ready"].includes(item.id) : true);
 	const modes = mode === "all" ? collectors : mode === "baseline" ? ["baseline"] as const : ["baseline", mode as Collector] as const;
 	const runId = randomUUID(), out = path.join(root, "tests", "reports", "profile", runId);
 	const source = readSourceIdentity(root);
 	fs.mkdirSync(out, { recursive: true });
 	const groups: Group[] = [];
-	const environment = { platform: process.platform, cpu: os.cpus()[0]?.model, node: process.version, chromium: "", viewport: small, dpr: 1, seedVersion: 1 };
+	const environment = { platform: process.platform, cpu: os.cpus()[0]?.model, node: process.version, chromium: "", viewport: small, dpr: 1, seedVersion: 1, cpuThrottle };
 	const results = () => groups.map(group => ({ ...group, summary: summarize(group) }));
 	const manifest = () => ({ schemaVersion: 1, runId, source: { revision: source.revision, dirtyPatchSha256: source.dirtyPatchSha256 },
 		environment, cases, modes, groups: results() });
@@ -932,7 +1027,7 @@ export async function runDiagnostics(root: string, setup: Setup) {
 						const dir = path.join(out, relative);
 						fs.mkdirSync(dir, { recursive: true });
 						console.log(`${scenario.id} ${collector} · ${iteration === 0 ? "warmup" : iteration}`);
-						const sample = await deadline(runSample(browser, services, scenario, collector, dir), 120000)
+						const sample = await deadline(runSample(browser, services, scenario, collector, dir, cpuThrottle), 180000)
 							.catch(error => ({ issues: [], artifacts: [], error: errorText(error), iteration }));
 						if (sample.error) console.log(sample.error);
 						group.samples.push({ ...sample, iteration, artifacts: sample.artifacts.map(file => path.join(relative, file).replaceAll("\\", "/")) });
@@ -989,6 +1084,13 @@ export async function runDiagnostics(root: string, setup: Setup) {
 						return rankings.map(rank => `<details><summary>${escape(rank.name)} · 阶段累计耗时（含重叠）</summary><ol>${rank.rows.slice(0, 12).map(entry => `<li>${escape(entry.name)} · ${format(entry.inclusiveMs)} ms / ${entry.calls} 次 · 最长 ${format(entry.longestMs)} ms</li>`).join("")}</ol></details>`);
 					}
 					if (name === "go-cpu-top.txt") return [`<details><summary>Go CPU 热点</summary><pre>${escape(fs.readFileSync(full, "utf8").split("\n").slice(0, 20).join("\n"))}</pre></details>`];
+					if (name === "chromium-timeline-summary.json") {
+						const summary = JSON.parse(fs.readFileSync(full, "utf8")) as TimelineSummary & { topHotspots?: Array<{ thread: string; rows: Array<{ name: string; selfMs: number; totalMs: number }> }> };
+						const threadRows = summary.threads.map(t => `<tr><td>${escape(t.thread)}</td><td>${format(t.busyPct)}%</td><td>${format(t.p50Ms)} / ${format(t.p95Ms)} / ${format(t.maxMs)} ms</td><td>${t.over16_7ms}</td></tr>`).join("");
+						const bucketRows = summary.buckets.map(b => `${b.bucketStartS}-${b.bucketEndS}s: Main ${format(b.mainBusyPct)}%(max ${format(b.mainMaxMs)}ms) · Worker ${format(b.workerBusyPct)}%(max ${format(b.workerMaxMs)}ms) · GPU ${format(b.gpuBusyPct)}%`).join("\n");
+						const hotspotList = (summary.topHotspots ?? []).map(h => `<p><strong>${escape(h.thread)} Top Hotspots:</strong> ${h.rows.slice(0, 5).map(r => `${escape(r.name)} (${format(r.selfMs)}ms)`).join(" · ")}</p>`).join("");
+						return [`<details open><summary>Chromium Timeline 剖析 · Swap ${format(summary.fps.swapFps)} FPS · 掉帧率 ${format(summary.fps.dropRatePct)}% (${summary.fps.pipelineDroppedSmoothness}/${summary.fps.pipelineTotal})</summary><table><tr><th>线程</th><th>Busy%</th><th>Task P50/P95/Max</th><th>&gt;16.7ms</th></tr>${threadRows}</table><pre>${escape(bucketRows)}</pre>${hotspotList}</details>`];
+					}
 					return [];
 				});
 				return `<li>${sample.iteration || "预热"} ${escape(sample.error ?? "")} ${escape(sample.issues.join(" · "))} ${sample.artifacts.map(file => `<a href="${escape(file)}">${escape(path.basename(file))}</a>`).join(" · ")}${ranks.join("")}</li>`;

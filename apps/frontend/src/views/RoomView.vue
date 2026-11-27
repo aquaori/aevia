@@ -849,7 +849,7 @@
 
 		<!-- Custom Cursor for Eraser -->
 		<div
-			v-show="(currentTool === 'eraser' || currentTool === 'object-eraser') && showEraserCursor"
+			v-if="(currentTool === 'eraser' || currentTool === 'object-eraser') && showEraserCursor"
 			class="fixed pointer-events-none rounded-full border border-slate-500 bg-slate-400/20 z-50 transform -translate-x-1/2 -translate-y-1/2 transition-transform duration-75 ease-out"
 			:style="{
 				left: cursorX + 'px',

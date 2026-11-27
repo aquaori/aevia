@@ -100,6 +100,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	let renderRafId: number | null = null;
 	let animationRafId: number | null = null;
 	let cursorExpiryTimer: number | null = null;
+	let cursorExpiryDeadlineMs: number | null = null;
 	let stopWatches: Array<() => void> = [];
 	let wasVisible = false;
 	const cursorLabelWidthCache = new Map<string, number>();
@@ -214,25 +215,43 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 	};
 
 	const scheduleCursorExpiryCheck = (now: number) => {
-		if (cursorExpiryTimer) {
-			clearTimeout(cursorExpiryTimer);
-			cursorExpiryTimer = null;
-		}
-
-		let nextExpiryDelay = Number.POSITIVE_INFINITY;
+		let earliestExpiryAt = Number.POSITIVE_INFINITY;
 		options.remoteCursors.value.forEach((cursor) => {
 			if (cursor.userId === options.userId.value) return;
 			if (cursor.pageId !== options.currentPageId.value) return;
-			const remaining = 10000 - (now - (cursor.lastUpdate || 0));
-			if (remaining > 0) {
-				nextExpiryDelay = Math.min(nextExpiryDelay, remaining);
+			const expiryAt = (cursor.lastUpdate || 0) + 10001;
+			if (expiryAt > now) {
+				earliestExpiryAt = Math.min(earliestExpiryAt, expiryAt);
 			}
 		});
 
-		if (!Number.isFinite(nextExpiryDelay)) return;
+		if (!Number.isFinite(earliestExpiryAt)) {
+			if (cursorExpiryTimer) {
+				clearTimeout(cursorExpiryTimer);
+				cursorExpiryTimer = null;
+				cursorExpiryDeadlineMs = null;
+			}
+			return;
+		}
+
+		const targetDeadline = Math.max(now + 16, earliestExpiryAt);
+		// Keep the existing expiry deadline while remote cursors keep moving forward
+		// so high-frequency cursor frames do not clear/reset timers on every frame.
+		if (cursorExpiryTimer !== null && cursorExpiryDeadlineMs !== null && targetDeadline >= cursorExpiryDeadlineMs - 16) {
+			return;
+		}
+
+		if (cursorExpiryTimer) {
+			clearTimeout(cursorExpiryTimer);
+			cursorExpiryTimer = null;
+			cursorExpiryDeadlineMs = null;
+		}
+		cursorExpiryDeadlineMs = targetDeadline;
 		cursorExpiryTimer = window.setTimeout(() => {
+			cursorExpiryTimer = null;
+			cursorExpiryDeadlineMs = null;
 			render();
-		}, Math.max(16, nextExpiryDelay));
+		}, Math.max(16, targetDeadline - now));
 	};
 
 	const scheduleRender = () => {
@@ -268,6 +287,16 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 		wasVisible = visible;
 
 		if (!visible) {
+			options.remoteCursors.value.forEach((cursor) => {
+				if (
+					cursor.userId !== options.userId.value &&
+					cursor.pageId === options.currentPageId.value &&
+					now - (cursor.lastUpdate || 0) > 10000
+				) {
+					options.remoteCursors.value.delete(cursor.userId);
+					cursorLabelWidthCache.delete(cursor.userName || "");
+				}
+			});
 			return;
 		}
 
@@ -615,6 +644,7 @@ export const createRoomCanvasOverlay = (options: RoomCanvasOverlayOptions) => {
 		if (cursorExpiryTimer) {
 			clearTimeout(cursorExpiryTimer);
 			cursorExpiryTimer = null;
+			cursorExpiryDeadlineMs = null;
 		}
 		wasVisible = false;
 	};

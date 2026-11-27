@@ -8,7 +8,7 @@ export type ReportFormat = "html" | "json" | "both";
 export type RunnerAction = "run" | "set-baseline" | "import-history";
 export type FailOnPerformance = "none" | "suspected" | "confirmed" | "all";
 export type HistoryChannel = "normal" | "anomaly";
-export type CaseSet = "standard" | "resilience" | "boundary" | "all";
+export type CaseSet = "standard" | "resilience" | "boundary" | "sustained" | "all";
 export type SuiteId =
 	| "harness-health"
 	| "correctness-smoke"
