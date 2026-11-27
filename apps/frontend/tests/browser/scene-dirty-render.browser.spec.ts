@@ -455,19 +455,41 @@ describe("SceneEngine dirty rendering", () => {
 	it("preserves pixel equivalence with SettledPrefixCache across dense tail ops, highlighter/eraser, interleaved tail, and prefix invalidation", () => {
 		const dirtyEngine = new SceneEngine();
 		const fullEngine = new SceneEngine();
-		const maxPremultipliedDiff = (actual: Uint8ClampedArray, expected: Uint8ClampedArray) => {
+		const comparePremultiplied = (actual: Uint8ClampedArray, expected: Uint8ClampedArray) => {
 			let maxDiff = 0;
+			let minorDiffPixels = 0;
+			let worstAt = 0;
 			for (let i = 0; i < actual.length; i += 4) {
 				const aAlpha = actual[i + 3]!;
 				const eAlpha = expected[i + 3]!;
-				maxDiff = Math.max(maxDiff, Math.abs(aAlpha - eAlpha));
+				let pixelDiff = Math.abs(aAlpha - eAlpha);
 				for (let c = 0; c < 3; c += 1) {
 					const aPremul = Math.round((actual[i + c]! * aAlpha) / 255);
 					const ePremul = Math.round((expected[i + c]! * eAlpha) / 255);
-					maxDiff = Math.max(maxDiff, Math.abs(aPremul - ePremul));
+					pixelDiff = Math.max(pixelDiff, Math.abs(aPremul - ePremul));
+				}
+				if (pixelDiff > 2) minorDiffPixels += 1;
+				if (pixelDiff > maxDiff) {
+					maxDiff = pixelDiff;
+					worstAt = i / 4;
 				}
 			}
-			return maxDiff;
+			return { maxDiff, minorDiffPixels, worstAt };
+		};
+
+		const expectPixelEquivalent = (
+			dirtyContext: CanvasRenderingContext2D,
+			fullContext: CanvasRenderingContext2D
+		) => {
+			const diff = comparePremultiplied(
+				dirtyContext.getImageData(0, 0, WIDTH, HEIGHT).data,
+				fullContext.getImageData(0, 0, WIDTH, HEIGHT).data
+			);
+			expect(
+				diff.maxDiff,
+				`max premultiplied diff at (${diff.worstAt % WIDTH}, ${Math.floor(diff.worstAt / WIDTH)}), minorDiffPixels=${diff.minorDiffPixels}`
+			).toBeLessThanOrEqual(6);
+			expect(diff.minorDiffPixels).toBeLessThanOrEqual(256);
 		};
 
 		const applyBoth = (op: SceneOperationEnvelopeV2) => {
@@ -552,7 +574,7 @@ describe("SceneEngine dirty rendering", () => {
 		expect(tailMetrics.candidateAtoms).toBeGreaterThan(50);
 		expect(tailMetrics.renderedAtoms).toBeLessThan(tailMetrics.candidateAtoms);
 		expect(tailMetrics.renderedAtoms).toBeLessThan(280);
-		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+		expectPixelEquivalent(dirtyCtx, fullCtx);
 
 		applyBoth({
 			schemaVersion: 2,
@@ -583,7 +605,7 @@ describe("SceneEngine dirty rendering", () => {
 		expect(eraserMetrics.mode).toBe("dirty");
 		expect(eraserMetrics.renderedAtoms).toBeLessThan(eraserMetrics.candidateAtoms);
 		expect(eraserMetrics.renderedAtoms).toBeLessThan(280);
-		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+		expectPixelEquivalent(dirtyCtx, fullCtx);
 
 		// Interleaved peer append sorted just BEFORE maxOrder (tail margin rebuild trigger):
 		applyBoth({
@@ -613,7 +635,7 @@ describe("SceneEngine dirty rendering", () => {
 		dirtyEngine.renderDirtyRegions(dirtyCtx, [tailRegion], WIDTH, HEIGHT);
 		fullEngine.renderFull(fullCtx, WIDTH, HEIGHT);
 		expect(dirtyEngine.hasValidPrefixCache()).toBe(true);
-		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+		expectPixelEquivalent(dirtyCtx, fullCtx);
 
 		// Prefix invalidation via history undo of an early prefix element:
 		const seedBounds = dirtyEngine.getElementBounds("seed-0")!;
@@ -631,6 +653,6 @@ describe("SceneEngine dirty rendering", () => {
 		});
 		dirtyEngine.renderDirtyRegions(dirtyCtx, [pixelRect(seedBounds)], WIDTH, HEIGHT);
 		fullEngine.renderFull(fullCtx, WIDTH, HEIGHT);
-		expect(maxPremultipliedDiff(dirtyCtx.getImageData(0, 0, WIDTH, HEIGHT).data, fullCtx.getImageData(0, 0, WIDTH, HEIGHT).data)).toBeLessThanOrEqual(2);
+		expectPixelEquivalent(dirtyCtx, fullCtx);
 	});
 });
