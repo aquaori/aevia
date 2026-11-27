@@ -114,6 +114,7 @@ describe("lab evidence plans", () => {
 			"lab-inventory",
 			"external-performance-standard",
 			"external-performance-resilience",
+			"external-performance-sustained",
 			...DEFAULT_FULL_RENDER_SCALES.map(scale => `external-performance-boundary-full-render-${scale}`),
 			"external-performance-boundary-heap-growth",
 			"external-performance-boundary-redraw-freeze",
@@ -123,6 +124,7 @@ describe("lab evidence plans", () => {
 			expect.arrayContaining([
 				"performance-external-standard-gate",
 				"performance-external-resilience-gate",
+				"performance-external-sustained-gate",
 				...DEFAULT_FULL_RENDER_SCALES.map(scale => `performance-external-boundary-full-render-${scale}-gate`),
 				"performance-external-boundary-heap-growth-gate",
 				"performance-external-boundary-redraw-freeze-gate",
@@ -247,9 +249,12 @@ it("partitions Windows performance and Linux quality without dropping required e
 	const boundary = buildNightlyPlan(context({ lane: "performance-boundary" }));
 	expect(stepIds(standard)).toContain("external-performance-standard");
 	expect(stepIds(standard)).toContain("external-performance-resilience");
+	expect(stepIds(standard)).toContain("external-performance-sustained");
 	expect(stepIds(standard).some(id => id.startsWith("external-performance-boundary-"))).toBe(false);
 	expect(stepIds(boundary).filter(id => id.startsWith("external-performance-boundary-"))).toHaveLength(DEFAULT_FULL_RENDER_SCALES.length + 2);
+	expect(stepIds(boundary)).toHaveLength(DEFAULT_FULL_RENDER_SCALES.length + 2 + 8);
 	expect(stepIds(boundary)).not.toContain("external-performance-standard");
+	expect(stepIds(boundary)).not.toContain("external-performance-sustained");
 	for (const plan of [standard, boundary]) expect(plan.artifacts.every(item => stepIds(plan).includes(item.stepId))).toBe(true);
 	for (const plan of [quality, performance]) expect(plan.artifacts.every(item => stepIds(plan).includes(item.stepId))).toBe(true);
 });

@@ -93,6 +93,27 @@ export const EXTERNAL_CASES = {
 			"a client joining after an undo sees the same canvas as the original client: the undone stroke is absent and the retained stroke is present",
 		ciRequired: false,
 	},
+	sustainedStrokePerformance: {
+		id: "sustained-stroke",
+		capability: "sustained unbroken long stroke and high-frequency short stroke burst",
+		oracle:
+			"sustained drawing stays responsive across long-stroke and short-burst phases and converges with a fresh late-join reference canvas",
+		ciRequired: false,
+	},
+	multiToolCollabStress: {
+		id: "multi-tool-collab-stress",
+		capability: "multi-client multi-tool concurrent stress and visual convergence",
+		oracle:
+			"two clients concurrently drawing across pen, pencil, highlighter, shape, erase, transform, text, sticky, and undo converge with each other and a fresh observer canvas",
+		ciRequired: false,
+	},
+	richSceneJoinPerformance: {
+		id: "rich-scene-join",
+		capability: "mixed-primitive, transform, and erase-mask dense scene initialization",
+		oracle:
+			"a late joiner entering a dense mixed-tool room reaches visual stability without errors and matches a reference canvas",
+		ciRequired: false,
+	},
 } as const satisfies Record<string, ExternalCaseDefinition>;
 
 export const CI_REQUIRED_EXTERNAL_CASE_IDS = Object.values(EXTERNAL_CASES)
