@@ -24,7 +24,7 @@ func (s *Server) issueWebsocketTicket(w http.ResponseWriter, r *http.Request) {
 			fail(w, 403, "房间访问权限已失效")
 			return
 		}
-	} else if claims.Role != "" {
+	} else {
 		_, kicked, err := s.store.GuestRole(r.Context(), claims.RoomID, claims.UserID)
 		if err != nil || kicked {
 			fail(w, 403, "房间访问权限已失效")

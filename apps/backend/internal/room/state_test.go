@@ -81,6 +81,45 @@ func TestNewStateIndexesCommandsAndSeedsSequence(t *testing.T) {
 	}
 }
 
+func TestHistoryGroupOwnershipIndexTracksReplacementAndPageRemoval(t *testing.T) {
+	first := stateTestSceneOperation("one", "element.create", 0, "group", nil)
+	second := stateTestSceneOperation("two", "element.create", 1, "group", nil)
+	second.Set("userId", "user-2")
+	state := NewState(stateTestRoom(0, 2), []domain.Command{first, second})
+	if len(state.historyGroupOwners["group"]) != 2 {
+		t.Fatalf("expected mixed historical group: %+v", state.historyGroupOwners)
+	}
+	state.UpsertCommand(second)
+	if state.historyGroupOwners["group"]["user-2"] != 1 {
+		t.Fatal("replacing a command duplicated its owner count")
+	}
+	page := 1
+	state.Clear(&page)
+	if len(state.historyGroupOwners["group"]) != 1 || state.historyGroupOwners["group"]["user-1"] != 1 {
+		t.Fatalf("page removal left stale ownership: %+v", state.historyGroupOwners)
+	}
+	state.DeleteCommand("one")
+	if len(state.historyGroupOwners) != 0 {
+		t.Fatalf("delete left stale ownership: %+v", state.historyGroupOwners)
+	}
+}
+
+func TestMixedHistoricalGroupCannotBeToggled(t *testing.T) {
+	first := stateTestSceneOperation("one", "element.create", 0, "group", nil)
+	second := stateTestSceneOperation("two", "element.create", 0, "group", nil)
+	second.Set("userId", "user-2")
+	actor := &Actor{roomID: "room-1", state: NewState(stateTestRoom(0, 1), []domain.Command{first, second})}
+	out := make(chan Outbound, 1)
+	client := ClientInfo{ID: "client-1", UserID: "user-1", Send: out}
+	cmd := stateTestSceneOperation("toggle", "history.toggle", 0, "group", nil)
+	actor.handleCommandCreate(client, clientEventMessage{Type: "push-cmd", Data: map[string]any{"cmd": cmd}})
+	message := <-out
+	envelope, ok := message.JSON.(Envelope)
+	if !ok || envelope.Type != "op-rejected" || envelope.Data["code"] != "FORBIDDEN" {
+		t.Fatalf("mixed group toggle was not rejected: %+v", message)
+	}
+}
+
 func TestStateUpsertAndDeleteKeepIndexInSync(t *testing.T) {
 	state := NewState(stateTestRoom(0, 1), nil)
 	command := stateTestPathCommand("cmd-a", 1, 0,

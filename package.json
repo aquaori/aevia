@@ -7,6 +7,7 @@
     "packages/shared"
   ],
   "scripts": {
+    "test:profile": "tsx tests/run-system.ts --profile-diagnostics",
     "dev": "node scripts/dev.mjs",
     "dev:frontend": "npm run dev --workspace @collaborative-whiteboard/frontend",
     "dev:frontend:lan": "node scripts/dev-frontend.mjs",
@@ -39,6 +40,7 @@
     "test:report": "tsx tests/report/aggregate.ts",
     "lab:inventory": "node scripts/lab-inventory.mjs",
     "lab:inventory:check": "node scripts/lab-inventory.mjs --check",
+    "lab:obligations:check": "tsx scripts/ci-check-obligations.mjs",
     "lab:serve": "node scripts/lab-serve.mjs",
     "test:all:local": "tsx tests/run-system.ts --profile=standard --yes",
     "test:ci": "tsx tests/run-system.ts --profile=ci --yes",

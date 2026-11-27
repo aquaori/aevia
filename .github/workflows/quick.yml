@@ -64,3 +64,15 @@ jobs:
         env:
           CI_BASE: ${{ steps.base.outputs.sha }}
         run: node scripts/ci-changed.mjs
+      - name: Verify module obligations catalog
+        run: npm run lab:inventory:check
+      - name: Verify change test obligations
+        env:
+          CI_BASE: ${{ steps.base.outputs.sha }}
+          AEVIA_CHANGE_SUMMARY_OUTPUT: ${{ runner.temp }}/change-obligations-quick.md
+        shell: bash
+        run: |
+          npx tsx scripts/ci-check-obligations.mjs --base="$CI_BASE" --head=HEAD --markdown="$AEVIA_CHANGE_SUMMARY_OUTPUT"
+          if [ -f "$AEVIA_CHANGE_SUMMARY_OUTPUT" ]; then
+            cat "$AEVIA_CHANGE_SUMMARY_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+          fi

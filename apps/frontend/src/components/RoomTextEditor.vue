@@ -26,6 +26,8 @@
 	let styleListener: ((style: Partial<SceneElementStyle>) => void) | null = null;
 	let activeElementId: string | null = null;
 	let groupBoundaryListener: (() => void) | null = null;
+	let remoteTextListener: (() => string | null) | null = null;
+	let remoteTextPending = false;
 	let activeBox: aabbBox | null = null;
 	let getCanvasRect: (() => { left: number; top: number; width: number; height: number }) | null = null;
 	let boxListener: ((box: aabbBox) => boolean | void) | null = null;
@@ -147,6 +149,8 @@
 		styleListener = null;
 		activeElementId = null;
 		groupBoundaryListener = null;
+		remoteTextListener = null;
+		remoteTextPending = false;
 		boxListener = null;
 		resize = null;
 		window.removeEventListener("pointermove", moveResize);
@@ -186,6 +190,7 @@
 	const handleCompositionEnd = (event: CompositionEvent) => {
 		composing.value = false;
 		changeListener?.((event.target as HTMLTextAreaElement).value, "ime");
+		if (remoteTextPending) refreshRemoteText();
 	};
 
 	const open = (input: {
@@ -200,6 +205,7 @@
 		onChange?: (value: string, reason: "input" | "ime") => void;
 		onStyleChange?: (style: Partial<SceneElementStyle>) => void;
 		onGroupBoundary?: () => void;
+		onRemoteText?: () => string | null;
 		onBoxChange?: (box: aabbBox) => boolean | void;
 	}) => {
 		if (resolveRequest) resolveRequest(null);
@@ -215,6 +221,8 @@
 		styleListener = input.onStyleChange ?? null;
 		activeElementId = input.elementId;
 		groupBoundaryListener = input.onGroupBoundary ?? null;
+		remoteTextListener = input.onRemoteText ?? null;
+		remoteTextPending = false;
 		boxListener = input.onBoxChange ?? null;
 		fontFamily.value = input.initialStyle?.fontFamily ?? "Arial, sans-serif";
 		fontSize.value = input.initialStyle?.fontSize ?? 20;
@@ -233,8 +241,26 @@
 		});
 	};
 
+	const refreshRemoteText = () => {
+		remoteTextPending = false;
+		const next = remoteTextListener?.();
+		if (next == null || next === draft.value) return;
+		const old = draft.value;
+		let prefix = 0;
+		while (prefix < old.length && prefix < next.length && old[prefix] === next[prefix]) prefix++;
+		let suffix = 0;
+		while (suffix < old.length - prefix && suffix < next.length - prefix && old[old.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix++;
+		const adjust = (position: number) => position <= prefix ? position : position >= old.length - suffix ? position + next.length - old.length : prefix;
+		const start = adjust(textarea.value?.selectionStart ?? 0);
+		const end = adjust(textarea.value?.selectionEnd ?? 0);
+		draft.value = next;
+		void nextTick(() => textarea.value?.setSelectionRange(start, end));
+	};
 	const notifyRemotePatch = (elementId: string) => {
-		if (visible.value && activeElementId === elementId) groupBoundaryListener?.();
+		if (!visible.value || activeElementId !== elementId) return;
+		groupBoundaryListener?.();
+		if (composing.value) remoteTextPending = true;
+		else refreshRemoteText();
 	};
 
 	onBeforeUnmount(() => close(null));

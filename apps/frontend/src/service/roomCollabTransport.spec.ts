@@ -4,9 +4,15 @@ import { createRoomCollabTransport } from "./roomCollabTransport";
 
 const dispatcherState = vi.hoisted(() => ({ onSnapshot: (_version: number) => {} }));
 const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }));
+const pendingMock = vi.hoisted(() => new Map<string, unknown>());
 vi.mock("./roomSessionContext", () => ({ useRoomSessionEmitHook: () => () => {} }));
 vi.mock("vue-sonner", () => ({ toast: toastMock }));
 vi.mock("./sessionApi", () => ({ requestWebsocketTicket: vi.fn(async () => "ticket"), renewRoomSession: vi.fn() }));
+vi.mock("./pendingSceneStore", () => ({ PendingSceneStore: { open: async () => ({
+	load: async () => [...pendingMock.entries()],
+	put: async (id: string, value: unknown) => { pendingMock.set(id, value); },
+	delete: async (id: string) => { pendingMock.delete(id); },
+}) } }));
 vi.mock("./collabMessageDispatcher", () => ({
 	createCollabMessageDispatcher: (options: { onInitSnapshotCommitted: (version: number) => void }) => {
 		dispatcherState.onSnapshot = options.onInitSnapshotCommitted;
@@ -31,19 +37,46 @@ class FakeSocket {
 	receive(type: string, data: object) { this.onmessage?.({ data: JSON.stringify({ type, data }) }); }
 }
 
-const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer?: () => Promise<boolean>, applyLoadedPageDelta = vi.fn()) => createRoomCollabTransport({
-	token: ref("token"), sessionExpiresAt: ref(Date.now() + 3600000), userId: ref("user"), roomId: ref("room"),
+const makeTransport = (confirmInitScene: () => Promise<boolean>, recoverRenderer?: () => Promise<boolean>, applyLoadedPageDelta = vi.fn(), activePageRequest?: () => number | null) => createRoomCollabTransport({
+	token: ref(`header.${btoa(JSON.stringify({ roomId: "room", roomCreatedAt: 1, userId: "user" }))}.signature`), sessionExpiresAt: ref(Date.now() + 3600000), userId: ref("user"), roomId: ref("room"),
 	username: ref("user"), roomName: ref("room"), onlineCount: ref(1), totalPages: ref(1), loadedPageIds: ref([0]),
 	currentPageId: ref(0), currentTool: ref("pen"), reconnectFailed: ref(false), reconnectFailureMessage: ref(""),
 	commands: ref([]), currentCommandIndex: ref(-1), pendingUpdates: ref(new Map()), commandMap: new Map(),
 	memberList: ref([]), remoteCursors: ref(new Map()), remoteSelectionRects: ref(new Map()),
 	renderCanvas: vi.fn(), goToPage: vi.fn(), applyRemotePageChange: vi.fn(), setTool: vi.fn(),
 	insertCommand: vi.fn(), removeCommand: vi.fn(() => null), replaceLoadedPageWindow: vi.fn(),
-	applyLoadedPageDelta, clearClearedCommands: vi.fn(() => false), confirmInitScene, recoverRenderer,
+	applyLoadedPageDelta, clearClearedCommands: vi.fn(() => false), confirmInitScene, recoverRenderer, getActivePageChangeRequestId: activePageRequest,
 });
 
 describe("snapshot recovery cursor", () => {
-	afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeSocket.instances = []; window.history.replaceState({}, "", "/"); vi.clearAllMocks(); });
+	afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); FakeSocket.instances = []; pendingMock.clear(); window.history.replaceState({}, "", "/"); vi.clearAllMocks(); });
+
+	it("checks the worker only after the active page snapshot completes", async () => {
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const confirm = vi.fn(async () => true);
+		const transport = makeTransport(confirm, undefined, vi.fn(), () => 17);
+		await transport.connect();
+		const connection = FakeSocket.instances[0]!;
+		connection.receive("page-change-complete", { requestId: 16 });
+		expect(confirm).not.toHaveBeenCalled();
+		connection.receive("page-change-complete", { requestId: 17 });
+		expect(confirm).toHaveBeenCalledOnce();
+		transport.disconnect();
+	});
+
+	it("restores a previously unconfirmed operation and removes it after acknowledgement", async () => {
+		vi.stubGlobal("WebSocket", FakeSocket);
+		pendingMock.set("op-old", { cmd: { id: "op-old", type: "scene-op", pageId: 1, sceneOperation: { opId: "op-old" } } });
+		const transport = makeTransport(() => Promise.resolve(true));
+		await transport.connect();
+		const connection = FakeSocket.instances[0]!;
+		connection.receive("init-meta", { snapshotVersion: 42 });
+		dispatcherState.onSnapshot(42);
+		await vi.waitFor(() => expect(connection.sent.some((message) => message.includes('"op-old"'))).toBe(true));
+		connection.receive("ack.accepted", { opId: "op-old" });
+		await vi.waitFor(() => expect(pendingMock.has("op-old")).toBe(false));
+		transport.disconnect();
+	});
 
 	it("requests pre-clear history after scene confirmation and merges it only after completion", async () => {
 		vi.stubGlobal("WebSocket", FakeSocket);
@@ -115,7 +148,7 @@ describe("snapshot recovery cursor", () => {
 		second.receive("init-meta", { snapshotVersion: 43 });
 		dispatcherState.onSnapshot(43);
 		await Promise.resolve();
-		expect(second.sent.some((message) => message.includes('"op-1"'))).toBe(true);
+		await vi.waitFor(() => expect(second.sent.some((message) => message.includes('"op-1"'))).toBe(true));
 		transport.disconnect();
 	});
 
@@ -180,5 +213,122 @@ describe("snapshot recovery cursor", () => {
 		await transport.connect();
 		expect(FakeSocket.instances[1]!.url).toContain("lastRoomSeq=42");
 		transport.disconnect();
+	});
+
+	it("handles role changes, server pressure/draining, session replaced, access revoked, and member list", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const transport = makeTransport(() => Promise.resolve(true));
+		await transport.connect();
+		const conn = FakeSocket.instances[0]!;
+
+		expect(transport.send("custom-ping", { ok: true })).toBe(true);
+		transport.openMemberList();
+		expect(conn.sent.some((raw) => raw.includes("get-member-list"))).toBe(true);
+
+		conn.receive("role.current", { role: "editor" });
+		conn.receive("role.changed", { role: "viewer" });
+		expect(toastMock.info).toHaveBeenCalled();
+
+		conn.receive("server-pressure", { overloaded: true });
+		conn.receive("server.draining", {});
+		conn.receive("resync.required", { reason: "lag" });
+
+		// session.replaced marks intentional close + reconnectFailed
+		conn.receive("session.replaced", {});
+		expect(transport.isIntentionalClose.value).toBe(true);
+		transport.disconnect();
+
+		// access.revoked on a fresh connection marks intentional close
+		const transport2 = makeTransport(() => Promise.resolve(true));
+		await transport2.connect();
+		const conn2 = FakeSocket.instances[1]!;
+		conn2.receive("access.revoked", {});
+		expect(transport2.isIntentionalClose.value).toBe(true);
+		transport2.retryReconnect();
+		transport2.disconnect();
+	});
+
+	it("resumes partial page-history across transport teardown using IndexedDB cursor (H08)", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal("WebSocket", FakeSocket);
+		const backing = new Map<string, unknown>();
+		const fakeDB = {
+			objectStoreNames: { contains: () => true },
+			createObjectStore: vi.fn(),
+			transaction: () => {
+				const tx: Record<string, unknown> = {
+					oncomplete: null,
+					onerror: null,
+					objectStore: () => ({
+						get: (key: string) => {
+							const req: Record<string, unknown> = { result: backing.get(key), onsuccess: null, onerror: null };
+							queueMicrotask(() => (req.onsuccess as (() => void) | null)?.());
+							return req;
+						},
+						put: (val: unknown, key: string) => {
+							backing.set(key, structuredClone(val));
+							queueMicrotask(() => (tx.oncomplete as (() => void) | null)?.());
+						},
+						delete: (key: string) => {
+							backing.delete(key);
+							queueMicrotask(() => (tx.oncomplete as (() => void) | null)?.());
+						},
+					}),
+				};
+				return tx;
+			},
+		};
+		vi.stubGlobal("indexedDB", {
+			open: () => {
+				const req: Record<string, unknown> = { result: fakeDB, onsuccess: null, onerror: null, onupgradeneeded: null };
+				queueMicrotask(() => (req.onsuccess as (() => void) | null)?.());
+				return req;
+			},
+		});
+
+		const applyLoadedPageDelta = vi.fn();
+		const first = makeTransport(() => Promise.resolve(true), undefined, applyLoadedPageDelta);
+
+		await first.connect();
+		const conn1 = FakeSocket.instances[0]!;
+		conn1.receive("init-meta", { snapshotVersion: 9 });
+		dispatcherState.onSnapshot(9);
+		await vi.runAllTimersAsync();
+		const req1 = conn1.sent.map((raw) => JSON.parse(raw)).find((m) => m.type === "load-page-history");
+		expect(req1?.data?.cursor).toBeUndefined();
+		conn1.receive("page-history-meta", { requestId: req1.data.requestId, pageId: 0, snapshotVersion: 9, resumed: false });
+		conn1.receive("page-history-chunk", {
+			requestId: req1.data.requestId,
+			pageId: 0,
+			cursor: "hist-1",
+			commands: [{ id: "hist-1", type: "path", tool: "pen", color: "#000", size: 3, pageId: 0, lamport: 1, userId: "user", box: { minX: 0, minY: 0, maxX: 0.1, maxY: 0.1, width: 0.1, height: 0.1 } }],
+		});
+		await vi.runAllTimersAsync();
+		first.disconnect();
+
+		// Fresh transport (simulates full page reload losing memory): must resume with cursor="hist-1".
+		const second = makeTransport(() => Promise.resolve(true), undefined, applyLoadedPageDelta);
+		await second.connect();
+		const conn2 = FakeSocket.instances[1]!;
+		conn2.receive("init-meta", { snapshotVersion: 9 });
+		dispatcherState.onSnapshot(9);
+		await vi.runAllTimersAsync();
+		const req2 = conn2.sent.map((raw) => JSON.parse(raw)).find((m) => m.type === "load-page-history");
+		expect(req2?.data?.cursor).toBe("hist-1");
+		expect(req2?.data?.snapshotVersion).toBe(9);
+		conn2.receive("page-history-meta", { requestId: req2.data.requestId, pageId: 0, snapshotVersion: 9, resumed: true });
+		conn2.receive("page-history-chunk", {
+			requestId: req2.data.requestId,
+			pageId: 0,
+			cursor: "hist-2",
+			commands: [{ id: "hist-2", type: "path", tool: "pen", color: "#000", size: 3, pageId: 0, lamport: 2, userId: "user", box: { minX: 0, minY: 0, maxX: 0.2, maxY: 0.2, width: 0.2, height: 0.2 } }],
+		});
+		conn2.receive("page-history-complete", { requestId: req2.data.requestId, pageId: 0 });
+		await vi.runAllTimersAsync();
+
+		expect(applyLoadedPageDelta).toHaveBeenCalledTimes(1);
+		expect(applyLoadedPageDelta.mock.calls[0]![0].commands.map((c: { id: string }) => c.id)).toEqual(["hist-1", "hist-2"]);
+		second.disconnect();
 	});
 });

@@ -11,8 +11,22 @@ import type { LabMode, RunManifest, RunStep, ValidityReason } from "./report/con
 import { readSourceIdentity } from "./report/provenance";
 import { browserAvailability, selectedBrowser } from "./browser-launch";
 import { CI_REQUIRED_EXTERNAL_CASE_IDS } from "./catalog/external-cases";
-import { resolveOnlySelectors, resolveSinceRef, type LabResolveResult } from "./lab/resolve-only";
-import { buildLabEvidencePlan, probeGoRaceDetector, withCanvasOracle, type LabPlanContext } from "./lab/evidence-plan";
+import {
+	resolveChangeObligationPlan,
+	resolveOnlySelectors,
+	resolveSinceRef,
+	type ChangeObligationPlanResult,
+	type LabResolveResult,
+} from "./lab/resolve-only";
+import {
+	buildExternalSelectionPlans,
+	buildLabEvidencePlan,
+	externalCaseFamilyOf,
+	PR_REQUIRED_EXTERNAL_CASE_IDS,
+	probeGoRaceDetector,
+	withCanvasOracle,
+	type LabPlanContext,
+} from "./lab/evidence-plan";
 import { isLiveConsoleEnabled, startLiveConsole, type LiveConsole } from "./lab/live-console";
 import { describeSourceDrift, describeSourceDriftLines } from "./lab/source-drift";
 
@@ -36,6 +50,8 @@ type ExternalServices = {
 	frontendUrl: string;
 	apiUrl: string;
 	wsUrl: string;
+	pprofUrl?: string;
+	profileControl?: (command: "begin" | "clock" | "end", id: string) => Promise<{ remoteMs: number; beforeMs: number; afterMs: number }>;
 	stop: () => Promise<void>;
 };
 
@@ -70,7 +86,8 @@ type EvidenceStep = {
 	requiresServices?: boolean;
 	/** Restart the isolated services with a brand-new SQLite file before this step. */
 	freshServices?: boolean;
-	action?: "source-check";
+	action?: "source-check" | "change-obligations";
+	obligations?: ChangeObligationPlanResult;
 };
 
 type Answers = {
@@ -146,12 +163,12 @@ const startManagedService = (
 	name: string,
 	command: string,
 	args: string[],
-	options: { cwd: string; env: NodeJS.ProcessEnv }
+	options: { cwd: string; env: NodeJS.ProcessEnv; stdin?: boolean }
 ): ManagedService => {
 	const child = spawn(command, args, {
 		cwd: options.cwd,
 		env: options.env,
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"],
 		windowsHide: true,
 		detached: process.platform !== "win32",
 	});
@@ -234,7 +251,7 @@ const stopManagedService = async (service: ManagedService) => {
 	service.child.unref();
 };
 
-const startExternalServices = async (): Promise<ExternalServices> => {
+const startExternalServices = async (diagnostics?: { outDir: string; pprof: boolean; viteConfig?: string; goOverlay?: string; controlDir?: string }): Promise<ExternalServices> => {
 	mkdirSync(testTempDir, { recursive: true });
 	mkdirSync(path.join(canonicalRootDir, ".cache", "go-build"), { recursive: true });
 	mkdirSync(path.join(canonicalRootDir, ".cache", "go-mod"), { recursive: true });
@@ -250,6 +267,8 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 	const frontendUrl = `http://127.0.0.1:${frontendPort}`;
 	const apiUrl = `http://127.0.0.1:${backendPort}`;
 	const wsUrl = `ws://127.0.0.1:${backendPort}/ws`;
+	const pprofPort = diagnostics?.pprof ? await findAvailablePort() : undefined;
+	const pprofUrl = pprofPort ? `http://127.0.0.1:${pprofPort}/debug/pprof` : undefined;
 	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}-${randomUUID()}.sqlite`);
 	activeServicesDbPath = databasePath;
 	const backendExecutable = path.join(
@@ -263,7 +282,7 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 	};
 	const backendBuild = spawnSync(
 		"go",
-		["build", "-o", backendExecutable, "./cmd/aevia-backend"],
+		["build", ...(diagnostics?.goOverlay ? ["-overlay", diagnostics.goOverlay] : []), "-o", backendExecutable, "./cmd/aevia-backend"],
 		{
 			cwd: backendDir,
 			env: goEnv,
@@ -279,13 +298,28 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 		);
 	}
 
+	const vite = path.join(canonicalRootDir, "node_modules", "vite", "bin", "vite.js");
+	const frontendEnv = { ...process.env, BROWSERSLIST_IGNORE_OLD_DATA: "1", VITE_API_URL: apiUrl, VITE_WS_URL: wsUrl };
+	const viteConfig = diagnostics?.viteConfig ? ["--config", diagnostics.viteConfig] : [];
+	if (diagnostics) {
+		const built = spawnSync(process.execPath, [vite, "build", ...viteConfig, "--outDir", diagnostics.outDir, "--sourcemap"], {
+			cwd: frontendDir, env: frontendEnv, encoding: "utf8", timeout: 90000, windowsHide: true,
+		});
+		if (built.error || built.status !== 0) {
+			rmSync(backendExecutable, { force: true });
+			throw new Error(`Unable to build profiling frontend: ${built.error?.message || built.stderr}`);
+		}
+	}
 	const backend = startManagedService("backend", backendExecutable, [], {
 		cwd: backendDir,
+		stdin: Boolean(diagnostics?.controlDir),
 		env: {
 			...goEnv,
 			HOST: "127.0.0.1",
 			PORT: String(backendPort),
 			DB_PATH: databasePath,
+			...(diagnostics ? { PPROF_ADDR: pprofPort ? `127.0.0.1:${pprofPort}` : "" } : {}),
+			...(diagnostics?.controlDir ? { AEVIA_PROFILE_CONTROL: diagnostics.controlDir } : {}),
 			LOG_FORMAT: "console",
 			HTTP_REQUESTS_PER_SECOND: "5000",
 			HTTP_REQUESTS_BURST: "10000",
@@ -297,23 +331,15 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 		"frontend",
 		process.execPath,
 		[
-			path.join(canonicalRootDir, "node_modules", "vite", "bin", "vite.js"),
-			"--force",
+			vite,
+			...(diagnostics ? ["preview", ...viteConfig, "--outDir", diagnostics.outDir] : ["--force"]),
 			"--host",
 			"127.0.0.1",
 			"--port",
 			String(frontendPort),
 			"--strictPort",
 		],
-		{
-			cwd: frontendDir,
-			env: {
-				...process.env,
-				BROWSERSLIST_IGNORE_OLD_DATA: "1",
-				VITE_API_URL: apiUrl,
-				VITE_WS_URL: wsUrl,
-			},
-		}
+		{ cwd: frontendDir, env: frontendEnv }
 	);
 	const managedServices = [frontend, backend];
 	let stopped = false;
@@ -335,7 +361,26 @@ const startExternalServices = async (): Promise<ExternalServices> => {
 			// Other test runs may still own files in this directory.
 		}
 	};
-	const services = { frontendUrl, apiUrl, wsUrl, stop };
+	const profileControl: ExternalServices["profileControl"] = diagnostics?.controlDir ? (command, id) => new Promise((resolve, reject) => {
+		const output = backend.child.stdout!;
+		const beforeMs = performance.now();
+		let received = "";
+		const finish = () => { clearTimeout(timer); output.off("data", receive); };
+		const receive = (chunk: Buffer) => {
+			received += chunk.toString();
+			const match = received.match(new RegExp(`^AEVIA_PROFILE ${id} ([0-9.]+) (true|false)\\r?$`, "m"));
+			if (!match) return;
+			finish();
+			if (match[2] === "true") resolve({ remoteMs: Number(match[1]), beforeMs, afterMs: performance.now() });
+			else reject(new Error(`Go profiler could not persist ${id}`));
+		};
+		const timer = setTimeout(() => { finish(); reject(new Error("Go profiler control timeout")); }, 3000);
+		output.on("data", receive);
+		backend.child.stdin!.write(`${command} ${id}\n`, error => {
+			if (error) { finish(); reject(error); }
+		});
+	}) : undefined;
+	const services = { frontendUrl, apiUrl, wsUrl, pprofUrl, profileControl, stop };
 	activeExternalServices = services;
 
 	try {
@@ -806,7 +851,14 @@ const listCoverageSources = () => {
 	return files.sort();
 };
 
-const managedEvidencePlan = (profile: "quick" | "ci" | "full", runDir: string, runId: string, source: RunManifest["source"]) => {
+const managedEvidencePlan = (
+	profile: "quick" | "ci" | "full",
+	runDir: string,
+	runId: string,
+	source: RunManifest["source"],
+	extraExternalCaseIds: string[] = [],
+) => {
+	const ciExternalCaseIds = [...new Set([...CI_REQUIRED_EXTERNAL_CASE_IDS, ...extraExternalCaseIds])];
 	const frontendReport = path.join(runDir, "frontend", "vitest.json");
 	const browserReport = path.join(runDir, "frontend", "browser.json");
 	const coverageDir = path.join(runDir, "frontend", "coverage");
@@ -839,7 +891,7 @@ const managedEvidencePlan = (profile: "quick" | "ci" | "full", runDir: string, r
 				stepId: "external-e2e",
 				kind: "external",
 				path: "external/correctness-full-external-results.json",
-				expectedCases: CI_REQUIRED_EXTERNAL_CASE_IDS,
+				expectedCases: ciExternalCaseIds,
 			},
 			{
 				id: "external-correctness-gate",
@@ -910,7 +962,7 @@ const managedEvidencePlan = (profile: "quick" | "ci" | "full", runDir: string, r
 				id: "external-e2e",
 				title: "External correctness E2E",
 				description: "Running the CI-required correctness subset in the selected browser against isolated services.",
-				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=correctness-full --case-ids=${CI_REQUIRED_EXTERNAL_CASE_IDS.join(",")} --mode=headless --reporter=json --report-dir=${shellQuote(externalDir)}`,
+				command: `${shellQuote(process.execPath)} ${shellQuote(path.join(canonicalRootDir, "node_modules", "tsx", "dist", "cli.mjs"))} tests/e2e/external/runner.ts --suite=correctness-full --case-ids=${ciExternalCaseIds.join(",")} --mode=headless --reporter=json --report-dir=${shellQuote(externalDir)}`,
 				cwd: frontendDir,
 				requiresServices: true,
 				timeoutMs: 600000,
@@ -1095,7 +1147,25 @@ const runEvidenceStep = async (
 	let timedOut = false;
 
 	try {
-		if (step.action === "source-check") {
+		if (step.action === "change-obligations") {
+			const obligationResult = step.obligations;
+			if (!obligationResult) throw new Error("Missing change obligation analysis context");
+			const reportPath = path.join(runDir, "catalog", "change-obligations.json");
+			const markdownPath = path.join(runDir, "change-obligations.md");
+			mkdirSync(path.dirname(reportPath), { recursive: true });
+			writeFileSync(reportPath, `${JSON.stringify(obligationResult.analysis.report, null, 2)}\n`, "utf8");
+			writeFileSync(markdownPath, `${obligationResult.analysis.markdown}\n`, "utf8");
+			if (process.env.AEVIA_CHANGE_SUMMARY_OUTPUT) {
+				mkdirSync(path.dirname(process.env.AEVIA_CHANGE_SUMMARY_OUTPUT), { recursive: true });
+				writeFileSync(process.env.AEVIA_CHANGE_SUMMARY_OUTPUT, `${obligationResult.analysis.markdown}\n`, "utf8");
+			}
+			stdout = `${obligationResult.analysis.markdown}\n`;
+			if (!obligationResult.analysis.report.passed) {
+				throw new Error(
+					obligationResult.analysis.report.violations.map((v) => `[${v.code}] ${v.path}: ${v.message}`).join("\n"),
+				);
+			}
+		} else if (step.action === "source-check") {
 			const source = readSourceIdentity(canonicalRootDir);
 			const before = {
 				revision: manifest.source.revision,
@@ -1117,7 +1187,7 @@ const runEvidenceStep = async (
 			if (step.freshServices) await resetExternalServices();
 			else if (step.requiresServices && !activeExternalServices) await startExternalServices();
 			const childEnv: NodeJS.ProcessEnv = { ...process.env, ...step.env, AEVIA_TEST_RUN_ID: manifest.runId, FORCE_COLOR: "0" };
-			if (step.id === "browser-test") childEnv.AEVIA_TEST_BROWSER_PORT = String(await findAvailablePort());
+			if (step.id === "browser-test" || step.id.startsWith("browser-test-")) childEnv.AEVIA_TEST_BROWSER_PORT = String(await findAvailablePort());
 			const child = spawn(step.command || "", {
 				cwd: step.cwd || rootDir,
 				shell: true,
@@ -1234,10 +1304,61 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 	const raceCapability = profile === "nightly" && !lane.startsWith("performance") ? probeGoRaceDetector(backendDir) : undefined;
 	planContext.goRaceSupported = raceCapability?.supported ?? false;
 	planContext.goRaceRequired = process.env.CI === "true" && process.platform === "linux";
+	const changeBaseSha = argValue("base") || process.env.CI_BASE || undefined;
+	const changeHeadSha = argValue("head") || process.env.CI_HEAD || "HEAD";
+	const obligationPlan =
+		(profile === "ci" || profile === "pr") && changeBaseSha
+			? resolveChangeObligationPlan({
+					rootDir: canonicalRootDir,
+					baseSha: changeBaseSha,
+					headSha: changeHeadSha,
+					isCoreRun: profile === "ci",
+					fixedExternalCaseIds: profile === "ci" ? CI_REQUIRED_EXTERNAL_CASE_IDS : PR_REQUIRED_EXTERNAL_CASE_IDS,
+				})
+			: undefined;
+	const extraCorrectnessIds = (obligationPlan?.extraExternalCaseIds ?? []).filter(
+		(id) => externalCaseFamilyOf(id) === "correctness",
+	);
+	const extraSuiteExternalIds = (obligationPlan?.extraExternalCaseIds ?? []).filter(
+		(id) => externalCaseFamilyOf(id) !== "correctness",
+	);
 	const basePlan = isCoreProfile(profile)
-		? managedEvidencePlan(profile, runDir, runId, source)
-		: buildLabEvidencePlan(profile, planContext, options.selection);
+		? managedEvidencePlan(profile, runDir, runId, source, extraCorrectnessIds)
+		: buildLabEvidencePlan(profile, planContext, obligationPlan?.selection ?? options.selection);
 	const { steps, artifacts } = profile === "ci" || profile === "full" || profile === "nightly" ? withCanvasOracle(basePlan, planContext) : basePlan;
+	if (isCoreProfile(profile) && extraSuiteExternalIds.length > 0) {
+		const extraPlan = buildExternalSelectionPlans(planContext, extraSuiteExternalIds, undefined, "external-extra");
+		const sourceCheckIndex = steps.findIndex((step) => step.id === "source-check");
+		steps.splice(sourceCheckIndex < 0 ? steps.length : sourceCheckIndex, 0, ...extraPlan.steps);
+		artifacts.push(...extraPlan.artifacts);
+	}
+	if (obligationPlan) {
+		const initialSummary = obligationPlan.analysis.report.summary;
+		const initialLine = `0/${initialSummary.selectedCount}|${initialSummary.changedSources}|${initialSummary.newUncovered}|${initialSummary.historicalDebt}`;
+		if (process.env.AEVIA_CHANGE_SUMMARY_OUTPUT) {
+			mkdirSync(path.dirname(process.env.AEVIA_CHANGE_SUMMARY_OUTPUT), { recursive: true });
+			writeFileSync(process.env.AEVIA_CHANGE_SUMMARY_OUTPUT, `${obligationPlan.analysis.markdown}\n`, "utf8");
+		}
+		if (process.env.AEVIA_CHANGE_SUMMARY_LINE_OUTPUT) {
+			mkdirSync(path.dirname(process.env.AEVIA_CHANGE_SUMMARY_LINE_OUTPUT), { recursive: true });
+			writeFileSync(process.env.AEVIA_CHANGE_SUMMARY_LINE_OUTPUT, `${initialLine}\n`, "utf8");
+		}
+		const buildIdx = steps.findIndex((step) => step.id === "build");
+		const insertIdx = buildIdx >= 0 ? buildIdx + 1 : 0;
+		steps.splice(insertIdx, 0, {
+			id: "change-obligations",
+			title: "Change test obligations",
+			description: "Verifying modified sources bind valid test evidence and preparing change summary.",
+			action: "change-obligations",
+			obligations: obligationPlan,
+		});
+		artifacts.push({
+			id: "change-obligations",
+			stepId: "change-obligations",
+			kind: "change-obligations",
+			path: "catalog/change-obligations.json",
+		});
+	}
 	if (isCoreProfile(profile) && planContext.perfRequest) {
 		steps.splice(steps.length - 1, 0, { id: "perf-request", title: "Performance gate request", description: "Recording an optional performance request.", command: `node scripts/write-perf-request.mjs ${shellQuote(path.join(runDir, "perf-request.json"))}`, cwd: canonicalRootDir });
 		artifacts.push({ id: "perf-request", stepId: "perf-request", kind: "perf-request", path: "perf-request.json" });
@@ -1352,6 +1473,28 @@ const runEvidenceProfile = async (profile: ManagedProfile, options: ManagedRunOp
 			importHistoryFromReport(payload.config, reportPath);
 		}
 		report = writeAggregateReport(manifestPath);
+		if (obligationPlan) {
+			const obligationArtifact = report.artifacts.find((item) => item.id === "change-obligations");
+			const passedTargets = obligationArtifact?.status === "passed" ? obligationArtifact.passed : 0;
+			const summary = obligationPlan.analysis.report.summary;
+			const summaryLine = `${passedTargets}/${summary.selectedCount}|${summary.changedSources}|${summary.newUncovered}|${summary.historicalDebt}`;
+			manifest.changeObligations = {
+				baseSha: obligationPlan.analysis.report.baseSha,
+				headSha: obligationPlan.analysis.report.headSha,
+				passed: report.status === "passed" && obligationArtifact?.status === "passed",
+				changedSources: summary.changedSources,
+				selectedCount: summary.selectedCount,
+				historicalDebt: summary.historicalDebt,
+				summaryLine,
+			};
+			persistManifest(manifestPath, manifest);
+			writeFileSync(path.join(runDir, "change-obligations-summary.txt"), `${summaryLine}\n`, "utf8");
+			if (process.env.AEVIA_CHANGE_SUMMARY_LINE_OUTPUT) {
+				mkdirSync(path.dirname(process.env.AEVIA_CHANGE_SUMMARY_LINE_OUTPUT), { recursive: true });
+				writeFileSync(process.env.AEVIA_CHANGE_SUMMARY_LINE_OUTPUT, `${summaryLine}\n`, "utf8");
+			}
+			report = writeAggregateReport(manifestPath);
+		}
 		print(`Report: ${path.join(runDir, "test-report.html")}`);
 		print(`Measurement: ${manifest.validity.status}${manifest.validity.aborted ? " (aborted)" : ""}${manifest.recorded ? "" : " · not recorded"}`);
 		print(`Result: ${report.status}; ${report.failures.length} evidence issue(s)`);
@@ -1510,6 +1653,15 @@ const buildManagedRunOptions = (profile: ManagedProfile): ManagedRunOptions & { 
 };
 
 const main = async () => {
+	if (hasArg("profile-diagnostics")) {
+		const { runDiagnostics } = await import("./profile/run");
+		try {
+			await runDiagnostics(canonicalRootDir, startExternalServices);
+		} finally {
+			await stopExternalServices();
+		}
+		return;
+	}
 	if (process.argv.some(arg => arg === "--from-step" || arg.startsWith("--from-step="))) throw new Error("Checkpoint resume is not implemented; use an explicit case or scenario rerun");
 	if (hasArg("doctor")) {
 		runDoctor();

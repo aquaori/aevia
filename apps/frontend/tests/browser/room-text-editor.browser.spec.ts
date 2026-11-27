@@ -4,6 +4,23 @@ import { describe, expect, it, vi } from "vitest";
 import RoomTextEditor from "../../src/components/RoomTextEditor.vue";
 
 describe("RoomTextEditor canvas placement", () => {
+	it("refreshes remote text without interrupting an IME composition", async () => {
+		const wrapper = mount(RoomTextEditor, { attachTo: document.body });
+		const onRemoteText = vi.fn(() => "你好 B");
+		const onChange = vi.fn();
+		void wrapper.vm.open({ kind: "text", elementId: "shared", box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 }, initialText: "你好", onRemoteText, onChange });
+		await nextTick();
+		const input = document.querySelector<HTMLTextAreaElement>("textarea")!;
+		input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+		wrapper.vm.notifyRemotePatch("shared");
+		expect(onRemoteText).not.toHaveBeenCalled();
+		input.value = "你好";
+		input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+		await nextTick();
+		expect(onChange).toHaveBeenCalledWith("你好", "ime");
+		expect(input.value).toBe("你好 B");
+		wrapper.unmount();
+	});
 	it("uses the canvas rectangle and keeps the requested text bounds", async () => {
 		const wrapper = mount(RoomTextEditor, { attachTo: document.body });
 		let canvasRect = { left: 80, top: 40, width: 800, height: 400 };
@@ -95,6 +112,35 @@ describe("RoomTextEditor canvas placement", () => {
 		await gesture("pointercancel");
 		expect(parseFloat(shell.style.width)).toBeCloseTo(160);
 		expect(onBoxChange).toHaveBeenCalledOnce();
+		wrapper.unmount();
+	});
+
+	it("applies remote undo/delete patch cleanly after IME composition finishes (H55/H58)", async () => {
+		const wrapper = mount(RoomTextEditor, { attachTo: document.body });
+		let remoteState = "Hello";
+		const onRemoteText = vi.fn(() => remoteState);
+		const onChange = vi.fn();
+		void wrapper.vm.open({
+			kind: "text",
+			elementId: "shared-undo",
+			box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 },
+			initialText: "Hello",
+			onRemoteText,
+			onChange,
+		});
+		await nextTick();
+		const input = document.querySelector<HTMLTextAreaElement>("textarea")!;
+		input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+		remoteState = "Hello world";
+		wrapper.vm.notifyRemotePatch("shared-undo");
+		remoteState = "Hell";
+		wrapper.vm.notifyRemotePatch("shared-undo");
+		expect(onRemoteText).not.toHaveBeenCalled();
+		input.value = "Hello中";
+		input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+		await nextTick();
+		expect(onChange).toHaveBeenCalledWith("Hello中", "ime");
+		expect(input.value).toBe("Hell");
 		wrapper.unmount();
 	});
 });

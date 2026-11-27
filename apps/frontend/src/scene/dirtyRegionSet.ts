@@ -3,9 +3,9 @@ import type { AabbBox } from "@collaborative-whiteboard/shared";
 
 const MAX_DIRTY_RECTS = 8;
 const FULL_AREA_RATIO = 0.35;
-const FULL_CANDIDATE_RATIO = 0.4;
+const FULL_CANDIDATE_RATIO = 0.7;
 const EXIT_FULL_AREA_RATIO = 0.25;
-const EXIT_FULL_CANDIDATE_RATIO = 0.3;
+const EXIT_FULL_CANDIDATE_RATIO = 0.6;
 
 const intersects = (left: AabbBox, right: AabbBox) =>
 	!(left.maxX < right.minX || left.minX > right.maxX || left.maxY < right.minY || left.minY > right.maxY);
@@ -29,6 +29,8 @@ export class DirtyRegionSet {
 			if (!intersects(current, region)) continue;
 			current = merge(current, region);
 			this.regions.splice(index, 1);
+			// The enlarged bounds can now overlap an already inspected region.
+			index = this.regions.length;
 		}
 		this.regions.push(current);
 		if (this.regions.length > MAX_DIRTY_RECTS) this.overflowed = true;

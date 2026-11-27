@@ -3,7 +3,7 @@ import type { AabbBox } from "@collaborative-whiteboard/shared";
 
 const GRID_SIZE = 32;
 const MAX_CHUNK_ATOMS = 64;
-const MAX_CHUNK_CELLS = 8;
+const MAX_CHUNK_CELLS = 16;
 const LARGE_CHUNK_CELLS = 64;
 
 interface GeometryChunk {
@@ -54,8 +54,9 @@ export class SpatialGridIndex {
 			const addedCells = atomCells.filter((cellId) => !chunk!.cellIds.includes(cellId));
 			if (chunk.atomRefs.length < MAX_CHUNK_ATOMS && chunk.cellIds.length + addedCells.length <= MAX_CHUNK_CELLS) {
 				chunk.atomRefs.push(atomRef);
-				if (addedCells.length > 0) {
-					this.updateChunkCells(chunk, [...chunk.cellIds, ...addedCells]);
+				for (const cellId of addedCells) {
+					chunk.cellIds.push(cellId);
+					this.buckets[cellId]!.push(chunk.id);
 				}
 				return;
 			}
@@ -70,14 +71,15 @@ export class SpatialGridIndex {
 	query(bounds: AabbBox) {
 		this.nextGeneration();
 		const chunkIds: number[] = [];
-		for (const cellId of cellsForBounds(bounds)) {
+		const cells = cellsForBounds(bounds);
+		for (const cellId of cells) {
 			for (const chunkId of this.buckets[cellId]!) this.addCandidate(chunkId, chunkIds);
 		}
 		for (const chunkId of this.largeChunkIds) this.addCandidate(chunkId, chunkIds);
 		return {
 			chunkIds,
 			atomRefs: chunkIds.flatMap((chunkId) => this.chunks[chunkId]?.atomRefs ?? []),
-			gridCells: cellsForBounds(bounds).length,
+			gridCells: cells.length,
 		};
 	}
 

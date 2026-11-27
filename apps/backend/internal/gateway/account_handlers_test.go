@@ -125,6 +125,78 @@ func TestRoomOwnerManagesMembers(t *testing.T) {
 	}
 }
 
+func TestRevokedRoomSessionsCannotAccessRoomHTTP(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "revocationowner", "password": "password123"}, "")
+	ownerToken := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777019", "roomName": "Room"}, ownerToken)
+	_, member := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "revokedmember", "password": "password123"}, "")
+	memberToken := member.Data["token"].(string)
+	memberID := member.Data["account"].(map[string]any)["id"].(string)
+	_, joined := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777019"}, memberToken)
+	roomToken := joined.Data["sessionToken"].(string)
+	if status, _ := do(t, server, "GET", "/get-page-review", nil, roomToken); status != http.StatusOK {
+		t.Fatalf("member cannot access room before revocation: %d", status)
+	}
+	if status, _ := do(t, server, "POST", "/v2/rooms/777019/members/"+memberID+"/kick", nil, ownerToken); status != http.StatusOK {
+		t.Fatalf("kick: %d", status)
+	}
+	for _, endpoint := range []struct{ method, path string }{{"GET", "/get-page-review"}, {"POST", "/renew-room-session"}} {
+		if status, _ := do(t, server, endpoint.method, endpoint.path, nil, roomToken); status != http.StatusForbidden {
+			t.Errorf("revoked session accessed %s: %d", endpoint.path, status)
+		}
+	}
+	_, guest := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777019", "userName": "游客"}, "")
+	guestToken := guest.Data["sessionToken"].(string)
+	claims, err := auth.NewTokenService("test-secret").Verify(guestToken, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := do(t, server, "POST", "/v2/rooms/777019/guests/"+claims.UserID, map[string]any{"action": "kick"}, ownerToken); status != http.StatusOK {
+		t.Fatalf("kick guest: %d", status)
+	}
+	for _, endpoint := range []struct{ method, path string }{{"GET", "/get-page-review"}, {"POST", "/renew-room-session"}} {
+		if status, _ := do(t, server, endpoint.method, endpoint.path, nil, guestToken); status != http.StatusForbidden {
+			t.Errorf("revoked guest accessed %s: %d", endpoint.path, status)
+		}
+	}
+}
+
+func TestHistoryGroupCannotBeSharedAcrossUsers(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "groupowner", "password": "password123"}, "")
+	ownerToken := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777020", "roomName": "Room"}, ownerToken)
+	_, ownerJoin := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777020"}, ownerToken)
+	ownerRoomToken := ownerJoin.Data["sessionToken"].(string)
+	ownerClaims, err := auth.NewTokenService("test-secret").Verify(ownerRoomToken, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerConn := dialGatewayWebsocket(t, server, ownerRoomToken)
+	defer ownerConn.Close(websocket.StatusNormalClosure, "")
+	readGatewayWSType(t, ownerConn, "init-complete")
+	writeGatewayWSJSON(t, ownerConn, testScenePush("owner-stroke", ownerClaims.UserID, "777020"))
+	readGatewayWSType(t, ownerConn, "ack.accepted")
+	_, guest := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777020", "userName": "游客"}, "")
+	guestToken := guest.Data["sessionToken"].(string)
+	guestClaims, err := auth.NewTokenService("test-secret").Verify(guestToken, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestConn := dialGatewayWebsocket(t, server, guestToken)
+	defer guestConn.Close(websocket.StatusNormalClosure, "")
+	readGatewayWSType(t, guestConn, "init-complete")
+	msg := testScenePush("guest-stroke", guestClaims.UserID, "777020")
+	op := msg["data"].(map[string]any)["cmd"].(map[string]any)["sceneOperation"].(map[string]any)
+	op["historyGroupId"] = "history-owner-stroke"
+	writeGatewayWSJSON(t, guestConn, msg)
+	result := readGatewayWSEnvelope(t, guestConn)
+	if result.Type != "op-rejected" || result.Data["code"] != "FORBIDDEN" {
+		t.Fatalf("cross-user history group accepted: type=%s data=%+v", result.Type, result.Data)
+	}
+}
+
 func TestInviteCanBeRevoked(t *testing.T) {
 	server := newTestServer(t)
 	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "inviter", "password": "password123"}, "")
@@ -232,6 +304,31 @@ func TestGuestViewerCannotWrite(t *testing.T) {
 	writeGatewayWSJSON(t, conn, testScenePush("viewer-stroke", claims.UserID, "777008"))
 	if message := readGatewayWSType(t, conn, "op-rejected"); message.Data["code"] != "FORBIDDEN" {
 		t.Fatalf("viewer write rejection: %+v", message.Data)
+	}
+}
+
+func TestReconnectReceivesCurrentRoomRole(t *testing.T) {
+	server := newTestServer(t)
+	_, owner := do(t, server, "POST", "/v2/auth/register", map[string]any{"username": "rolesyncowner", "password": "password123"}, "")
+	ownerToken := owner.Data["token"].(string)
+	do(t, server, "POST", "/v2/rooms", map[string]any{"roomId": "777030", "roomName": "Room"}, ownerToken)
+	_, guest := do(t, server, "POST", "/join-room", map[string]any{"roomId": "777030", "userName": "Guest"}, "")
+	guestToken := guest.Data["sessionToken"].(string)
+	claims, err := auth.NewTokenService("test-secret").Verify(guestToken, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/v2/rooms/777030/guests/" + claims.UserID
+	for _, role := range []string{"viewer", "editor"} {
+		if status, _ := do(t, server, "POST", path, map[string]any{"action": role}, ownerToken); status != 200 {
+			t.Fatalf("set %s: %d", role, status)
+		}
+		conn := dialGatewayWebsocket(t, server, guestToken)
+		msg := readGatewayWSType(t, conn, "role.current")
+		if msg.Data["role"] != role {
+			t.Fatalf("got role %v, want %s", msg.Data["role"], role)
+		}
+		conn.Close(websocket.StatusNormalClosure, "")
 	}
 }
 

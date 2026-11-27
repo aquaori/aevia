@@ -94,6 +94,7 @@ const createFixture = () => {
 		cancelRejectedOperation: vi.fn(),
 		notifyRemoteTextPatch: vi.fn(),
 		onInitConnectionState: vi.fn(),
+		onLegacyPageChangeCommitted: vi.fn(),
 		onInitStreamInvalid: vi.fn(),
 		emitHook: vi.fn(),
 	};
@@ -169,10 +170,37 @@ describe("collab command handlers", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("confirms a legacy page snapshot only after its last chunk arrives", () => {
+		const fixture = createFixture();
+		fixture.getActivePageChangeRequestId.mockReturnValue(7);
+		fixture.handlers.handlePageChangeMeta(message("page-change-meta", {
+			requestId: 7, pageId: 1, loadedPageIds: [1], loadPageIds: [1], snapshotVersion: 2,
+			chunkSummary: { totalChunks: 1 },
+		}));
+		fixture.handlers.handlePageChangeDone(message("page-change-done", { requestId: 7, snapshotVersion: 2 }));
+		expect(fixture.options.onLegacyPageChangeCommitted).not.toHaveBeenCalled();
+		fixture.handlers.handlePageChangeChunk(message("page-change-chunk", { requestId: 7, snapshotVersion: 2, chunkIndex: 0, commands: [] }));
+		expect(fixture.options.onLegacyPageChangeCommitted).toHaveBeenCalledOnce();
+		expect(fixture.options.finishInitRenderStream).toHaveBeenCalledBefore(fixture.options.onLegacyPageChangeCommitted);
+	});
+
 	it("advances the clock from a remote command when the envelope has no lamport", () => {
 		const fixture = createFixture();
 		fixture.handlers.handlePushCommand(message("push-cmd", { cmd: createIncomingCommand({ lamport: 42 }) }, "normal"));
 		expect(useLamportStore().getNextLamport()).toBe(43);
+	});
+
+	it("notifies the editor when a remote history toggle changes text", () => {
+		const fixture = createFixture();
+		const common = { schemaVersion: 2 as const, roomId: "r1", pageId: 0, actorId: "u2", elementId: "text", lamport: 1 };
+		fixture.commands.value = [createIncomingCommand({ id: "patch", type: "scene-op", sceneOperation: {
+			...common, opId: "patch", kind: "text.patch", historyGroupId: "group", payload: { patches: [] },
+		} })];
+		const toggle = createIncomingCommand({ id: "toggle", type: "scene-op", sceneOperation: {
+			...common, opId: "toggle", kind: "history.toggle", historyGroupId: "toggle", payload: { targetHistoryGroupId: "group", enabled: false },
+		} });
+		fixture.handlers.handlePushCommand(message("push-cmd", { cmd: toggle }, "normal"));
+		expect(fixture.options.notifyRemoteTextPatch).toHaveBeenCalledExactlyOnceWith("text");
 	});
 
 	it("advances init-meta -> render chunks -> commands -> complete in order", () => {
@@ -192,12 +220,13 @@ describe("collab command handlers", () => {
 
 		finishInitCommandsStream(fixture);
 		expect(fixture.options.renderCanvas).not.toHaveBeenCalled();
+		expect(fixture.options.setInitSceneOperations).not.toHaveBeenCalled();
 		fixture.handlers.handleInitComplete(message("init-complete", { snapshotVersion: 1 }));
 		expect(fixture.options.replaceLoadedPageWindow).toHaveBeenCalledWith(
 			[0],
 			expect.arrayContaining([expect.objectContaining({ id: "cmd-1" })])
 		);
-		expect(fixture.options.setInitSceneOperations).toHaveBeenCalled();
+		expect(fixture.options.setInitSceneOperations).toHaveBeenCalledOnce();
 		expect(fixture.options.renderCanvas).toHaveBeenCalledOnce();
 
 		fixture.handlers.handlePushCommand(
@@ -210,6 +239,20 @@ describe("collab command handlers", () => {
 			command: expect.objectContaining({ id: "cmd-after-init" }),
 			source: "remote",
 		});
+	});
+
+	it("accepts the command chunk count after the render stream", () => {
+		const fixture = createFixture();
+		fixture.handlers.handleInitMeta(message("init-meta", {
+			snapshotVersion: 1, pageId: 0, totalPage: 1, loadedPageIds: [0],
+			chunkSummary: { totalRenderChunks: 0 },
+		}));
+		fixture.handlers.handleInitRenderDone(message("init-render-done", { snapshotVersion: 1, totalChunks: 0 }));
+		fixture.handlers.handleInitCommandsMeta(message("init-commands-meta", { snapshotVersion: 1, loadedPageIds: [0], totalChunks: 0 }));
+		fixture.handlers.handleInitCommandsDone(message("init-commands-done", { snapshotVersion: 1, totalChunks: 0 }));
+		fixture.handlers.handleInitComplete(message("init-complete", { snapshotVersion: 1 }));
+		expect(fixture.options.onInitStreamInvalid).not.toHaveBeenCalled();
+		expect(fixture.options.replaceLoadedPageWindow).toHaveBeenLastCalledWith([0], []);
 	});
 
 	it("keeps an early init-complete pending and buffers live commands until chunks settle", () => {
@@ -531,5 +574,55 @@ describe("collab command handlers", () => {
 
 		expect(fixture.options.applyRemotePageChange).toHaveBeenCalledTimes(2);
 		expect(fixture.options.beginInitRenderStream).toHaveBeenLastCalledWith(1);
+	});
+
+	it("handles push update/stop, clear, page-add, undo/redo, delete, and operation rejections", () => {
+		vi.useFakeTimers();
+		const fixture = createFixture();
+
+		// Push update -> buffered -> stop flushes
+		const startCmd = createIncomingCommand({ id: "stroke-r1", type: "path", lamport: 10 });
+		fixture.options.pendingUpdates.value.set("stroke-r1", [{ x: 0.1, y: 0.1, p: 0.5, lamport: 10 }]);
+		fixture.handlers.handlePushCommand(message("push-cmd", { cmd: startCmd, lamport: 10 }, "start"));
+		fixture.options.commandMap.set("stroke-r1", startCmd);
+
+		fixture.handlers.handlePushCommand(
+			message("push-cmd", { cmdId: "stroke-r1", lamport: 11, points: [{ x: 0.2, y: 0.2, p: 0.6, lamport: 11 }] }, "update"),
+		);
+		vi.advanceTimersByTime(32);
+		fixture.handlers.handlePushCommand(
+			message("push-cmd", { cmdId: "stroke-r1", lamport: 12, points: [{ x: 0.3, y: 0.3, p: 0.7, lamport: 12 }] }, "stop"),
+		);
+		expect(fixture.options.finishIncrementalCommand).toHaveBeenCalled();
+
+		// Clear command
+		fixture.options.clearClearedCommands.mockReturnValue(true);
+		fixture.handlers.handlePushCommand(
+			message("push-cmd", { cmd: createIncomingCommand({ id: "clr-1", type: "clear", pageId: 0 }), username: "Bob", lamport: 13 }, "normal"),
+		);
+		expect(toastMock.info).toHaveBeenCalled();
+
+		// Page add
+		fixture.handlers.handlePageAdd(message("cmd-page-add", { totalPages: 4, userId: "u1", username: "Alice" }));
+		expect(fixture.options.totalPages.value).toBe(4);
+		expect(fixture.options.goToPage).toHaveBeenCalledWith(3);
+
+		// Undo & redo existing command
+		fixture.handlers.handleUndoRedo(message("undo-cmd", { cmdId: "stroke-r1" }));
+		expect(startCmd.isDeleted).toBe(true);
+		fixture.handlers.handleUndoRedo(message("redo-cmd", { cmd: { ...startCmd, isDeleted: false } }));
+		expect(startCmd.isDeleted).toBe(false);
+
+		// Delete command
+		fixture.options.removeCommand.mockReturnValueOnce(startCmd);
+		fixture.handlers.handleDeleteCommand(message("delete-cmd", { cmdId: "stroke-r1" }));
+		expect(fixture.options.removeCommandState).toHaveBeenCalledWith("stroke-r1");
+
+		// Operation rejections
+		fixture.options.removeCommand.mockReturnValueOnce(startCmd);
+		fixture.handlers.handleOperationRejected(message("op-rejected", { opType: "cmd-start", cmdId: "stroke-r1", reason: "Forbidden", code: "FORBIDDEN" }));
+		fixture.handlers.handleOperationRejected(message("op-rejected", { opType: "undo-cmd", cmdId: "stroke-r1", reason: "Bad undo" }));
+		expect(toastMock.error).toHaveBeenCalled();
+		vi.useRealTimers();
 	});
 });

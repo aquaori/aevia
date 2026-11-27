@@ -96,7 +96,22 @@ func validateSceneCommand(c *wsClient, typ string, data map[string]any) (string,
 	if !ok {
 		return "INVALID_SCENE_OPERATION", "Scene operation payload is missing.", false
 	}
-	return validateScenePayload(kind, payload)
+	if code, reason, ok := validateScenePayload(kind, payload); !ok {
+		return code, reason, false
+	}
+	if kind == "page.clear" {
+		before := payload["before"].(map[string]any)
+		beforeLamport, _ := finiteNumber(before["lamport"])
+		beforeID := stringValue(before["opId"])
+		opID := stringValue(op["opId"])
+		sourceIndex, _ := finiteNumber(before["sourceIndex"])
+		subIndex, _ := finiteNumber(before["subIndex"])
+		if beforeLamport > lamport || (beforeLamport == lamport && (beforeID > opID ||
+			(beforeID == opID && (sourceIndex > 0 || (sourceIndex == 0 && subIndex > 0))))) {
+			return "INVALID_SCENE_OPERATION", "Page clear cannot hide future operations.", false
+		}
+	}
+	return "", "", true
 }
 
 func validateScenePayload(kind string, payload map[string]any) (string, string, bool) {

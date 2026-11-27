@@ -9,6 +9,7 @@ Root:
 
 - `vitest.config.ts`: Vitest project definitions.
 - `tests/run-system.ts`: managed `quick`, `ci`, and `full` profiles plus the legacy interactive benchmark runner. Managed runs own a UUID report directory and manifest.
+- `tests/profile/`: opt-in `npm run test:profile` diagnostics. Uses isolated services and per-run reports to compare pixel observations, diagnostic browser/Go spans, and CPU, timeline and memory captures. See `tests/profile/README.md` for coverage and limitations.
 - `tests/report/contract.ts`: run manifest, step, and artifact contracts.
 - `tests/report/provenance.ts`: Git revision and dirty-source fingerprint.
 - `tests/report/aggregate.ts`: fail-closed aggregation of only manifest-listed artifacts.
@@ -231,14 +232,14 @@ settlement mark does not exist yet (remote incremental paint, page isolation) ar
 `tests/lab/instrumentation-guard.spec.ts` fails if `performance.mark(` appears outside `src/instrumentation/` or if the
 name table drifts (duplicates, missing `aevia.` prefix).
 
-## Module Test-Debt Inventory
+## Module Test-Debt Inventory & Change Obligations
 
-`tests/catalog/module-obligations.json` lists every frontend source module and every Go source file exactly once with
-`state: covered|partial|uncovered|excluded`. `scripts/lab-inventory.mjs` regenerates it (`--check` fails on a stale
-catalog, `--out <path>` writes a run-scoped snapshot). `tests/report/module-obligations.spec.ts` enforces:
-complete coverage of the source tree, honest owners (frontend spec files / same-package Go test files), excluded entries
-with a reason, and catalog freshness. Nightly records the snapshot as `lab-inventory` evidence; new uncovered files fail
-the evidence check instead of silently growing debt.
+`tests/catalog/module-obligations.json` (`schemaVersion: 2`) lists every managed source module across `apps/frontend/src` (`frontend`), `apps/backend` non-test Go files (`go`), and `packages/shared/src` (`shared`) exactly once with `state: covered|partial|uncovered|excluded`.
+- `covered` and `partial` bind one-to-many executable `evidence` items (`vitest`, `browser`, `go`, `external`, `feature`), preserving optional `owner` for compatibility. `excluded` requires non-empty `reason` and `alternativeEvidence`.
+- `scripts/lab-inventory.mjs` performs non-destructive incremental sync: it preserves developer-confirmed `state`/`evidence`/`reason`/`alternativeEvidence`, places heuristic guesses for new or `uncovered` files into `recommendedEvidence` without promoting them to `covered`, and cleans up deleted files (or migrates via `--rename from=to`). `--check` fails on stale or unsorted catalogs.
+- `tests/report/module-obligations.spec.ts` enforces complete coverage of all three roots and verifies every `evidence` / `alternativeEvidence` target exists on disk or in `EXTERNAL_CASES` / `feature-obligations.json`.
+- `tests/lab/change-obligations.ts` and `scripts/ci-check-obligations.mjs` enforce per-change test obligations in pre-commit (`--staged`), `quick.yml`, `ci.yml`, and `pr.yml`: added or modified/renamed managed sources cannot remain `uncovered` or regress coverage, deleted tests cannot leave dangling references, `packages/shared` / core backend / core frontend edits trigger conservative fallbacks, and `tests/report/aggregate.ts` (`validateChangeObligations`) fail-closed verifies that every selected target actually executed (>0 assertions for Vitest/Browser) and passed in the same run.
+- `ci.yml` (`test:ci` with `CI_BASE`) reuses `vitest`/`browser`/`go`/core E2E outputs and dynamically appends any extra non-default E2E case; `pr.yml` (`test:pr` with `CI_BASE`) merges full-PR selected Vitest/Browser/Go targets deduplicated alongside the 5 PR E2E cases, and both publish `Aevia change tests / <passed>/<total>|<sources>|<newUncovered>|<debt>` via a lightweight summary job for CI Hub.
 
 ## Unified Lab Report and Rerun
 

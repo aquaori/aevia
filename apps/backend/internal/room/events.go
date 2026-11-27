@@ -59,15 +59,8 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 		if domain.String(operation["kind"]) == "history.toggle" {
 			payload, _ := operation["payload"].(map[string]any)
 			target := domain.String(payload["targetHistoryGroupId"])
-			owned := false
-			for _, existing := range a.state.Commands {
-				candidate := sceneOperation(existing)
-				if domain.String(candidate["historyGroupId"]) == target && existing.UserID() == client.UserID {
-					owned = true
-					break
-				}
-			}
-			if !owned {
+			owners := a.state.historyGroupOwners[target]
+			if len(owners) != 1 || owners[client.UserID] == 0 {
 				a.reject(client, msg.Type, "FORBIDDEN", "只能撤回或重做自己的操作。", cmd.ID())
 				return
 			}
@@ -82,6 +75,13 @@ func (a *Actor) handleCommandCreate(client ClientInfo, msg clientEventMessage) {
 			}
 			a.reject(client, msg.Type, "DUPLICATE_OPERATION", "Immutable scene operation id already exists.", cmd.ID())
 			return
+		}
+		if domain.String(operation["kind"]) != "history.toggle" {
+			owners := a.state.historyGroupOwners[domain.String(operation["historyGroupId"])]
+			if len(owners) > 0 && (len(owners) != 1 || owners[client.UserID] == 0) {
+				a.reject(client, msg.Type, "FORBIDDEN", "历史操作组已属于其他用户。", cmd.ID())
+				return
+			}
 		}
 	}
 	if cmd.Type() == "clear" {

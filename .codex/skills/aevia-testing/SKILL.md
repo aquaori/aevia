@@ -16,6 +16,8 @@ Use this skill when running or changing Aevia tests, E2E suites, coverage, repor
 - `npm run test:replay -- --run-id=<uuid>`: rerun a managed profile only when the current source revision and dirty-file fingerprint exactly match the recorded run. This reruns the profile; it does not replay a captured random seed or an individual operation sequence.
 - `npm run test:report -- --manifest=<path>`: aggregate only the explicitly named run manifest. In PowerShell, use `npm.cmd run test:report -- --manifest=<path>` so the npm shim forwards the option. Never use `latest` or a historical report as evidence for another run.
 - `npm run test:perf`: run the existing local external benchmark harness. Its collection and thresholds are not yet calibrated to the new evidence contract; do not use it as a CI gate or claim a verified performance regression from it.
+- `npm run lab:inventory` / `npm run lab:inventory:check`: non-destructively sync or verify `tests/catalog/module-obligations.json` (schema v2 across `frontend`, `go`, `shared`).
+- `npm run lab:obligations:check` (or `npx tsx scripts/ci-check-obligations.mjs --base=origin/main --head=HEAD` / `--staged`): enforce that added or modified managed source files are not `uncovered` and bind valid executable `evidence` (or `excluded` with `reason` and `alternativeEvidence`).
 
 Set `AEVIA_TEST_BROWSER` to `chromium`, `firefox`, or `webkit` to select the browser for managed CI and component tests. Chromium may use `AEVIA_CHROMIUM_EXECUTABLE` when a Playwright-downloaded binary is unavailable. Run `test:doctor` before attributing browser startup failures to product code.
 

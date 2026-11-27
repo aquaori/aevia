@@ -14,6 +14,30 @@ func pressureTestActor() *Actor {
 	}
 }
 
+func TestPermissionNoticeSurvivesFullReliableInbox(t *testing.T) {
+	actor := pressureTestActor()
+	actor.done = make(chan struct{})
+	actor.noticeWake = make(chan struct{}, 1)
+	out := make(chan Outbound, 2)
+	actor.state.Clients["client"] = ClientInfo{ID: "client", UserID: "revoked-user", Send: out}
+	for index := 0; index < cap(actor.inbox); index++ {
+		actor.inbox <- clientEventMessage{Type: "push-cmd"}
+	}
+	if err := actor.NotifyUser("revoked-user", "access.revoked", "", true); err != nil {
+		t.Fatalf("permission notification was dropped when inbox is full: %v", err)
+	}
+	actor.drainNotices()
+	if message := <-out; message.JSON.(Envelope).Type != "access.revoked" {
+		t.Fatalf("wrong notification: %+v", message)
+	}
+	if message := <-out; !message.Close {
+		t.Fatalf("revoked client was not disconnected: %+v", message)
+	}
+	if len(actor.state.Clients) != 0 {
+		t.Fatal("revoked client remained subscribed")
+	}
+}
+
 func TestChannelRatio(t *testing.T) {
 	if got := channelRatio(3, 6); got != 0.5 {
 		t.Fatalf("expected 0.5, got %f", got)

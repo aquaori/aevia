@@ -64,6 +64,13 @@ export const useCommandStore = defineStore("command", () => {
 		revision.value += 1;
 	};
 
+	const commandCount = computed(() => {
+		void revision.value;
+		let count = 0;
+		for (const bucket of pageCommands.value.values()) count += bucket.length;
+		return count;
+	});
+
 	const commands = computed<Command[]>(() => {
 		// Depend on revision so Vue invalidates when buckets mutate in place.
 		const currentRevision = revision.value;
@@ -97,7 +104,14 @@ export const useCommandStore = defineStore("command", () => {
 	};
 
 	const sortAndFoldBucket = (bucket: Command[]) => {
-		bucket.sort(compareCommandOrder);
+		let sorted = true;
+		for (let index = 1; index < bucket.length; index += 1) {
+			if (compareCommandOrder(bucket[index - 1]!, bucket[index]!) > 0) {
+				sorted = false;
+				break;
+			}
+		}
+		if (!sorted) bucket.sort(compareCommandOrder);
 		return foldBucketAfterClear(bucket);
 	};
 
@@ -190,13 +204,15 @@ export const useCommandStore = defineStore("command", () => {
 			nextBuckets.get(command.pageId)?.push(command);
 		});
 
+		commandMap.clear();
 		nextBuckets.forEach((bucket, pageId) => {
-			nextBuckets.set(pageId, sortAndFoldBucket(bucket));
+			const folded = sortAndFoldBucket(bucket);
+			nextBuckets.set(pageId, folded);
+			for (const command of folded) commandMap.set(command.id, command);
 		});
 
 		pageCommands.value = nextBuckets;
 		loadedPageIds.value = normalizedPageIds;
-		rebuildCommandMap();
 		touch();
 	};
 
@@ -338,6 +354,7 @@ export const useCommandStore = defineStore("command", () => {
 
 	return {
 		commands,
+		commandCount,
 		pageCommands,
 		loadedPageIds,
 		commandMap,

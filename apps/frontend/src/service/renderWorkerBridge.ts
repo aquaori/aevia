@@ -1,4 +1,5 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
+import { isProxy, toRaw } from "vue";
 import type { Command, EraseTarget, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
 import { SceneBatchRing } from "../workers/sceneBatchRing";
 import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
@@ -20,6 +21,7 @@ interface RenderWorkerBridgeOptions {
 	onMainPoints: (points: FlatPoint[]) => void;
 	onDirtyRects?: (rects: aabbBox[]) => void;
 	onSceneResyncRequired?: () => void;
+	onSceneHistoryIncomplete?: (ids: string[]) => void;
 	onWorkerFailure?: () => void;
 }
 
@@ -92,8 +94,28 @@ const clonePoint = (point: Point): Point => ({
 	lamport: point.lamport,
 });
 
-const cloneSceneOperation = (operation: Command["sceneOperation"]) =>
-	operation ? JSON.parse(JSON.stringify(operation)) as NonNullable<Command["sceneOperation"]> : undefined;
+const cloneSceneOperation = (operation: Command["sceneOperation"]) => {
+	if (!operation) return undefined;
+	const raw = isProxy(operation) ? toRaw(operation) : operation;
+	try {
+		return structuredClone(raw) as NonNullable<Command["sceneOperation"]>;
+	} catch {
+		return JSON.parse(JSON.stringify(raw)) as NonNullable<Command["sceneOperation"]>;
+	}
+};
+
+const prepareInitCommandForWorker = (cmd: Command): Command => {
+	const raw = isProxy(cmd) ? toRaw(cmd) : cmd;
+	const rawOp = raw.sceneOperation && isProxy(raw.sceneOperation)
+		? cloneSceneOperation(raw.sceneOperation)
+		: raw.sceneOperation;
+	return {
+		...raw,
+		points: [],
+		box: isProxy(raw.box) ? { ...toRaw(raw.box) } : raw.box,
+		sceneOperation: rawOp,
+	};
+};
 
 const cloneCommand = (cmd: Command): Command => ({
 	...cmd,
@@ -129,13 +151,20 @@ const cloneRect = (rect: DirtyRectRequest): DirtyRectRequest => ({
 export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => {
 	let worker: Worker | null = null;
 	let sceneBatchRing: SceneBatchRing | null = null;
+	const sceneBatchEncoder = new TextEncoder();
 	const pendingSceneBatch: { cmd: Command; epoch: number; dispatchSeq: number }[] = [];
 	let sceneBatchScheduled = false;
 	const flushSceneBatch = () => {
 		sceneBatchScheduled = false;
 		if (!worker || pendingSceneBatch.length === 0) return;
 		const batch = pendingSceneBatch.splice(0);
-		const encoded = new TextEncoder().encode(JSON.stringify(batch));
+		const serialized = JSON.stringify(batch);
+		const directLength = sceneBatchRing?.writeText(serialized, sceneBatchEncoder);
+		if (directLength != null) {
+			worker.postMessage({ type: "scene-batch-ring", data: { length: directLength } });
+			return;
+		}
+		const encoded = sceneBatchEncoder.encode(serialized);
 		if (sceneBatchRing?.write(encoded)) {
 			worker.postMessage({ type: "scene-batch-ring", data: { length: encoded.length } });
 		} else {
@@ -361,6 +390,7 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 				return;
 			}
 			if (type === "scene-resync-required") { options.onSceneResyncRequired?.(); return; }
+			if (type === "scene-history-incomplete") { options.onSceneHistoryIncomplete?.(event.data.ids as string[]); return; }
 			if (type === "init-scene-barrier-result") {
 				const callback = pendingInitBarriers.get(requestId);
 				pendingInitBarriers.delete(requestId);
@@ -667,15 +697,19 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	};
 
 	const setInitSceneOperations = (commands: Command[], pageId: number) => {
-		if (!worker || !offscreenEnabled) return;
+		if (!worker) return;
 		flushIncrementalCommands();
+		const prepared: Command[] = [];
+		for (const command of commands) {
+			if (command.type === "scene-op" && command.pageId === pageId) {
+				prepared.push(prepareInitCommandForWorker(command));
+			}
+		}
 		postWorker({
 			type: "set-init-scene-operations",
 			data: {
 				pageId,
-				commands: commands
-					.filter((command) => command.type === "scene-op" && command.pageId === pageId)
-					.map(cloneCommand),
+				commands: prepared,
 			},
 		});
 	};

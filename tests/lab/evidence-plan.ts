@@ -410,6 +410,54 @@ export const buildNightlyPlan = (ctx: LabPlanContext): LabEvidencePlan => {
 	return { steps: selectedSteps, artifacts: artifacts.filter(artifact => selectedIds.has(artifact.stepId)) };
 };
 
+export const externalCaseFamilyOf = (id: string): string => {
+	const definition = Object.values(EXTERNAL_CASES).find(item => item.id === id || (item.id === "full-render" && /^full-render-\d+$/.test(id)));
+	if (!definition) throw new Error(`Unknown external case: ${id}`);
+	return id.startsWith("boundary-") ? id : id === EXTERNAL_CASES.networkRecovery.id ? "resilience" :
+		id.startsWith("full-render-") || id === EXTERNAL_CASES.remoteFirstPixelPerformance.id || id === EXTERNAL_CASES.localFirstPixelPerformance.id ? "standard" : "correctness";
+};
+
+export const buildExternalSelectionPlans = (
+	ctx: LabPlanContext,
+	caseIds: string[],
+	caseKeys?: string[],
+	stepPrefix = "external-focused",
+): LabEvidencePlan => {
+	const steps: LabEvidenceStep[] = [];
+	const artifacts: ExpectedArtifact[] = [];
+	const families = new Map<string, string[]>();
+	for (const id of caseIds) {
+		const family = externalCaseFamilyOf(id);
+		families.set(family, [...(families.get(family) ?? []), id]);
+	}
+	for (const [family, ids] of families) {
+		const correctness = family === "correctness";
+		const suite = correctness ? "correctness-full" : "performance-external";
+		const caseSet = family.startsWith("boundary-") ? "boundary" : family;
+		const stepId = correctness ? stepPrefix : `${stepPrefix}-${family}`;
+		const reportDir = correctness ? "" : family;
+		const tag = correctness ? suite : `${suite}-${caseSet}`;
+		const keys = caseKeys?.filter(key => ids.includes(key.split("|")[0]!)) ?? [];
+		const scales = ids.filter(id => /^full-render-\d+$/.test(id)).map(id => Number(id.slice("full-render-".length)));
+		const selectionFlags = `${keys.length ? ` --case-keys=${q(ctx, keys.join(","))}` : ""}${scales.length ? ` --scales=${scales.join(",")}` : ""}`;
+		steps.push({
+			id: stepId,
+			title: `Focused external case (${ids.length})`,
+			description: "Running selected cases in their owning suite.",
+			command: externalRun(ctx, suite, ` --case-ids=${ids.join(",")}${selectionFlags}${correctness ? "" : ` --case-set=${caseSet} --matrix=${caseSet === "standard"}${caseSet === "boundary" ? boundaryScalesFlag(boundaryScaleList()) : ""}`}`, reportDir),
+			cwd: ctx.frontendDir,
+			requiresServices: true,
+			freshServices: caseSet === "boundary",
+			timeoutMs: 900000,
+			env: ctx.externalEnv,
+		});
+		const prefix = `external/${reportDir ? reportDir + "/" : ""}${tag}`;
+		artifacts.push({ id: stepId, stepId, kind: "external", path: `${prefix}-external-results.json`, expectedCases: ids, expectedCaseKeys: keys.length ? keys : undefined });
+		artifacts.push({ id: `${stepId}-gate`, stepId, kind: "lab-gate", path: `${prefix}-lab-gate.json` });
+	}
+	return { steps, artifacts };
+};
+
 export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResult): LabEvidencePlan => {
 	const steps: LabEvidenceStep[] = [];
 	const artifacts: ExpectedArtifact[] = [];
@@ -420,68 +468,75 @@ export const buildSinglePlan = (ctx: LabPlanContext, selection?: LabResolveResul
 			}`
 		);
 	}
-	const vitest = selection.selections.find((item) => item.kind === "vitest");
-	if (vitest && (vitest.files.length > 0 || vitest.testNamePattern)) {
+	const vitestSelections = selection.selections.filter((item) => item.kind === "vitest" && (item.files.length > 0 || item.testNamePattern));
+	vitestSelections.forEach((vitest, index) => {
+		const suffix = index === 0 ? "" : `-${index + 1}`;
+		const stepId = `frontend-test${suffix}`;
+		const artifactPath = `frontend/vitest${suffix}.json`;
 		const pattern = vitest.testNamePattern ? ` -t ${q(ctx, vitest.testNamePattern)}` : "";
 		const files = vitest.files.map((file) => q(ctx, file)).join(" ");
 		steps.push({
-			id: "frontend-test",
+			id: stepId,
 			title: `Focused Vitest (${vitest.files.length} file(s))`,
 			description: "Running only the tests selected for this single-point verification.",
-			command: vitestRun(ctx, `run ${files}${pattern} --reporter=json --outputFile=${q(ctx, path.join(ctx.runDir, "frontend", "vitest.json"))}`),
+			command: vitestRun(ctx, `run ${files}${pattern} --reporter=json --outputFile=${q(ctx, path.join(ctx.runDir, artifactPath))}`),
 			cwd: ctx.canonicalRootDir,
 			timeoutMs: 600000,
 		});
-		artifacts.push({ id: "frontend-vitest", stepId: "frontend-test", kind: "vitest", path: "frontend/vitest.json" });
-	}
-	const go = selection.selections.find((item) => item.kind === "go");
-	if (go && go.packages.length > 0) {
-		const pattern = go.runPattern ? `-run ${q(ctx, go.runPattern)} ` : "";
+		artifacts.push({ id: `frontend-vitest${suffix}`, stepId, kind: "vitest", path: artifactPath });
+	});
+	const browserSelections = selection.selections.filter((item) => item.kind === "browser" && item.files.length > 0);
+	browserSelections.forEach((browser, index) => {
+		const suffix = index === 0 ? "" : `-${index + 1}`;
+		const stepId = `browser-test${suffix}`;
+		const artifactPath = `frontend/browser${suffix}.json`;
+		const pattern = browser.testNamePattern ? ` -t ${q(ctx, browser.testNamePattern)}` : "";
+		const files = browser.files.map((file) => q(ctx, file)).join(" ");
 		steps.push({
-			id: "go-test",
-			title: `Focused Go test (${go.packages.join(", ")})`,
-			description: "Running only the Go packages selected for this single-point verification.",
-			command: `go test -json ${pattern}${go.packages.join(" ")}`,
-			cwd: ctx.backendDir,
-			stdoutArtifact: path.join(ctx.runDir, "backend", "go-tests.jsonl"),
+			id: stepId,
+			title: `Focused Browser Vitest (${browser.files.length} file(s))`,
+			description: "Running selected browser component specs in an isolated Vitest process.",
+			command: vitestRun(ctx, `run --project=frontend-browser ${files}${pattern} --reporter=json --outputFile=${q(ctx, path.join(ctx.runDir, artifactPath))}`),
+			cwd: ctx.canonicalRootDir,
 			timeoutMs: 600000,
 		});
-		artifacts.push({ id: "go-test", stepId: "go-test", kind: "go-test", path: "backend/go-tests.jsonl" });
-	}
+		artifacts.push({ id: `frontend-browser${suffix}`, stepId, kind: "vitest", path: artifactPath });
+	});
+	const goSelections = selection.selections.filter((item) => item.kind === "go" && item.packages.length > 0);
+	goSelections.forEach((go, index) => {
+		const suffix = index === 0 ? "" : `-${index + 1}`;
+		const stepId = `go-test${suffix}`;
+		const artifactPath = `backend/go-tests${suffix}.jsonl`;
+		const pattern = go.runPattern ? `-run ${q(ctx, go.runPattern)} ` : "";
+		steps.push({
+			id: stepId,
+			title: `Focused Go test (${go.packages.join(", ")})`,
+			description: "Running only the Go packages selected for this verification.",
+			command: `go test -json ${pattern}${go.packages.join(" ")}`,
+			cwd: ctx.backendDir,
+			stdoutArtifact: path.join(ctx.runDir, artifactPath),
+			timeoutMs: 600000,
+		});
+		artifacts.push({ id: stepId, stepId, kind: "go-test", path: artifactPath });
+	});
 	const external = selection.selections.find((item) => item.kind === "external");
 	if (external && external.caseIds.length > 0) {
-		const families = new Map<string, string[]>();
-		for (const id of external.caseIds) {
-			const definition = Object.values(EXTERNAL_CASES).find(item => item.id === id || (item.id === "full-render" && /^full-render-\d+$/.test(id)));
-			if (!definition) throw new Error(`Unknown external case: ${id}`);
-			const family = id.startsWith("boundary-") ? id : id === EXTERNAL_CASES.networkRecovery.id ? "resilience" :
-				id.startsWith("full-render-") || id === EXTERNAL_CASES.remoteFirstPixelPerformance.id || id === EXTERNAL_CASES.localFirstPixelPerformance.id ? "standard" : "correctness";
-			families.set(family, [...(families.get(family) ?? []), id]);
-		}
-		for (const [family, ids] of families) {
-			const correctness = family === "correctness";
-			const suite = correctness ? "correctness-full" : "performance-external";
-			const caseSet = family.startsWith("boundary-") ? "boundary" : family;
-			const stepId = correctness ? "external-focused" : `external-focused-${family}`;
-			const reportDir = correctness ? "" : family;
-			const tag = correctness ? suite : `${suite}-${caseSet}`;
-			const keys = external.caseKeys?.filter(key => ids.includes(key.split("|")[0]!)) ?? [];
-			const scales = ids.filter(id => /^full-render-\d+$/.test(id)).map(id => Number(id.slice("full-render-".length)));
-			const selectionFlags = `${keys.length ? ` --case-keys=${q(ctx, keys.join(","))}` : ""}${scales.length ? ` --scales=${scales.join(",")}` : ""}`;
-			steps.push({
-				id: stepId, title: `Focused external case (${ids.length})`, description: "Running selected cases in their owning suite.",
-				command: externalRun(ctx, suite, ` --case-ids=${ids.join(",")}${selectionFlags}${correctness ? "" : ` --case-set=${caseSet} --matrix=${caseSet === "standard"}${caseSet === "boundary" ? boundaryScalesFlag(boundaryScaleList()) : ""}`}`, reportDir),
-				cwd: ctx.frontendDir, requiresServices: true, freshServices: caseSet === "boundary", timeoutMs: 900000, env: ctx.externalEnv
-			});
-			const prefix = `external/${reportDir ? reportDir + "/" : ""}${tag}`;
-			artifacts.push({ id: stepId, stepId, kind: "external", path: `${prefix}-external-results.json`, expectedCases: ids, expectedCaseKeys: keys.length ? keys : undefined });
-			artifacts.push({ id: `${stepId}-gate`, stepId, kind: "lab-gate", path: `${prefix}-lab-gate.json` });
-		}
+		const extPlan = buildExternalSelectionPlans(ctx, external.caseIds, external.caseKeys, "external-focused");
+		steps.push(...extPlan.steps);
+		artifacts.push(...extPlan.artifacts);
 	}
 
 	steps.push(sourceCheckStep());
 	return { steps, artifacts };
 };
+
+export const PR_REQUIRED_EXTERNAL_CASE_IDS = [
+	EXTERNAL_CASES.harnessHealth.id,
+	EXTERNAL_CASES.correctnessSmoke.id,
+	EXTERNAL_CASES.undoRedoConvergence.id,
+	EXTERNAL_CASES.lateJoinerUndoConsistency.id,
+	EXTERNAL_CASES.networkRecovery.id,
+] as const;
 
 export const buildLabEvidencePlan = (
 	profile: "smoke" | "pr" | "nightly" | "single",
@@ -490,13 +545,18 @@ export const buildLabEvidencePlan = (
 ): LabEvidencePlan => {
 	if (profile === "smoke") return withOptionalPerfRequest(buildSmokePlan(ctx), ctx);
 	if (profile === "pr") {
-		const plan = buildSinglePlan(ctx, { unresolved: [], selections: [{ kind: "external", caseIds: [
-			EXTERNAL_CASES.harnessHealth.id,
-			EXTERNAL_CASES.correctnessSmoke.id,
-			EXTERNAL_CASES.undoRedoConvergence.id,
-			EXTERNAL_CASES.lateJoinerUndoConsistency.id,
-			EXTERNAL_CASES.networkRecovery.id,
-		] }] });
+		const mergedCaseIds = new Set<string>(PR_REQUIRED_EXTERNAL_CASE_IDS);
+		const extraSelections = (selection?.selections ?? []).filter((item) => {
+			if (item.kind === "external") {
+				item.caseIds.forEach((id) => mergedCaseIds.add(id));
+				return false;
+			}
+			return true;
+		});
+		const plan = buildSinglePlan(ctx, {
+			unresolved: selection?.unresolved ?? [],
+			selections: [...extraSelections, { kind: "external", caseIds: [...mergedCaseIds] }],
+		});
 		plan.steps.unshift({ id: "build", title: "Build merge result", description: "Building the proposed merge result.", command: "npm --silent run build", timeoutMs: 300000 });
 		return plan;
 	}

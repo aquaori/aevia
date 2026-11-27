@@ -496,6 +496,23 @@ describe("SceneEngine", () => {
 		);
 	});
 
+	it("keeps an unchanged prefix when a middle text edit replaces the suffix", () => {
+		const engine = new SceneEngine();
+		engine.applyOperation({ ...base("text-create", 1), elementId: "text-prefix", kind: "element.create", payload: { descriptor: {
+			elementKind: "text", toolId: "text", recipeId: "glyph", style: { color: "#000", size: 2 },
+			box: { minX: 0, minY: 0, maxX: 1, maxY: 1, width: 1, height: 1 }, text: "ABC",
+		} } });
+		engine.applyOperation({ ...base("text-edit", 2), elementId: "text-prefix", kind: "text.patch", payload: { patches: [
+			{ type: "delete", charId: "text-prefix:initial:1" }, { type: "delete", charId: "text-prefix:initial:2" },
+			{ type: "insert", charId: "new-x", afterId: "text-prefix:initial:0", grapheme: "x" },
+			{ type: "insert", charId: "new-b", afterId: "new-x", grapheme: "B" },
+			{ type: "insert", charId: "new-c", afterId: "new-b", grapheme: "C" },
+		] } });
+		const characters = engine.getTextEditorState("text-prefix")!.characters;
+		expect(characters.map((character) => character.grapheme).join("")).toBe("AxBC");
+		expect(characters[0]!.charId).toBe("text-prefix:initial:0");
+	});
+
 	it("applies and undoes immutable text style operations", () => {
 		const engine = new SceneEngine();
 		engine.applyOperation({
@@ -588,6 +605,17 @@ describe("deterministic erasure", () => {
 });
 
 describe("SpatialGridIndex", () => {
+	it("extends occupied cells without duplicates and reindexes a moved element", () => {
+		const grid = new SpatialGridIndex();
+		const box = (x: number) => ({ minX: x, minY: .1, maxX: x + .001, maxY: .101, width: .001, height: .001 });
+		grid.addAtom("stroke", 0, box(.01));
+		grid.addAtom("stroke", 1, box(.05));
+		expect(grid.query(box(.01)).atomRefs).toEqual([0, 1]);
+		expect(grid.query(box(.05)).atomRefs).toEqual([0, 1]);
+		grid.reindexElement("stroke", (ref) => box(ref === 0 ? .6 : .65));
+		expect(grid.query(box(.01)).atomRefs).toEqual([]);
+		expect(grid.query(box(.6)).atomRefs).toEqual([0, 1]);
+	});
 	it("keeps a fixed local query independent of unrelated scene size", () => {
 		const grid = new SpatialGridIndex();
 		for (let index = 0; index < 100_000; index += 1) {
@@ -603,6 +631,21 @@ describe("SpatialGridIndex", () => {
 });
 
 describe("DirtyRegionSet", () => {
+	it("merges regions that overlap only after an earlier merge expands the bounds", () => {
+		const regions = new DirtyRegionSet();
+		regions.add({ minX: 0, minY: 2, maxX: 1, maxY: 3, width: 1, height: 1 });
+		regions.add({ minX: 2, minY: 2.8, maxX: 3, maxY: 3.5, width: 1, height: 0.7 });
+		regions.add({ minX: 0.5, minY: 1.5, maxX: 2.5, maxY: 2.5, width: 2, height: 1 });
+		expect(regions.toArray()).toEqual([{ minX: 0, minY: 1.5, maxX: 3, maxY: 3.5, width: 3, height: 2 }]);
+	});
+	it("keeps a small dense update local when most of the scene is unaffected", () => {
+		const regions = new DirtyRegionSet();
+		regions.add({ minX: 8, minY: 8, maxX: 32, maxY: 32, width: 24, height: 24 });
+		expect(regions.shouldRenderFull(1000, 1000, 44, 100, false)).toBe(false);
+		expect(regions.shouldRenderFull(1000, 1000, 66, 100, false)).toBe(false);
+		expect(regions.shouldRenderFull(1000, 1000, 70, 100, false)).toBe(true);
+		expect(regions.shouldRenderFull(1000, 1000, 60, 100, true)).toBe(true);
+	});
 	it("uses separate enter and exit thresholds for dense-frame fallback", () => {
 		const regions = new DirtyRegionSet();
 		regions.add({ minX: 0, minY: 0, maxX: 360, maxY: 1000, width: 360, height: 1000 });

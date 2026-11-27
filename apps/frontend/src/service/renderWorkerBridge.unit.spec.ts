@@ -64,6 +64,17 @@ describe("cloneCommandForStateSync", () => {
 });
 
 describe("worker acknowledgement isolation", () => {
+	it("validates initialization operations when drawing uses the main-thread fallback", () => {
+		const messages: Array<{ type: string }> = [];
+		vi.stubGlobal("Worker", class { postMessage(message: { type: string }) { messages.push(message); } terminate() {} });
+		const bridge = createRenderWorkerBridge({ onMainPoints: () => {} });
+		try {
+			bridge.init();
+			expect(bridge.isOffscreenEnabled()).toBe(false);
+			bridge.setInitSceneOperations([], 0);
+			expect(messages.some(({ type }) => type === "set-init-scene-operations")).toBe(true);
+		} finally { bridge.dispose(); vi.unstubAllGlobals(); }
+	});
 	it("preserves interleaved stroke order before a scene query", async () => {
 		const messages: Array<{ type: string; data?: unknown; dispatchSeq?: number }> = [];
 		vi.stubGlobal("Worker", class {
@@ -305,6 +316,56 @@ describe("worker acknowledgement isolation", () => {
 			bridge.dispose();
 			vi.unstubAllGlobals();
 			vi.useRealTimers();
+		}
+	});
+
+	it("dispatches query, erase-target, dirty-region, sync, and command-point messages", async () => {
+		let worker: { onmessage?: (event: { data: unknown }) => void; sent: { type: string; data?: { requestId?: string } }[] };
+		vi.stubGlobal("Worker", class {
+			onmessage?: (event: { data: unknown }) => void;
+			sent: { type: string; data?: { requestId?: string } }[] = [];
+			// eslint-disable-next-line @typescript-eslint/no-this-alias
+			constructor() { worker = this; }
+			postMessage(message: { type: string; data?: { requestId?: string } }) { this.sent.push(message); }
+			terminate() {}
+		});
+		const onDirtyRects = vi.fn();
+		const onMainPoints = vi.fn();
+		const bridge = createRenderWorkerBridge({ onMainPoints, onDirtyRects });
+		try {
+			bridge.init();
+			bridge.bindMainCanvas({ transferControlToOffscreen: () => ({}) } as HTMLCanvasElement, { width: 800, height: 600, dpr: 2 });
+			bridge.syncViewport({ width: 1024, height: 768, dpr: 2 });
+			bridge.syncWorkerScene([command([])], 0, []);
+			bridge.rerenderScene(0, []);
+			bridge.removeCommandState("c-del");
+			bridge.renderDirtyRect({ minX: 0, minY: 0, maxX: 10, maxY: 10, width: 10, height: 10 }, 0, []);
+			bridge.renderDirtyRects([{ minX: 0, minY: 0, maxX: 10, maxY: 10, width: 10, height: 10 }], 0, []);
+			bridge.requestMergeDirtyRects({ rects: [{ minX: 0, minY: 0, maxX: 10, maxY: 10 }] });
+			worker!.onmessage?.({ data: { type: "merge-dirty-rects-result", epoch: 1, rects: [{ minX: 0 }] } });
+			expect(onDirtyRects).toHaveBeenCalled();
+
+			const cmdPts = bridge.requestCommandPoints(["c1"]);
+			let reqId = worker!.sent.at(-1)!.data.requestId;
+			worker!.onmessage?.({ data: { type: "command-points-result", requestId: reqId, commands: [{ cmdId: "c1", points: [] }] } });
+			expect(await cmdPts).toHaveLength(1);
+
+			const eraseReq = bridge.requestEraseTargets({ points: [{ x: 0.1, y: 0.1, p: 0.5, lamport: 1 }], size: 12, wholeObjects: false, pageId: 0, width: 800, height: 600 });
+			reqId = worker!.sent.at(-1)!.data.requestId;
+			worker!.onmessage?.({ data: { type: "erase-targets-result", requestId: reqId, targets: [{ elementId: "c1" }] } });
+			expect(await eraseReq).toHaveLength(1);
+
+			const queryReq = bridge.requestSceneQuery({ minX: 0, minY: 0, maxX: 100, maxY: 100, width: 100, height: 100 });
+			reqId = worker!.sent.at(-1)!.data.requestId;
+			worker!.onmessage?.({ data: { type: "scene-query-result", requestId: reqId, elementIds: ["e1"], bounds: null } });
+			expect((await queryReq).elementIds).toEqual(["e1"]);
+
+			bridge.finishInitRenderStream();
+			bridge.appendInitRenderChunk([{ x: 0.1, y: 0.1, p: 0.5, lamport: 1, cmdId: "p", pageId: 0, userId: "u", tool: "pen", color: "#000", size: 3, isDeleted: false }]);
+			expect(worker!.sent.some((m) => m.type === "append-init-points")).toBe(true);
+		} finally {
+			bridge.dispose();
+			vi.unstubAllGlobals();
 		}
 	});
 });
