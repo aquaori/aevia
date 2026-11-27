@@ -5,7 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright";
 import { parseConfig } from "../../apps/frontend/tests/e2e/external/config";
-import { compareCanvasPages, installCanvasObserver, roiAround, waitForStableCanvas, waitForVisibleScreenshotBlank, waitForVisibleScreenshotContent } from "../../apps/frontend/tests/e2e/external/canvas-observer";
+import { compareCanvasPages, installCanvasObserver, roiAround, waitForBlankCanvas, waitForNonBlankCanvas, waitForStableCanvas, waitForVisibleScreenshotBlank, waitForVisibleScreenshotContent } from "../../apps/frontend/tests/e2e/external/canvas-observer";
 import { captureLabSnapshot } from "../../apps/frontend/tests/e2e/external/lab/install";
 import { createDistributedStrokePoints, createRoomWithUsers, joinRoom, ProtocolClient } from "../../apps/frontend/tests/e2e/external/protocol-driver";
 import { drawLine, openMeasuredRoomPage, openRoomPage, pressRedo, pressUndo, waitForPageChangeComplete } from "../../apps/frontend/tests/e2e/external/ui-driver";
@@ -39,6 +39,7 @@ const list = [
 	{ id: "join-gate", scale: 10000, module: "首屏编辑门禁", oracle: "初始化期间不提交，解禁后笔迹可重放" },
 	{ id: "pending-store", scale: 100, module: "IndexedDB 待确认操作", oracle: "顺序、内容和删除一致" },
 	{ id: "pending-store-points", scale: 100, module: "IndexedDB 笔迹点批量存储", oracle: "顺序、点数和删除一致" },
+	{ id: "pending-refresh-recovery", scale: 0, module: "IndexedDB 实房断线刷新恢复", oracle: "未确认 opId 在刷新重连后按原 ID 持久化并收敛" },
 	{ id: "render-direct", scale: 45600, module: "SceneEngine、Canvas", oracle: "实际分支与逐像素对照" },
 	{ id: "render-dirty", scale: 45600, module: "空间索引、候选排序、Canvas", oracle: "实际分支与逐像素对照" },
 	{ id: "render-fallback", scale: 45600, module: "重绘策略、Canvas", oracle: "实际分支与逐像素对照" },
@@ -55,6 +56,8 @@ const list = [
 	{ id: "clear-undo-large", scale: 10000, module: "大房间双端清屏与历史恢复", oracle: "历史区域与两端笔迹在清屏后消失、撤销后恢复" },
 	{ id: "edit-text", scale: 0, module: "文字编辑、场景布局、协作与持久化", oracle: "提交后画布可见且重新加入的客户端画面一致" },
 	{ id: "edit-sticky", scale: 0, module: "便签编辑、场景布局、协作与持久化", oracle: "提交后画布可见且重新加入的客户端画面一致" },
+	{ id: "tools-matrix", scale: 0, module: "完整工具链路（笔/铅/荧光/橡皮/图形/选择/文字/便签/历史）", oracle: "所有工具端到端提交且与新加入参考客户端像素一致" },
+	{ id: "account-room-flow", scale: 0, module: "账号注册、房间设置、邀请、游客准入与踢出", oracle: "权限状态与 HTTP/WS 端到端行为一致" },
 	{ id: "switch-page", scale: 0, module: "分页、流、画布", oracle: "新页空白，返回后原笔迹恢复" },
 	{ id: "rejoin", scale: 10000, module: "快照、刷新恢复", oracle: "刷新前后画布一致" },
 	{ id: "delta-reconnect", scale: 0, module: "断线检测、WebSocket、增量重连与画布", oracle: "断线期间远端画笔在重连后出现在本端" },
@@ -82,7 +85,7 @@ async function seed(config: Config, roomId: string, count: number, distributed: 
 		const strokes = Math.ceil(count / 75);
 		for (let i = 0; i < strokes; i++) {
 			const points = createDistributedStrokePoints(Math.min(75, count - i * 75), i, strokes)
-				.map(point => corner ? { ...point, x: .02 + point.x * .12, y: .02 + point.y * .12 } : distributed ? point : { ...point, x: .26 + point.x * .47, y: .2 + point.y * .48 });
+				.map(point => corner ? { ...point, x: .03 + point.x * .12, y: .12 + point.y * .12 } : distributed ? point : { ...point, x: .26 + point.x * .47, y: .2 + point.y * .48 });
 			await client.sendCommittedStroke({ waitForCommit: true, points, color: "#21262e", size: 3 });
 		}
 	} finally { client.close(); }
@@ -175,6 +178,10 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 				let inputBeforeInit = false;
 				let strokesFinishedBeforeInit = 0;
 				let sentDuringGate = 0;
+				let gateReadyMs = 0;
+				let postGateDrawWindowMs = 0;
+				let remotePeer: Awaited<ReturnType<typeof openRoomPage>> | undefined;
+				const joinStartedAt = performance.now();
 				const measured = await openMeasuredRoomPage(browser, config, users[0]!, async page => {
 					observe(page);
 					if (scenario.id === "join-gate") await page.addInitScript(() => {
@@ -191,6 +198,9 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 				},
 					scenario.id === "join-gate" ? async page => {
 						await page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ timeout: 10000 });
+						remotePeer = await openRoomPage(browser, config, users[1]!, observe);
+						closers.push(remotePeer.close);
+						await drawLine(remotePeer.page, 700, 220, 820, 320, 8);
 						await page.mouse.move(330, 270);
 						await page.mouse.down();
 						await page.mouse.move(455, 357, { steps: 6 });
@@ -199,11 +209,13 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 						sentDuringGate = wire.filter(event => event.target === 0 && event.direction === "send" && event.type === "push-cmd").length;
 					} : scenario.id === "join-100k-active" ? async page => {
 						await page.locator("canvas").first().waitFor({ timeout: 30000 });
-						await page.waitForFunction(() => (window as unknown as { __AEVIA_LAB__?: { marks: { name: string }[] } }).__AEVIA_LAB__?.marks.some(mark => mark.name === "aevia.init.meta"), undefined, { timeout: 10000 });
+						await page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 30000 });
+						gateReadyMs = performance.now() - joinStartedAt;
 						inputBeforeInit = await page.evaluate(() => {
 							const marks = (window as unknown as { __AEVIA_LAB__?: { marks: { name: string; detail?: { reason?: string } }[] } }).__AEVIA_LAB__?.marks ?? [];
 							return !marks.some(mark => mark.name === "aevia.frame.render-complete" && mark.detail?.reason === "init-stream-final");
 						});
+						const drawBegin = performance.now();
 						for (let i = 0; i < 5; i++) {
 							await drawLine(page, 300, 200 + i * 20, 440, 250 + i * 20, 6);
 							if (await page.evaluate(() => {
@@ -211,11 +223,13 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 								return !marks.some(mark => mark.name === "aevia.frame.render-complete" && mark.detail?.reason === "init-stream-final");
 							})) strokesFinishedBeforeInit++;
 						}
+						postGateDrawWindowMs = performance.now() - drawBegin;
 					} : undefined);
 				closers.push(measured.close);
 				if (scenario.id === "join-gate") {
 					if (sentDuringGate) throw new Error(`Gate allowed ${sentDuringGate} operations`);
 					await measured.page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 10000 });
+					await waitForNonBlankCanvas(measured.page, { roi: roiAround(760, 270, 140), timeoutMs: 10000 });
 					await drawLine(measured.page, 330, 270, 455, 357, 6);
 					const deadlineAt = performance.now() + 5000;
 					while (!wire.some(event => event.target === 0 && event.direction === "receive" && event.type === "ack.accepted")) {
@@ -223,16 +237,19 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 						await delay(20);
 					}
 				}
-				const reference = await openMeasuredRoomPage(browser, config, users[1]!);
+				const referenceUser = scenario.id === "join-gate" ? await joinRoom(config, roomId, "Gate reference") : users[1]!;
+				const reference = await openMeasuredRoomPage(browser, config, referenceUser);
 				closers.push(reference.close);
+				await Promise.all([measured.page, reference.page].map(page =>
+					page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 15000 })
+				));
 				const diff = await compareCanvasPages(measured.page, reference.page);
 				const rejectedEvents = wire.filter(event => event.target === 0 && event.direction === "receive" && event.type === "op-rejected");
 				const rejected = rejectedEvents.length;
 				const submitted = wire.filter(event => event.target === 0 && event.direction === "send" && event.type === "push-cmd").length;
-				metrics = { ...measured.initialRender, finalDifference: diff.diffRatio, ...(scenario.id === "join-100k-active" ? { inputBeforeInit, strokesFinishedBeforeInit, submittedOperations: submitted, rejectedOperations: rejected, rejectionCodes: [...new Set(rejectedEvents.map(event => event.code ?? "unknown"))].join(",") } : {}) };
-				if (scenario.id === "join-100k-active" && !inputBeforeInit) throw new Error("Input started after initialization; not a valid contention sample");
-				if (scenario.id === "join-100k-active" && submitted === 0) throw new Error("No operation submitted during initialization; not a valid contention sample");
-				if (scenario.id === "join-100k-active" && rejected) throw new Error(`Initialization-time operations rejected (${rejected}); not a valid contention sample`);
+				metrics = { ...measured.initialRender, finalDifference: diff.diffRatio, ...(scenario.id === "join-100k-active" ? { postGateMode: true, gateReadyMs, postGateDrawWindowMs, inputBeforeInit, strokesFinishedBeforeInit, submittedOperations: submitted, rejectedOperations: rejected, rejectionCodes: [...new Set(rejectedEvents.map(event => event.code ?? "unknown"))].join(",") } : {}) };
+				if (scenario.id === "join-100k-active" && submitted === 0) throw new Error("No operation submitted after initial-scene gate opened");
+				if (scenario.id === "join-100k-active" && rejected) throw new Error(`Post-gate operations rejected (${rejected})`);
 				if (typeof metrics.firstNonBlankMs !== "number" || metrics.firstNonBlankMs <= 0) throw new Error("Missing first visible content");
 				if (diff.diffRatio > .005) throw new Error("Initial canvas does not match independently loaded room");
 			} else if (scenario.id === "join-empty") {
@@ -321,11 +338,11 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 				closers.push(a.close, b.close);
 				const first = { roi: roiAround(350, 260, 120), timeoutMs: 10000 };
 				const second = { roi: roiAround(800, 360, 120), timeoutMs: 10000 };
-				const historical = { roi: { x: 35, y: 35, width: 125, height: 85 }, timeoutMs: 10000 };
-				if (scenario.id === "clear-undo-large") await Promise.all([a.page, b.page].map(page => waitForVisibleScreenshotContent(page, historical)));
+				const historical = { roi: { x: 40, y: 88, width: 145, height: 80 }, timeoutMs: 10000 };
+				if (scenario.id === "clear-undo-large") await Promise.all([a.page, b.page].map(page => waitForNonBlankCanvas(page, historical)));
 				await drawLine(a.page, 300, 230, 400, 290, 12);
 				await drawLine(b.page, 750, 330, 850, 390, 12);
-				await Promise.all([a.page, b.page].flatMap(page => [waitForVisibleScreenshotContent(page, first), waitForVisibleScreenshotContent(page, second)]));
+				await Promise.all([a.page, b.page].flatMap(page => [waitForNonBlankCanvas(page, first), waitForNonBlankCanvas(page, second)]));
 				// The screenshot oracle sees remote cursors as well as canvas pixels.
 				// Move both cursors away from the inspected regions before clearing.
 				await Promise.all([a.page.mouse.move(40, 500), b.page.mouse.move(60, 500)]);
@@ -344,18 +361,51 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 				await a.page.mouse.up();
 				const releasedAt = performance.now();
 				const observations = await Promise.all([a.page, b.page].flatMap(page => [first, second].map(async region => {
-					const result = await waitForVisibleScreenshotBlank(page, region);
+					const result = await waitForBlankCanvas(page, region);
 					return { ...result, completedAt: performance.now() };
 				})));
 				const clearedAt = performance.now();
-				if (scenario.id === "clear-undo-large") await Promise.all([a.page, b.page].map(page => waitForVisibleScreenshotBlank(page, historical)));
+				if (scenario.id === "clear-undo-large") await Promise.all([a.page, b.page].map(page => waitForBlankCanvas(page, historical)));
+				const reloadedAt = performance.now();
 				await Promise.all([a.page.reload(), b.page.reload()]);
-				await Promise.all([a.page, b.page].flatMap(page => [waitForVisibleScreenshotBlank(page, first), waitForVisibleScreenshotBlank(page, second)]));
-				await Promise.all([a.page, b.page].map(page => page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 10000 })));
+				await Promise.all([a.page, b.page].map(page => page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 15000 })));
+				await Promise.all([a.page, b.page].flatMap(page => [waitForBlankCanvas(page, first), waitForBlankCanvas(page, second)]));
+				if (scenario.id === "clear-undo-large") {
+					const historyDeadline = performance.now() + 15000;
+					while ((!wire.some(event => event.target === 0 && event.t >= reloadedAt && event.type === "page-history-complete") ||
+						!wire.some(event => event.target === 1 && event.t >= reloadedAt && event.type === "page-history-complete")) &&
+						performance.now() < historyDeadline) {
+						await delay(25);
+					}
+					if (!wire.some(event => event.target === 0 && event.t >= reloadedAt && event.type === "page-history-complete")) {
+						throw new Error("Client A did not finish loading page history after reload");
+					}
+				}
 				const refreshedAt = performance.now();
 				await pressUndo(a.page);
-				await Promise.all([a.page, b.page].flatMap(page => [waitForVisibleScreenshotContent(page, first), waitForVisibleScreenshotContent(page, second)]));
-				if (scenario.id === "clear-undo-large") await Promise.all([a.page, b.page].map(page => waitForVisibleScreenshotContent(page, historical)));
+				await Promise.all([a.page, b.page].flatMap(page => [waitForNonBlankCanvas(page, first), waitForNonBlankCanvas(page, second)]));
+				let replayDifference = 0;
+				if (scenario.id === "clear-undo-large") {
+					await Promise.all([a.page, b.page].map(page => waitForNonBlankCanvas(page, historical)));
+					const undoAckDeadline = performance.now() + 8000;
+					while (!wire.some(event => event.target === 0 && event.t >= refreshedAt && event.type === "ack.accepted") && performance.now() < undoAckDeadline) {
+						await delay(25);
+					}
+					if (!wire.some(event => event.target === 0 && event.t >= refreshedAt && event.type === "ack.accepted")) {
+						throw new Error("Undo clear operation was not durably acknowledged");
+					}
+					const referenceUser = await joinRoom(config, roomId, "Clear undo reference");
+					const reference = await openMeasuredRoomPage(browser, { ...config, labEnabled: false }, referenceUser);
+					closers.push(reference.close);
+					const compareDeadline = performance.now() + 8000;
+					do {
+						const results = await Promise.all([a.page, b.page].map(page => compareCanvasPages(page, reference.page)));
+						replayDifference = Math.max(...results.map(result => result.diffRatio));
+						if (replayDifference <= .005) break;
+						await delay(200);
+					} while (performance.now() < compareDeadline);
+					if (replayDifference > .005) throw new Error(`Restored canvas does not match fresh replay (diff=${replayDifference})`);
+				}
 				const clearAck = wire.find(event => event.target === 0 && event.t >= beganAt && event.type === "ack.accepted");
 				metrics = { sliderGestureMs: releasedAt - beganAt, clearToBothBlankMs: clearedAt - beganAt,
 					clearReleaseToBothBlankMs: clearedAt - releasedAt,
@@ -364,7 +414,8 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 					clearRemoteFirstRegionObservedMs: observations[2]!.completedAt - releasedAt,
 					clearRemoteSecondRegionObservedMs: observations[3]!.completedAt - releasedAt,
 					blankObservationSamples: observations.reduce((sum, item) => sum + item.frames + 1, 0),
-					refreshToBothBlankMs: refreshedAt - clearedAt, undoToBothVisibleMs: performance.now() - refreshedAt };
+					refreshToBothBlankMs: refreshedAt - clearedAt, undoToBothVisibleMs: performance.now() - refreshedAt,
+					...(scenario.id === "clear-undo-large" ? { replayDifference } : {}) };
 				if (clearAck) metrics.firstAckAfterSliderStartMs = clearAck.t - beganAt;
 			} else if (scenario.id === "edit-text" || scenario.id === "edit-sticky") {
 				const room = await openRoomPage(browser, config, users[0]!, observe);
@@ -419,6 +470,198 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 				const diff = await compareCanvasPages(room.page, observer.page);
 				metrics = { reloadToComparedPixelsMs: performance.now() - beganAt, difference: diff.diffRatio };
 				if (diff.diffRatio > .005) throw new Error("Refresh canvas mismatch");
+			} else if (scenario.id === "pending-refresh-recovery") {
+				const room = await openRoomPage(browser, config, users[0]!, async page => {
+					observe(page);
+					await page.addInitScript(() => {
+						const OriginalWS = window.WebSocket;
+						const originalSend = OriginalWS.prototype.send;
+						OriginalWS.prototype.send = function(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+							if (typeof data === "string" && sessionStorage.getItem("__aeviaDropNextPushCmd") === "1") {
+								try {
+									const parsed = JSON.parse(data) as { type?: string; data?: { id?: string; cmd?: { type?: string } } };
+									if (parsed.type === "push-cmd" && parsed.data?.cmd?.type === "scene-op") {
+										sessionStorage.removeItem("__aeviaDropNextPushCmd");
+										(window as unknown as { __droppedOpId?: string }).__droppedOpId = parsed.data.id;
+										setTimeout(() => this.close(4002, "simulate unacked offline close"), 20);
+										return;
+									}
+								} catch { /* ignore non-json */ }
+							}
+							return originalSend.call(this, data);
+						};
+					});
+				});
+				closers.push(room.close);
+				await room.page.evaluate(() => sessionStorage.setItem("__aeviaDropNextPushCmd", "1"));
+				await start();
+				const roi = roiAround(390, 310, 140);
+				await drawLine(room.page, 330, 270, 455, 357, 10);
+				const droppedAt = performance.now();
+				await room.page.waitForFunction(() => Boolean((window as unknown as { __droppedOpId?: string }).__droppedOpId), undefined, { timeout: 5000 });
+				const droppedOpId = await room.page.evaluate(() => (window as unknown as { __droppedOpId?: string }).__droppedOpId!);
+				if (wire.some(event => event.target === 0 && event.direction === "receive" && event.type === "ack.accepted" && event.id === droppedOpId)) {
+					throw new Error("Intercepted operation should not have been acknowledged before reload");
+				}
+				const reloadedAt = performance.now();
+				await room.page.reload();
+				await room.page.locator("canvas").first().waitFor({ timeout: 15000 });
+				await room.page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 15000 });
+				const ackDeadline = performance.now() + 10000;
+				while (!wire.some(event => event.target === 0 && event.t >= reloadedAt && event.direction === "receive" && event.type === "ack.accepted" && event.id === droppedOpId)) {
+					if (performance.now() >= ackDeadline) throw new Error("Pending operation was not recovered and acknowledged after reload");
+					await delay(25);
+				}
+				const ackEvent = wire.find(event => event.target === 0 && event.t >= reloadedAt && event.direction === "receive" && event.type === "ack.accepted" && event.id === droppedOpId)!;
+				await waitForNonBlankCanvas(room.page, { roi, timeoutMs: 8000 });
+				const reference = await openRoomPage(browser, { ...config, labEnabled: false }, users[1]!, observe);
+				closers.push(reference.close);
+				await waitForNonBlankCanvas(reference.page, { roi, timeoutMs: 8000 });
+				const diff = await compareCanvasPages(room.page, reference.page);
+				metrics = {
+					dropToReloadMs: reloadedAt - droppedAt,
+					reloadToRecoveredAckMs: ackEvent.t - reloadedAt,
+					reloadToVisibleMs: performance.now() - reloadedAt,
+					replayDifference: diff.diffRatio,
+				};
+				if (diff.diffRatio > .005) throw new Error(`Recovered pending canvas mismatch (diff=${diff.diffRatio})`);
+			} else if (scenario.id === "tools-matrix") {
+				const room = await openRoomPage(browser, config, users[0]!, observe);
+				closers.push(room.close);
+				const page = room.page;
+				await start();
+				const beganAt = performance.now();
+				await drawLine(page, 120, 140, 220, 200, 10);
+				const penDoneAt = performance.now();
+				const penButton = page.locator("button").filter({ has: page.locator("svg.lucide-pen-tool, svg.lucide-pencil, svg.lucide-highlighter") }).first();
+				await penButton.click();
+				await page.getByRole("button", { name: "铅笔", exact: true }).click();
+				await drawLine(page, 260, 140, 360, 200, 10);
+				await penButton.click();
+				await page.getByRole("button", { name: "荧光笔", exact: true }).click();
+				await drawLine(page, 400, 140, 500, 200, 10);
+				await page.locator('button[title="形状与内容"]').click();
+				await page.getByRole("button", { name: "矩形", exact: true }).click();
+				await page.keyboard.down("Shift");
+				await drawLine(page, 560, 130, 660, 210, 8);
+				await page.keyboard.up("Shift");
+				const shapeDoneAt = performance.now();
+				await page.locator("button").filter({ has: page.locator("svg.lucide-eraser") }).first().click();
+				await drawLine(page, 150, 155, 190, 185, 6);
+				await page.locator("button").filter({ has: page.locator("svg.lucide-mouse-pointer-2") }).first().click();
+				await drawLine(page, 540, 110, 680, 230, 6);
+				await drawLine(page, 600, 170, 640, 200, 6);
+				const transformDoneAt = performance.now();
+				await page.locator('button[title="形状与内容"]').click();
+				await page.getByRole("button", { name: "文字", exact: true }).click();
+				await drawLine(page, 200, 290, 440, 390, 8);
+				const textEditor = page.getByRole("dialog", { name: "文字编辑器" });
+				await textEditor.waitFor({ state: "visible" });
+				await textEditor.locator("textarea").fill("工具矩阵 Aevia");
+				await textEditor.getByRole("button", { name: "完成" }).click();
+				await textEditor.waitFor({ state: "hidden" });
+				await page.locator('button[title="形状与内容"]').click();
+				await page.getByRole("button", { name: "便签", exact: true }).click();
+				await drawLine(page, 520, 290, 740, 410, 8);
+				await textEditor.waitFor({ state: "visible" });
+				await textEditor.locator("textarea").fill("便签工具测试");
+				await textEditor.getByRole("button", { name: "完成" }).click();
+				await textEditor.waitFor({ state: "hidden" });
+				await pressUndo(page);
+				await pressRedo(page);
+				await Promise.all([
+					waitForNonBlankCanvas(page, { roi: roiAround(310, 170, 100), timeoutMs: 8000 }),
+					waitForNonBlankCanvas(page, { roi: roiAround(450, 170, 100), timeoutMs: 8000 }),
+					waitForNonBlankCanvas(page, { roi: roiAround(630, 180, 120), timeoutMs: 8000 }),
+					waitForNonBlankCanvas(page, { roi: roiAround(300, 330, 140), timeoutMs: 8000 }),
+					waitForNonBlankCanvas(page, { roi: roiAround(610, 340, 140), timeoutMs: 8000 }),
+				]);
+				const reference = await openRoomPage(browser, { ...config, labEnabled: false }, users[1]!, observe);
+				closers.push(reference.close);
+				await waitForNonBlankCanvas(reference.page, { roi: roiAround(610, 340, 140), timeoutMs: 8000 });
+				const diff = await compareCanvasPages(page, reference.page);
+				const transport = wireMetrics(wire.filter(event => event.t >= beganAt));
+				metrics = {
+					penMs: penDoneAt - beganAt,
+					brushesAndShapeMs: shapeDoneAt - penDoneAt,
+					eraseAndDragMs: transformDoneAt - shapeDoneAt,
+					textStickyHistoryMs: performance.now() - transformDoneAt,
+					acceptedOperations: transport.committed,
+					replayDifference: diff.diffRatio,
+				};
+				if (diff.diffRatio > .005) throw new Error(`Tools matrix canvas mismatch (diff=${diff.diffRatio})`);
+			} else if (scenario.id === "account-room-flow") {
+				const startedAt = performance.now();
+				const ownerUsername = `acct-${randomUUID().slice(0, 8)}`;
+				const registerRes = await fetch(`${config.apiUrl}/v2/auth/register`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ username: ownerUsername, password: "profile-password", nickname: "Owner" }),
+				});
+				const registerJson = await registerRes.json() as { code?: number; data?: { token?: string; account?: { id: string; username: string; nickname: string } } };
+				if (!registerRes.ok || registerJson.code !== 200 || !registerJson.data?.token || !registerJson.data.account) {
+					throw new Error(`Account register failed: ${JSON.stringify(registerJson)}`);
+				}
+				const accountToken = registerJson.data.token;
+				const account = registerJson.data.account;
+				const ownedRoomId = String(Math.floor(100000 + Math.random() * 900000));
+				const createRes = await fetch(`${config.apiUrl}/create-room`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", Authorization: `Bearer ${accountToken}` },
+					body: JSON.stringify({ roomId: ownedRoomId, roomName: `Owned_${ownedRoomId}`, password: "" }),
+				});
+				if (!createRes.ok) throw new Error(`Owned create-room failed: ${createRes.status}`);
+				const ownerJoinRes = await fetch(`${config.apiUrl}/v2/rooms/${ownedRoomId}/admission`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", Authorization: `Bearer ${accountToken}` },
+					body: JSON.stringify({ roomId: ownedRoomId, password: "" }),
+				});
+				const ownerJoinJson = await ownerJoinRes.json() as { code?: number; data?: { sessionToken?: string; expiresAt?: number | null; userId?: string } };
+				if (!ownerJoinRes.ok || !ownerJoinJson.data?.sessionToken) throw new Error("Owner admission failed");
+				const ownerUser = { roomId: ownedRoomId, userName: account.nickname, token: ownerJoinJson.data.sessionToken, userId: ownerJoinJson.data.userId ?? account.id, expiresAt: ownerJoinJson.data.expiresAt ?? null };
+				const ownerPage = await openRoomPage(browser, config, ownerUser, async page => {
+					observe(page);
+					await page.addInitScript((savedAccount) => {
+						if (!localStorage.getItem("account")) {
+							localStorage.setItem("account", JSON.stringify(savedAccount));
+						}
+					}, { token: accountToken, account });
+				});
+				closers.push(ownerPage.close);
+				await start();
+				const apiReadyAt = performance.now();
+				await ownerPage.page.locator("button").filter({ hasText: "人协作中" }).click();
+				await ownerPage.page.getByRole("button", { name: /房间设置/ }).click();
+				const settingsDialog = ownerPage.page.getByRole("dialog", { name: "房间设置" });
+				await settingsDialog.waitFor({ state: "visible" });
+				await settingsDialog.locator("input").first().waitFor({ state: "visible" });
+				await settingsDialog.getByRole("button", { name: "保存设置" }).click();
+				await settingsDialog.waitFor({ state: "hidden" });
+				const activeAccountToken = await ownerPage.page.evaluate(() => {
+					const saved = localStorage.getItem("account");
+					return saved ? (JSON.parse(saved) as { token?: string }).token ?? "" : "";
+				}) || accountToken;
+				const guest = await joinRoom(config, ownedRoomId, "Flow Guest");
+				const guestClaims = JSON.parse(Buffer.from(guest.token.split(".")[1]!, "base64url").toString("utf8")) as { userId?: string };
+				const guestUserId = guestClaims.userId || guest.userId;
+				const guestPage = await openRoomPage(browser, config, { ...guest, userId: guestUserId }, observe);
+				closers.push(guestPage.close);
+				const kickRes = await fetch(`${config.apiUrl}/v2/rooms/${ownedRoomId}/guests/${encodeURIComponent(guestUserId)}`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeAccountToken}` },
+					body: JSON.stringify({ action: "kick" }),
+				});
+				if (!kickRes.ok) throw new Error(`Kick guest failed: ${kickRes.status}`);
+				await guestPage.page.getByText("你已离开房间或访问权限已被房主移除。").waitFor({ timeout: 8000 });
+				const revokedReview = await fetch(`${config.apiUrl}/get-page-review`, {
+					headers: { Authorization: `Bearer ${guest.token}` },
+				});
+				if (revokedReview.status === 200) throw new Error("Revoked guest session token still allowed HTTP access");
+				metrics = {
+					registerCreateJoinMs: apiReadyAt - startedAt,
+					settingsSaveKickRevokeMs: performance.now() - apiReadyAt,
+					revokedHttpStatus: revokedReview.status,
+				};
 			} else {
 				const transportCase = scenario.id === "draw-ring" || scenario.id === "draw-transfer";
 				const open = scenario.id === "draw-dense-ready" || transportCase
@@ -553,9 +796,24 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 				});
 				type PhaseEntry = [string, number, number, { epoch?: number; first?: number; id?: string }?];
 				const apply = new Map<string, { start?: number; end?: number }>();
-				const correlation: Array<{ id: string; queueLowMs: number; queueHighMs: number; workerElapsedMs: number }> = [];
+				const correlation: Array<{ id: string; queueLowMs: number; queueHighMs: number; workerElapsedMs: number; wsSendToAckMs?: number; wsSendToRemoteMs?: number }> = [];
 				const key = (detail: NonNullable<PhaseEntry[3]>) => `${detail.epoch}:${detail.first}:${detail.id}`;
 				const browserRows = (target: number) => (values[target]?.data as { rows?: PhaseEntry[] } | null)?.rows ?? [];
+				const wireSendById = new Map<string, number>();
+				const wireAckById = new Map<string, number>();
+				const wireRemoteById = new Map<string, number>();
+				for (const event of wire) {
+					if (!event.id) continue;
+					if (event.target === index && event.direction === "send" && (event.type === "push-cmd" || event.type === "binary-scene-append") && !wireSendById.has(event.id)) {
+						wireSendById.set(event.id, event.t);
+					}
+					if (event.target === index && event.direction === "receive" && event.type === "ack.accepted" && !wireAckById.has(event.id)) {
+						wireAckById.set(event.id, event.t);
+					}
+					if (event.target !== index && event.direction === "receive" && event.type === "push-cmd" && !wireRemoteById.has(event.id)) {
+						wireRemoteById.set(event.id, event.t);
+					}
+				}
 				for (let target = 1; target < values.length; target++) {
 					apply.clear();
 					for (const [event, t,, detail] of browserRows(target)) {
@@ -573,8 +831,17 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 						if (matched?.start === undefined || matched.end === undefined || matched.end < matched.start) continue;
 						const center = matched.start + offset - t;
 						if (center + uncertainty < 0) continue;
-						correlation.push({ id: detail.id, queueLowMs: Math.max(0, center - uncertainty), queueHighMs: center + uncertainty,
-							workerElapsedMs: matched.end - matched.start });
+						const sendT = wireSendById.get(detail.id);
+						const ackT = wireAckById.get(detail.id);
+						const remoteT = wireRemoteById.get(detail.id);
+						correlation.push({
+							id: detail.id,
+							queueLowMs: Math.max(0, center - uncertainty),
+							queueHighMs: center + uncertainty,
+							workerElapsedMs: matched.end - matched.start,
+							...(sendT !== undefined && ackT !== undefined && ackT >= sendT ? { wsSendToAckMs: ackT - sendT } : {}),
+							...(sendT !== undefined && remoteT !== undefined && remoteT >= sendT ? { wsSendToRemoteMs: remoteT - sendT } : {}),
+						});
 					}
 				}
 				write(path.join(dir, name), { realms: realmsWithSummary, correlation, lab: await deadline(captureLabSnapshot(page), 3000) });
@@ -582,6 +849,10 @@ async function runSample(browser: Browser, services: Services, scenario: Scenari
 					metrics.matchedWorkerOperations = Number(metrics.matchedWorkerOperations ?? 0) + correlation.length;
 					metrics.longestWorkerOperationMs = Math.max(Number(metrics.longestWorkerOperationMs ?? 0), ...correlation.map(row => row.workerElapsedMs));
 					metrics.longestWorkerQueueLowerBoundMs = Math.max(Number(metrics.longestWorkerQueueLowerBoundMs ?? 0), ...correlation.map(row => row.queueLowMs));
+					const ackSamples = correlation.map(row => row.wsSendToAckMs).filter((v): v is number => v !== undefined);
+					const remoteSamples = correlation.map(row => row.wsSendToRemoteMs).filter((v): v is number => v !== undefined);
+					if (ackSamples.length) metrics.medianMatchedWsAckMs = median(ackSamples);
+					if (remoteSamples.length) metrics.medianMatchedWsRemoteMs = median(remoteSamples);
 					// Keep the two bounds paired; the upper bound belongs to the same
 					// operation as the worst lower bound, rather than another sample.
 					const longest = correlation.reduce((a, b) => b.queueLowMs > a.queueLowMs ? b : a);

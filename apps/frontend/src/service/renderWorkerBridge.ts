@@ -1,4 +1,5 @@
 // File role: bridge between the main thread and render worker, with OffscreenCanvas main-canvas support.
+import { isProxy, toRaw } from "vue";
 import type { Command, EraseTarget, FlatPoint, Point, aabbBox } from "@collaborative-whiteboard/shared";
 import { SceneBatchRing } from "../workers/sceneBatchRing";
 import { applyRenderIRDelta, type RenderIRFrame } from "../scene/renderIR";
@@ -93,8 +94,28 @@ const clonePoint = (point: Point): Point => ({
 	lamport: point.lamport,
 });
 
-const cloneSceneOperation = (operation: Command["sceneOperation"]) =>
-	operation ? JSON.parse(JSON.stringify(operation)) as NonNullable<Command["sceneOperation"]> : undefined;
+const cloneSceneOperation = (operation: Command["sceneOperation"]) => {
+	if (!operation) return undefined;
+	const raw = isProxy(operation) ? toRaw(operation) : operation;
+	try {
+		return structuredClone(raw) as NonNullable<Command["sceneOperation"]>;
+	} catch {
+		return JSON.parse(JSON.stringify(raw)) as NonNullable<Command["sceneOperation"]>;
+	}
+};
+
+const prepareInitCommandForWorker = (cmd: Command): Command => {
+	const raw = isProxy(cmd) ? toRaw(cmd) : cmd;
+	const rawOp = raw.sceneOperation && isProxy(raw.sceneOperation)
+		? cloneSceneOperation(raw.sceneOperation)
+		: raw.sceneOperation;
+	return {
+		...raw,
+		points: [],
+		box: isProxy(raw.box) ? { ...toRaw(raw.box) } : raw.box,
+		sceneOperation: rawOp,
+	};
+};
 
 const cloneCommand = (cmd: Command): Command => ({
 	...cmd,
@@ -678,13 +699,17 @@ export const createRenderWorkerBridge = (options: RenderWorkerBridgeOptions) => 
 	const setInitSceneOperations = (commands: Command[], pageId: number) => {
 		if (!worker) return;
 		flushIncrementalCommands();
+		const prepared: Command[] = [];
+		for (const command of commands) {
+			if (command.type === "scene-op" && command.pageId === pageId) {
+				prepared.push(prepareInitCommandForWorker(command));
+			}
+		}
 		postWorker({
 			type: "set-init-scene-operations",
 			data: {
 				pageId,
-				commands: commands
-					.filter((command) => command.type === "scene-op" && command.pageId === pageId)
-					.map(cloneCommand),
+				commands: prepared,
 			},
 		});
 	};

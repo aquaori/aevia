@@ -6,79 +6,183 @@
       "id": "frontend:apps/frontend/src/App.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/App.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/App.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/App.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/AccountPanel.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/AccountPanel.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomConnectionOverlays.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomConnectionOverlays.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomHeader.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomHeader.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomInvites.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomInvites.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomMemberList.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomMemberList.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomPageOverview.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomPageOverview.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomPagination.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomPagination.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomSettings.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomSettings.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomShortcutsDialog.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomShortcutsDialog.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomSizePreview.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomSizePreview.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomTextEditor.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomTextEditor.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/components/RoomToolbar.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomToolbar.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/components/roomComponents.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/components/roomComponents.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/config/endpoints.ts",
@@ -112,49 +216,113 @@
       "id": "frontend:apps/frontend/src/controllers/roomCommandController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomCommandController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomControllers.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomControllers.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomEditorController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomEditorController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomControllers.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomControllers.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomHeaderController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomHeaderController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomControllers.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomControllers.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomKeyboardController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomKeyboardController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomControllers.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomControllers.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomLifecycleController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomLifecycleController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomControllers.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomControllers.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomPanelController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomPanelController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomControllers.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomControllers.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomPointerController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomPointerController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomPointerController.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomPointerController.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/controllers/roomToolController.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/controllers/roomToolController.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/controllers/roomControllers.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/controllers/roomControllers.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/instrumentation/labMarkNames.ts",
@@ -174,13 +342,29 @@
       "id": "frontend:apps/frontend/src/instrumentation/labMarks.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/instrumentation/labMarks.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/instrumentation/labMarks.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/instrumentation/labMarks.unit.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/instrumentation/labPlugin.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/instrumentation/labPlugin.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/instrumentation/labMarks.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/instrumentation/labMarks.unit.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/main.ts",
@@ -207,6 +391,11 @@
           "kind": "vitest",
           "file": "tests/report/feature-obligations.spec.ts",
           "level": "harness"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/router/index.spec.ts",
+          "level": "module"
         }
       ]
     },
@@ -221,6 +410,11 @@
           "kind": "browser",
           "file": "apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts",
           "level": "browser"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/scene/canvasIRRenderer.spec.ts",
+          "level": "unit"
         }
       ]
     },
@@ -291,6 +485,11 @@
           "kind": "browser",
           "file": "apps/frontend/tests/browser/scene-dirty-render.browser.spec.ts",
           "level": "browser"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/scene/primitiveRenderer.spec.ts",
+          "level": "unit"
         }
       ]
     },
@@ -396,13 +595,29 @@
       "id": "frontend:apps/frontend/src/scene/stickerAssets.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/stickerAssets.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/stickerAssets.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/scene/stickerAssets.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/scene/strokeCompiler.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/scene/strokeCompiler.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/scene/sceneCore.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/scene/sceneCore.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/scene/toolRegistry.ts",
@@ -429,6 +644,11 @@
           "kind": "vitest",
           "file": "apps/frontend/src/service/commandDirtyRect.spec.ts",
           "level": "module"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/canvas.spec.ts",
+          "level": "module"
         }
       ]
     },
@@ -436,7 +656,15 @@
       "id": "frontend:apps/frontend/src/service/canvasRuntime.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/canvasRuntime.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/canvasRuntime.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/canvasRuntime.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/service/collabCommandHandlers.ts",
@@ -579,6 +807,20 @@
       ]
     },
     {
+      "id": "frontend:apps/frontend/src/service/pageHistoryCache.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/pageHistoryCache.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/pageHistoryCache.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/pageHistoryCache.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
       "id": "frontend:apps/frontend/src/service/pageOverviewService.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/pageOverviewService.ts",
@@ -602,6 +844,11 @@
         {
           "kind": "vitest",
           "file": "apps/frontend/src/service/roomCollabTransport.spec.ts",
+          "level": "module"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/pendingSceneStore.spec.ts",
           "level": "module"
         }
       ]
@@ -638,7 +885,15 @@
       "id": "frontend:apps/frontend/src/service/roomCanvasOverlay.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/service/roomCanvasOverlay.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/service/roomCanvasOverlay.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/roomCanvasOverlay.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/service/roomCollabTransport.ts",
@@ -678,6 +933,11 @@
         {
           "kind": "vitest",
           "file": "apps/frontend/src/service/roomCollabTransport.spec.ts",
+          "level": "module"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/roomSessionContext.spec.ts",
           "level": "module"
         }
       ]
@@ -735,6 +995,11 @@
           "kind": "browser",
           "file": "apps/frontend/tests/browser/worker-init-stream.browser.spec.ts",
           "level": "browser"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/whiteboardSession.spec.ts",
+          "level": "module"
         }
       ]
     },
@@ -742,31 +1007,71 @@
       "id": "frontend:apps/frontend/src/states/roomEditorState.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/states/roomEditorState.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/states/roomStates.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/states/roomStates.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/states/roomInteractionState.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/states/roomInteractionState.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/states/roomStates.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/states/roomStates.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/states/roomSessionState.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/states/roomSessionState.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/states/roomStates.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/states/roomStates.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/states/roomUiState.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/states/roomUiState.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/states/roomStates.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/states/roomStates.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/store/accountStore.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/store/accountStore.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/store/accountStore.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/store/accountStore.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/store/commandStore.ts",
@@ -814,7 +1119,15 @@
       "id": "frontend:apps/frontend/src/utils/dirtyRedraw.ts",
       "kind": "frontend",
       "path": "apps/frontend/src/utils/dirtyRedraw.ts",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/utils/dirtyRedraw.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/utils/dirtyRedraw.spec.ts",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/utils/editorEventBus.ts",
@@ -876,19 +1189,43 @@
       "id": "frontend:apps/frontend/src/views/HomeView.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/views/HomeView.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/views/views.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/views/views.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/views/InviteView.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/views/InviteView.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/views/views.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/views/views.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/views/RoomView.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/views/RoomView.vue",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/frontend/src/views/views.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/views/views.spec.ts",
+          "level": "module"
+        }
+      ]
     },
     {
       "id": "frontend:apps/frontend/src/workers/canvasWorker.ts",
@@ -901,6 +1238,11 @@
           "kind": "browser",
           "file": "apps/frontend/tests/browser/worker-init-stream.browser.spec.ts",
           "level": "browser"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/workers/canvasWorker.unit.spec.ts",
+          "level": "unit"
         }
       ]
     },
@@ -914,6 +1256,25 @@
         {
           "kind": "vitest",
           "file": "apps/frontend/src/service/sceneBatchRing.unit.spec.ts",
+          "level": "unit"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/workers/taskTypes.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/workers/taskTypes.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/workerTaskScheduler.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/workerTaskScheduler.unit.spec.ts",
+          "level": "unit"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/workers/canvasWorker.unit.spec.ts",
           "level": "unit"
         }
       ]
@@ -936,7 +1297,16 @@
       "id": "go:apps/backend/cmd/aevia-backend/main.go",
       "kind": "go",
       "path": "apps/backend/cmd/aevia-backend/main.go",
-      "state": "uncovered"
+      "state": "covered",
+      "owner": "apps/backend/cmd/aevia-backend/main_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/aevia-backend",
+          "file": "apps/backend/cmd/aevia-backend/main_test.go",
+          "level": "unit"
+        }
+      ]
     },
     {
       "id": "go:apps/backend/internal/auth/password.go",
@@ -1039,6 +1409,12 @@
           "kind": "go",
           "package": "./internal/domain",
           "file": "apps/backend/internal/domain/types_test.go",
+          "level": "unit"
+        },
+        {
+          "kind": "go",
+          "package": "./internal/domain",
+          "file": "apps/backend/internal/domain/command_methods_test.go",
           "level": "unit"
         }
       ]
@@ -1629,6 +2005,21 @@
       ]
     },
     {
+      "id": "go:apps/backend/internal/room/snapshot_cache.go",
+      "kind": "go",
+      "path": "apps/backend/internal/room/snapshot_cache.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/room/snapshot_builder_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/room",
+          "file": "apps/backend/internal/room/snapshot_builder_test.go",
+          "level": "unit"
+        }
+      ]
+    },
+    {
       "id": "go:apps/backend/internal/room/state.go",
       "kind": "go",
       "path": "apps/backend/internal/room/state.go",
@@ -1962,6 +2353,11 @@
           "kind": "vitest",
           "file": "apps/frontend/src/scene/sceneCore.spec.ts",
           "level": "module"
+        },
+        {
+          "kind": "vitest",
+          "file": "packages/shared/src/protocol/sceneProtocol.spec.ts",
+          "level": "unit"
         }
       ]
     },

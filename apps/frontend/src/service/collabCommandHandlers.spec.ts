@@ -575,4 +575,54 @@ describe("collab command handlers", () => {
 		expect(fixture.options.applyRemotePageChange).toHaveBeenCalledTimes(2);
 		expect(fixture.options.beginInitRenderStream).toHaveBeenLastCalledWith(1);
 	});
+
+	it("handles push update/stop, clear, page-add, undo/redo, delete, and operation rejections", () => {
+		vi.useFakeTimers();
+		const fixture = createFixture();
+
+		// Push update -> buffered -> stop flushes
+		const startCmd = createIncomingCommand({ id: "stroke-r1", type: "path", lamport: 10 });
+		fixture.options.pendingUpdates.value.set("stroke-r1", [{ x: 0.1, y: 0.1, p: 0.5, lamport: 10 }]);
+		fixture.handlers.handlePushCommand(message("push-cmd", { cmd: startCmd, lamport: 10 }, "start"));
+		fixture.options.commandMap.set("stroke-r1", startCmd);
+
+		fixture.handlers.handlePushCommand(
+			message("push-cmd", { cmdId: "stroke-r1", lamport: 11, points: [{ x: 0.2, y: 0.2, p: 0.6, lamport: 11 }] }, "update"),
+		);
+		vi.advanceTimersByTime(32);
+		fixture.handlers.handlePushCommand(
+			message("push-cmd", { cmdId: "stroke-r1", lamport: 12, points: [{ x: 0.3, y: 0.3, p: 0.7, lamport: 12 }] }, "stop"),
+		);
+		expect(fixture.options.finishIncrementalCommand).toHaveBeenCalled();
+
+		// Clear command
+		fixture.options.clearClearedCommands.mockReturnValue(true);
+		fixture.handlers.handlePushCommand(
+			message("push-cmd", { cmd: createIncomingCommand({ id: "clr-1", type: "clear", pageId: 0 }), username: "Bob", lamport: 13 }, "normal"),
+		);
+		expect(toastMock.info).toHaveBeenCalled();
+
+		// Page add
+		fixture.handlers.handlePageAdd(message("cmd-page-add", { totalPages: 4, userId: "u1", username: "Alice" }));
+		expect(fixture.options.totalPages.value).toBe(4);
+		expect(fixture.options.goToPage).toHaveBeenCalledWith(3);
+
+		// Undo & redo existing command
+		fixture.handlers.handleUndoRedo(message("undo-cmd", { cmdId: "stroke-r1" }));
+		expect(startCmd.isDeleted).toBe(true);
+		fixture.handlers.handleUndoRedo(message("redo-cmd", { cmd: { ...startCmd, isDeleted: false } }));
+		expect(startCmd.isDeleted).toBe(false);
+
+		// Delete command
+		fixture.options.removeCommand.mockReturnValueOnce(startCmd);
+		fixture.handlers.handleDeleteCommand(message("delete-cmd", { cmdId: "stroke-r1" }));
+		expect(fixture.options.removeCommandState).toHaveBeenCalledWith("stroke-r1");
+
+		// Operation rejections
+		fixture.options.removeCommand.mockReturnValueOnce(startCmd);
+		fixture.handlers.handleOperationRejected(message("op-rejected", { opType: "cmd-start", cmdId: "stroke-r1", reason: "Forbidden", code: "FORBIDDEN" }));
+		fixture.handlers.handleOperationRejected(message("op-rejected", { opType: "undo-cmd", cmdId: "stroke-r1", reason: "Bad undo" }));
+		expect(toastMock.error).toHaveBeenCalled();
+		vi.useRealTimers();
+	});
 });

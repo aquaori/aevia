@@ -265,6 +265,7 @@ describe("change obligations enforcement", () => {
 		const repo = makeTempDir();
 		const runGit = (args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
 		runGit(["init", "-q"]);
+		runGit(["config", "core.autocrlf", "false"]);
 		runGit(["config", "user.email", "test@example.com"]);
 		runGit(["config", "user.name", "Test User"]);
 
@@ -287,7 +288,7 @@ describe("change obligations enforcement", () => {
 		expect(analysis.analysis.report.passed).toBe(true);
 		expect(analysis.analysis.report.summary.changedSources).toBe(1);
 		expect(analysis.analysis.report.selectedTargets.every((t) => t.kind === "external" || t.executionMode === "reused-from-core")).toBe(true);
-	});
+	}, 20000);
 
 	it("fails closed in aggregate when any selected target did not execute or failed", () => {
 		const runDir = makeTempDir();

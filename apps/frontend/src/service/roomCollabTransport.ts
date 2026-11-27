@@ -20,6 +20,7 @@ import { applyServerPressurePolicy, resetCollabPressurePolicy } from "./collabPr
 import { renewRoomSession as renewRoomSessionRequest, requestWebsocketTicket } from "./sessionApi";
 import { wsBaseUrl } from "../config/endpoints";
 import { PendingSceneStore } from "./pendingSceneStore";
+import { PageHistoryCache } from "./pageHistoryCache";
 import { labEnabled, labMark } from "../instrumentation/labMarks";
 import {
 	LAB_MARK_WS_MESSAGE,
@@ -131,17 +132,40 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 	const socket = ref<WebSocket | null>(null);
 	const historyReadyPages = ref<Set<number>>(new Set());
 	let historyRequestSequence = 0;
+	let pageHistoryCache: PageHistoryCache | null = null;
+	let pageHistoryCachePromise: Promise<void> | null = null;
 	const historyFragments = new Map<number, { commands: Command[]; cursor?: string; snapshotVersion?: number }>();
 	const historyRequests = new Map<string, { pageId: number; fragment: { commands: Command[]; cursor?: string; snapshotVersion?: number }; startedAt: number }>();
-	const requestPageHistory = (connection: WebSocket, pageId: number) => {
-		if (connection.readyState !== WebSocket.OPEN) return;
+	const sendPageHistoryRequest = (connection: WebSocket, pageId: number, fragment: { commands: Command[]; cursor?: string; snapshotVersion?: number }) => {
+		if (connection.readyState !== WebSocket.OPEN || socket.value !== connection) return;
 		for (const [id, request] of historyRequests) if (request.pageId === pageId) historyRequests.delete(id);
 		const requestId = String(++historyRequestSequence);
-		historyReadyPages.value = new Set([...historyReadyPages.value].filter((page) => page !== pageId));
-		const fragment = historyFragments.get(pageId) ?? { commands: [] };
 		historyFragments.set(pageId, fragment);
 		historyRequests.set(requestId, { pageId, fragment, startedAt: performance.now() });
 		connection.send(JSON.stringify({ type: "load-page-history", data: { requestId, pageId: statePageToProtocol(pageId), cursor: fragment.cursor, snapshotVersion: fragment.snapshotVersion } }));
+	};
+	const requestPageHistory = (connection: WebSocket, pageId: number) => {
+		if (connection.readyState !== WebSocket.OPEN) return;
+		historyReadyPages.value = new Set([...historyReadyPages.value].filter((page) => page !== pageId));
+		const existing = historyFragments.get(pageId);
+		if (existing) {
+			sendPageHistoryRequest(connection, pageId, existing);
+			return;
+		}
+		if (!pageHistoryCache && !pageHistoryCachePromise) {
+			sendPageHistoryRequest(connection, pageId, { commands: [] });
+			return;
+		}
+		void (pageHistoryCachePromise ?? Promise.resolve()).then(async () => {
+			if (connection.readyState !== WebSocket.OPEN || socket.value !== connection) return;
+			const hydrated = historyFragments.get(pageId) ?? (pageHistoryCache ? await pageHistoryCache.load(pageId) : null);
+			if (connection.readyState !== WebSocket.OPEN || socket.value !== connection) return;
+			sendPageHistoryRequest(
+				connection,
+				pageId,
+				hydrated ? { snapshotVersion: hydrated.snapshotVersion, cursor: hydrated.cursor, commands: [...hydrated.commands] } : { commands: [] }
+			);
+		});
 	};
 	const isIntentionalClose = ref(false);
 	const isReconnecting = ref(false);
@@ -785,6 +809,12 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 					const claims = JSON.parse(atob(tokenStr.split(".")[1]!.replace(/-/g, "+").replace(/_/g, "/"))) as { roomId: string; roomCreatedAt: number; userId: string };
 					pendingStore = await PendingSceneStore.open(claims.roomId, claims.roomCreatedAt, claims.userId);
 					for (const [id, operation] of await pendingStore.load()) pendingSceneOperations.set(id, operation);
+					pageHistoryCachePromise = PageHistoryCache.open(claims.roomId, claims.roomCreatedAt, claims.userId).then((opened) => {
+						pageHistoryCache = opened;
+					}).catch(() => {}).finally(() => {
+						pageHistoryCachePromise = null;
+					});
+					await pageHistoryCachePromise;
 				} catch {
 					warnPendingStore();
 				}
@@ -818,16 +848,28 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							const request = historyRequests.get(requestId);
 							if (!request || request.pageId !== Number(msg.data?.pageId)) return;
 							if (msg.type === "page-history-meta") {
-								if (!msg.data?.resumed) { request.fragment.commands = []; request.fragment.cursor = undefined; }
+								if (!msg.data?.resumed) {
+									request.fragment.commands = [];
+									request.fragment.cursor = undefined;
+									void pageHistoryCache?.delete(request.pageId);
+								}
 								request.fragment.snapshotVersion = Number(msg.data?.snapshotVersion);
 							} else if (msg.type === "page-history-chunk") {
 								if (Array.isArray(msg.data?.commands)) request.fragment.commands.push(...msg.data.commands.map(normalizeCommandFromProtocol));
 								if (typeof msg.data?.cursor === "string") request.fragment.cursor = msg.data.cursor;
+								if (typeof request.fragment.snapshotVersion === "number" && request.fragment.cursor) {
+									void pageHistoryCache?.save(request.pageId, {
+										snapshotVersion: request.fragment.snapshotVersion,
+										cursor: request.fragment.cursor,
+										commands: request.fragment.commands,
+									});
+								}
 							} else {
 								historyRequests.delete(requestId);
 								if (msg.type === "page-history-complete" && options.loadedPageIds.value.includes(request.pageId)) {
 									options.applyLoadedPageDelta({ loadedPageIds: options.loadedPageIds.value, loadPageIds: [request.pageId], unloadPageIds: [], commands: request.fragment.commands, preservePoints: true });
 									historyReadyPages.value = new Set([...historyReadyPages.value, request.pageId]);
+									void pageHistoryCache?.delete(request.pageId);
 									if (showHistoryToast) {
 										const now = performance.now();
 										toast.success(`第 ${request.pageId + 1} 页历史已补齐（${request.fragment.commands.length} 条），补载 ${(now - request.startedAt).toFixed(0)} ms，进入房间后 ${(now - roomStartedAt).toFixed(0)} ms`);

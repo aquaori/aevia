@@ -318,6 +318,19 @@ func (a *Actor) PageReview() (PageReview, error) {
 	}
 }
 
+func (a *Actor) CausalDiagnostics() (CausalDiagnostics, error) {
+	reply := make(chan CausalDiagnostics, 1)
+	if err := a.sendReliable(causalDiagnosticsRequest{Reply: reply}); err != nil {
+		return CausalDiagnostics{}, err
+	}
+	select {
+	case result := <-reply:
+		return result, nil
+	case <-a.done:
+		return CausalDiagnostics{}, ErrActorStopped
+	}
+}
+
 func (a *Actor) Shutdown(ctx context.Context) {
 	reply := make(chan struct{}, 1)
 	select {
@@ -460,6 +473,8 @@ func (a *Actor) handle(msg actorMessage) bool {
 		m.Reply <- a.builder.Init(a.state, m.PageID)
 	case pageReviewRequest:
 		m.Reply <- a.state.PageReview()
+	case causalDiagnosticsRequest:
+		m.Reply <- a.state.CausalDiagnostics()
 	case drainingMessage:
 		a.handleDraining(m.Reason)
 	case shutdownMessage:
@@ -544,17 +559,24 @@ func (a *Actor) handleJoin(msg joinMessage) {
 		// the actor while later events wait in the bounded per-client queue.
 		var snapshot *storage.ReadSnapshot
 		var cancel context.CancelFunc
+		var cachedInit InitStream
+		var cachedInitHit bool
 		if resume == "snapshot" {
-			var err error
-			snapshot, _, cancel, err = a.pinSnapshot()
-			if err != nil {
-				if client.Abort != nil {
-					client.Abort()
+			cachedInit, cachedInitHit = a.builder.TryCachedInit(a.roomID, client.PageID, a.state.Room.TotalPage, a.state.RoomSeq, a.state.ClearBefore)
+			if cachedInitHit {
+				cachedInit.Meta["maxLamport"] = maxCommandLamport(a.state.Commands)
+			} else {
+				var err error
+				snapshot, _, cancel, err = a.pinSnapshot()
+				if err != nil {
+					if client.Abort != nil {
+						client.Abort()
+					}
+					result.InitStreamed = true
+					msg.Reply <- result
+					delete(a.state.Clients, client.ID)
+					return
 				}
-				result.InitStreamed = true
-				msg.Reply <- result
-				delete(a.state.Clients, client.ID)
-				return
 			}
 		}
 		out := client.Send
@@ -590,6 +612,9 @@ func (a *Actor) handleJoin(msg joinMessage) {
 				// remain stable while the actor handles subsequent writes.
 				capturedCommands[id] = cmd
 			}
+		}
+		if cachedInitHit {
+			streamResult.Init = cachedInit
 		}
 		go func() {
 			if snapshot != nil {

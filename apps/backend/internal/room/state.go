@@ -1,6 +1,7 @@
 package room
 
 import (
+	"sort"
 	"time"
 
 	"collaborative-whiteboard/apps/backend/internal/domain"
@@ -265,4 +266,48 @@ func (s *State) PageReview() PageReview {
 		})
 	}
 	return PageReview{RoomID: s.Room.RoomID, TotalPage: s.Room.TotalPage, Pages: pages}
+}
+
+type CausalDiagnostics struct {
+	PendingPathFragments int      `json:"pendingPathFragments"`
+	PendingTextOps       int      `json:"pendingTextOps"`
+	DroppedOrphans       uint64   `json:"droppedOrphans"`
+	OrphanElementIDs     []string `json:"orphanElementIds"`
+}
+
+func (s *State) CausalDiagnostics() CausalDiagnostics {
+	diag := CausalDiagnostics{
+		PendingPathFragments: s.Index.PendingFragmentCount(),
+		DroppedOrphans:       s.Index.DroppedOrphanCount(),
+	}
+	orphanSet := make(map[string]bool)
+	for _, id := range s.Index.QuarantinedElementIDs() {
+		orphanSet[id] = true
+	}
+	createdElements := make(map[string]bool)
+	for _, cmd := range s.Commands {
+		if sceneOperationKind(cmd) == "element.create" {
+			if elID := domain.String(sceneOperation(cmd)["elementId"]); elID != "" {
+				createdElements[elID] = true
+			}
+		}
+	}
+	for _, cmd := range s.Commands {
+		if sceneOperationKind(cmd) != "text.patch" {
+			continue
+		}
+		if elID := domain.String(sceneOperation(cmd)["elementId"]); elID != "" && !createdElements[elID] {
+			diag.PendingTextOps++
+			orphanSet[elID] = true
+		}
+	}
+	if len(orphanSet) > 0 {
+		ids := make([]string, 0, len(orphanSet))
+		for id := range orphanSet {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		diag.OrphanElementIDs = ids
+	}
+	return diag
 }

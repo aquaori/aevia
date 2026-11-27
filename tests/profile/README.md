@@ -32,7 +32,12 @@ npm.cmd run test:profile -- --compare=<previous-manifest>
 - `--case=join-contention --collector=baseline` 比较十万点进房时无输入和输入五条笔迹。输入组等待页面处理初始化元信息，并检查首次输入开始早于 Worker 初始化完成、服务端没有拒绝操作、最终画面与新加入客户端对照。该场景启用 Lab 初始化标记，画面稳定时间包含新增笔迹的绘制；输入可能跨越初始化完成时刻，两组按顺序运行，不能仅凭差值认定初始化计算的因果开销。`d563c6f1-66ac-4306-8be6-4e6a526fc9b8` 中两组各五个样本的稳定时间中位数分别约 1061 和 1143 ms；范围分别为 1021–1349 和 1025–1244 ms。
 - 元信息就绪前输入的试验 `d8d79687-8126-4628-a37e-a2b70c33354d` 中，服务端返回 `INVALID_SCENE_OPERATION`，原因是操作身份与房间会话不匹配。消息顺序显示至少一笔提交早于 `init-meta`；当前 `handleInitMeta` 才设置画布的 `userId` 和 `roomId`。该问题应与性能对照分开处理：禁止首屏就绪前的编辑需要覆盖画布、工具栏及键盘入口，并以 Worker 完成初始化为依据；不能等待后台全量历史补载，也不能仅依赖固定延时。
 - `--case=join-gate --collector=baseline` 在测试页面中将 Worker 的初始化屏障延迟 1.5 秒，以便稳定检查加载期间的绘制和撤销快捷键不会提交操作；解禁后检查笔迹得到服务端接受并与新客户端的整体画面对照。该延迟仅用于此功能测试，不可用于衡量正常进房性能。
-- 首屏门禁接入后，`join-100k-active` 的画布输入会被阻止；若没有提交操作，该样本应判为无效。之前的对照是在门禁接入前采集的，不能直接用当前代码重复该对照并声称工作量相同。需要无门禁对照时，应使用明确记录版本的旧构建或隔离的测试配置。
+- 首屏门禁接入后，`join-100k-active` 已适配为门禁解除后（`正在准备画布` 隐藏后）立即连续绘制 5 笔的后门禁并发编辑场景，记录 `gateReadyMs`、`postGateDrawWindowMs`、`submittedOperations` 与 `rejectedOperations=0`。与此前无门禁版本的对照不可视为同工作量因果比较。
+- `--case=join-gate` 同时验证门禁期间本地输入/撤销被阻断（`sentDuringGate=0`）且远端客户端在此期间发送的笔迹在解禁后正常呈现并收敛。
+- `--case=clear-undo-large` 在 10000 点（避开顶部标题栏的左上区域）与双端新笔迹上使用画布像素读回（`waitForBlankCanvas`/`waitForNonBlankCanvas`）避免 UI 浮层与远端光标假阳性，在刷新后等待 `page-history-complete` 就绪再撤销，并用独立新加入客户端对照全画布一致性。
+- `--case=pending-refresh-recovery` 通过测试态 WebSocket 拦截使单条真实 `scene-op` 在写入 IndexedDB 后未送达即断线刷新，验证重载后按原 `opId` 恢复持久化并收敛。
+- `--case=tools-matrix` 端到端串联钢笔、铅笔、荧光笔、Shift 矩形、局部擦除、选择拖拽、文字、便签及撤销重做，并与新加入参考客户端像素对照。
+- `--case=account-room-flow` 端到端验证账号注册、建房、房间设置保存、游客准入、踢出与旧令牌 HTTP 403 拒绝。
 - `cpu` 用 Chromium 的 V8 采样按目标生成 Bottom-up，Go 通过本机 pprof 输出 CPU 排行。`timeline` 生成 Chromium 和 Go 时间线。`memory` 记录页面 isolate 的堆用量和 Go 分配剖面。跨进程校准记录原始时钟往返，以误差区间解释 Worker 队列等待。
 - 页面和 Worker 的统计按目标分开。阶段累计值有嵌套和重叠，不能直接累加为总延迟。Worker 确认与实际像素变化是独立证据。密集用例的重放比较包括新观察端初始化。
 - 重绘隔离样例将局部笔迹完整包在重绘区内，样例准备、绘制和像素校验在同一次浏览器调用中完成。独立计时只量目标调用，CPU 采样窗口包含准备阶段。此前冒烟中，裁剪边界与笔迹相交，以及将局部重绘拆到后续浏览器调用时，逐像素对照均发现差异，分别见报告 `5f057319-69a8-49c3-93d8-4293eec132d1` 和 `c7cd7da8-274f-4500-92ec-629bf59fe09b`。

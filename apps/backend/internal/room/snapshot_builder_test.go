@@ -335,3 +335,38 @@ func TestLiveInitStreamDoesNotBypassClearWatermark(t *testing.T) {
 		t.Fatalf("expected live command stream to contain clear and post-clear commands, got %v", commandIDs)
 	}
 }
+
+func TestSnapshotCheckpointCacheHitsAndInvalidatesOnSeqOrClearChange(t *testing.T) {
+	pathCommand := func(id string, lamport float64) domain.Command {
+		return domain.NewCommand(map[string]any{
+			"id": id, "type": "path", "tool": "pen", "color": "#000", "size": 4.0,
+			"userId": "user-1", "roomId": "cache-room", "pageId": 0, "lamport": lamport,
+			"points":    []any{map[string]any{"x": 0.2, "y": 0.2, "p": 0.5, "lamport": lamport}},
+			"isDeleted": false,
+		})
+	}
+	cmd1 := pathCommand("c1", 1)
+	state := NewState(domain.Room{RoomID: "cache-room", Name: "Cache Room", TotalPage: 1, DurableSeq: 10}, []domain.Command{cmd1})
+	builder := NewSnapshotBuilder(config.Config{InitPreloadPageCount: 1, InitCommandChunkSize: 32, InitFlatPointChunkSize: 512})
+
+	first := builder.Init(state, 0)
+	cached, ok := builder.TryCachedInit("cache-room", 0, 1, 10, state.ClearBefore)
+	if !ok {
+		t.Fatal("expected Init to populate checkpoint cache")
+	}
+	if cached.SnapshotVersion != first.SnapshotVersion || len(cached.RenderChunks) != len(first.RenderChunks) || len(cached.CommandChunks) != len(first.CommandChunks) {
+		t.Fatalf("cached snapshot mismatch: got %+v vs %+v", cached, first)
+	}
+
+	// Sequence bump invalidates prior entry cleanly.
+	cmd2 := pathCommand("c2", 2)
+	state.RoomSeq = 11
+	state.UpsertCommand(cmd2)
+	if _, ok := builder.TryCachedInit("cache-room", 0, 1, 11, state.ClearBefore); ok {
+		t.Fatal("expected cache miss on bumped roomSeq")
+	}
+	second := builder.Init(state, 0)
+	if len(second.CommandChunks[0].Commands) != 2 {
+		t.Fatalf("expected updated snapshot to include c2, got %d commands", len(second.CommandChunks[0].Commands))
+	}
+}
