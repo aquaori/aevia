@@ -38,6 +38,7 @@
     "test:full": "tsx tests/run-system.ts --profile=full --yes",
     "benchmark:backend": "node scripts/benchmark-backend.mjs",
     "test:report": "tsx tests/report/aggregate.ts",
+    "branch:status": "node scripts/branch-status.mjs",
     "lab:inventory": "node scripts/lab-inventory.mjs",
     "lab:inventory:check": "node scripts/lab-inventory.mjs --check",
     "lab:obligations:check": "tsx scripts/ci-check-obligations.mjs",
