@@ -28,7 +28,7 @@ detail lives in [`acceptance.md`](./acceptance.md); design and usage live in
 | Obligation catalogs | `npm run lab:obligations:check` | passes |
 | Production build | `npm run build` | Go backend builds; frontend `vue-tsc -b && vite build` succeeds and emits the QuickJS worker and wasm assets |
 | Two-browser APG case | `npx tsx tests/run-system.ts --profile=single --yes "--only=case:apg-official-business"` | passed, `0 evidence issue(s)`, Lab measurement valid |
-| Latest green Lab run | `tests/reports/summary/runs/0cf2a1dd-fb2c-4cac-a00e-a1348550bb94/` | `case:apg-official-business` |
+| Latest green Lab run | `tests/reports/summary/runs/9da09cf2-00b1-41b7-8edd-eb6e5f6dfdcc/` | `case:apg-official-business` |
 | Catalog load benchmark | `go test ./internal/apg -run '^$' -bench BenchmarkLoadCatalogOfficialPlugins -benchtime 50x -count 3` | ≈2.1 ms per trust-verified seven-plugin load (was ≈1.8–2.0 ms with six) |
 | Package fuzz | `go test ./internal/apg -run '^$' -fuzz FuzzReadPackageBundle -fuzztime 20s` | 5,610 execs, 11 interesting inputs, no panic |
 | APG on/off first pixel | `tests/run-system.ts --profile=single ... case:local-realtime-first-pixel` | no difference beyond run-to-run noise (measured with the six plugins that existed at the time; see [`performance.md`](./performance.md)) |
