@@ -1,7 +1,7 @@
 # 分支模型与合并规范
 
-本文件是仓库里 Git 分支持久约定的唯一来源。`AGENTS.md` 只保留一句指引，
-`.codex/AGENTS.md` 与 `.agents/rules/agents.md` 不再重复维护分支规则。
+本文件是 Git 约定的展开版说明。`AGENTS.md`、`.codex/AGENTS.md`、`.agents/rules/agents.md`
+各自包含同一份精简版（三处逐字一致，供不同 Agent 读取）；修改约定时三份与本文件要一起改。
 
 ## 1. 分支只按「需求」划分
 
