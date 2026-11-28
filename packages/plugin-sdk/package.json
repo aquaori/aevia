@@ -1,0 +1,16 @@
+{
+  "name": "@aevia/plugin-sdk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts"
+    },
+    "./mock": {
+      "types": "./mock/index.ts",
+      "default": "./mock/index.ts"
+    }
+  }
+}

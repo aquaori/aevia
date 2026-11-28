@@ -20,6 +20,9 @@ const incrementalStrokeStates = new Map<string, StrokeState>();
 const activeStrokeIds = new Set<string>();
 const fallbackSceneEngine = new SceneEngine();
 const hasPendingSceneDependencies = () => fallbackSceneEngine.hasPendingDependencies();
+// The main-thread fallback engine is the only scene source when OffscreenCanvas
+// is unavailable, so plugin reads must come from here instead of the worker.
+const getFallbackRenderIR = () => fallbackSceneEngine.getRenderIR();
 const quarantineSceneMissingElements = (ids: string[]) => fallbackSceneEngine.quarantineMissingElements(ids);
 
 interface DirtyRect {
@@ -265,6 +268,7 @@ export {
 	renderWithPoints,
 	renderSceneCommands,
 	hasPendingSceneDependencies,
+	getFallbackRenderIR,
 	quarantineSceneMissingElements,
 	hitTestScene,
 	querySceneElements,

@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 2,
+  "apiVersion": 1,
+  "id": "aevia.brushes",
+  "name": "Aevia Drawing Presets",
+  "version": "1.0.0",
+  "scope": "system",
+  "contributes": {
+    "brushes": [
+      {
+        "id": "soft-pencil",
+        "label": "Soft Pencil",
+        "base": "pencil",
+        "size": 5,
+        "opacity": 0.65
+      },
+      {
+        "id": "marker",
+        "label": "Marker",
+        "base": "highlighter",
+        "size": 16,
+        "opacity": 0.35
+      }
+    ]
+  }
+}

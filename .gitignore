@@ -30,6 +30,8 @@ apps/*/tests/**/__screenshots__/
 # multi-gigabyte file here; `npm run benchmark:go -- --clean` removes it.
 data/*.sqlite
 data/*.sqlite-*
+apps/backend/data/apg/
+data/apg/
 
 # AGENTS.md and the aevia-project-guide skill are tracked on purpose: they are
 # shared project documentation, and leaving them untracked let them drift out of

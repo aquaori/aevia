@@ -7,6 +7,7 @@
     "packages/shared"
   ],
   "scripts": {
+    "apg": "node scripts/go.mjs apg",
     "test:profile": "tsx tests/run-system.ts --profile-diagnostics",
     "dev": "node scripts/dev.mjs",
     "dev:frontend": "npm run dev --workspace @collaborative-whiteboard/frontend",

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // TestLoadRequiresSecretInProduction pins the guard that was missing entirely:
 // without it a production deployment silently signed room session tokens with the
@@ -95,5 +98,43 @@ func TestInvalidIntFallsBackToDefault(t *testing.T) {
 	}
 	if cfg.Port != 4646 {
 		t.Fatalf("expected the default port, got %d", cfg.Port)
+	}
+}
+
+func TestAPGDirDefaultAndOverride(t *testing.T) {
+	t.Setenv("APG_DIR", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load default: %v", err)
+	}
+	if cfg.APGDir != filepath.Join("..", "..", "data", "apg") {
+		t.Fatalf("unexpected default APG dir %q", cfg.APGDir)
+	}
+	t.Setenv("APG_DIR", filepath.Join("custom", "plugins"))
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load override: %v", err)
+	}
+	if cfg.APGDir != filepath.Join("custom", "plugins") {
+		t.Fatalf("unexpected APG dir override %q", cfg.APGDir)
+	}
+}
+
+func TestAPGTrustPolicyDefaultsToRequireSigned(t *testing.T) {
+	t.Setenv("APG_TRUST_POLICY", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load default: %v", err)
+	}
+	if cfg.APGTrustPolicy != "require-signed" {
+		t.Fatalf("unexpected default trust policy %q", cfg.APGTrustPolicy)
+	}
+	t.Setenv("APG_TRUST_POLICY", "allow-unsigned")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load override: %v", err)
+	}
+	if cfg.APGTrustPolicy != "allow-unsigned" {
+		t.Fatalf("unexpected trust policy override %q", cfg.APGTrustPolicy)
 	}
 }

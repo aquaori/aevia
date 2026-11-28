@@ -40,7 +40,7 @@ export default defineConfig({
 					name: "shared-unit",
 					globals: true,
 					environment: "node",
-					include: ["packages/shared/src/**/*.spec.ts"],
+					include: ["packages/shared/src/**/*.spec.ts", "packages/plugin-sdk/**/*.spec.ts"],
 				},
 				resolve: {
 					alias: sharedAlias,

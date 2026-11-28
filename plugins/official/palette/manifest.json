@@ -1,0 +1,24 @@
+{
+  "manifestVersion": 2,
+  "apiVersion": 1,
+  "id": "aevia.palette",
+  "name": "Aevia Studio Palette",
+  "version": "1.0.0",
+  "scope": "user",
+  "contributes": {
+    "palettes": [
+      {
+        "id": "studio",
+        "label": "Studio",
+        "colors": [
+          "#111827",
+          "#2563EB",
+          "#0D9488",
+          "#F59E0B",
+          "#DB2777",
+          "#F8FAFC"
+        ]
+      }
+    ]
+  }
+}

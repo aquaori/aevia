@@ -1,0 +1,714 @@
+{
+  "schemaVersion": 1,
+  "description": "Cross-language APG manifest contract corpus. The Go validator (apps/backend/internal/apg.ValidateManifestJSON) and the frontend catalog parser (apps/frontend/src/service/apgCatalog.parseApgCatalog) must both accept/reject the same documents. Per-side expectations are recorded so a deliberate divergence cannot appear silently.",
+  "cases": [
+    {
+      "name": "v1-minimal",
+      "expect": {
+        "go": "accept",
+        "frontend": "accept"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.minimal",
+        "name": "Minimal declarative",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "v2-brushes",
+      "expect": {
+        "go": "accept",
+        "frontend": "accept"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.brushes",
+        "name": "Brush preset",
+        "version": "1.2.3",
+        "scope": "system",
+        "contributes": {
+          "brushes": [
+            {
+              "id": "soft-pencil",
+              "label": "Soft Pencil",
+              "base": "pencil",
+              "color": "#112233",
+              "size": 2.5,
+              "opacity": 0.8
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "v2-user-palette",
+      "expect": {
+        "go": "accept",
+        "frontend": "accept"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.palette",
+        "name": "Studio palette",
+        "version": "0.1.0",
+        "scope": "user",
+        "permissions": [
+          "ui.preview"
+        ],
+        "contributes": {
+          "palettes": [
+            {
+              "id": "studio",
+              "label": "Studio",
+              "colors": [
+                "#FFFFFF",
+                "#000000"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "v2-executable-command",
+      "expect": {
+        "go": "accept",
+        "frontend": "accept"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.command",
+        "name": "Command plugin",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "permissions": [
+          "scene.read",
+          "ui.preview"
+        ],
+        "contributes": {
+          "commands": [
+            {
+              "id": "inspect",
+              "label": "Inspect",
+              "shortcut": "Alt+Shift+3",
+              "resource": "assets/card.json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "v2-command-without-resource",
+      "expect": {
+        "go": "accept",
+        "frontend": "accept"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.command-plain",
+        "name": "Command plugin plain",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "permissions": [
+          "storage.shared",
+          "ui.preview"
+        ],
+        "contributes": {
+          "commands": [
+            {
+              "id": "count",
+              "label": "Count"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "v2-user-download",
+      "expect": {
+        "go": "accept",
+        "frontend": "accept"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.export",
+        "name": "User export",
+        "version": "1.0.0",
+        "scope": "user",
+        "permissions": [
+          "scene.read",
+          "ui.download"
+        ],
+        "main": "main.js",
+        "contributes": {
+          "commands": [
+            {
+              "id": "export",
+              "label": "Export Scene"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-unknown-field",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.extra",
+        "name": "Extra field",
+        "version": "1.0.0",
+        "scope": "system",
+        "author": "someone",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-uppercase-id",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "Fixture.Uppercase",
+        "name": "Uppercase id",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-short-version",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.version",
+        "name": "Short version",
+        "version": "1.0",
+        "scope": "system",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-unknown-scope",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.scope",
+        "name": "Unknown scope",
+        "version": "1.0.0",
+        "scope": "global",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-user-scene-write",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.user-write",
+        "name": "User scope cannot write",
+        "version": "1.0.0",
+        "scope": "user",
+        "main": "main.js",
+        "permissions": [
+          "scene.write",
+          "ui.preview"
+        ],
+        "contributes": {
+          "commands": [
+            {
+              "id": "draw",
+              "label": "Draw"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-user-brush",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.user-brush",
+        "name": "User scope cannot contribute brushes",
+        "version": "1.0.0",
+        "scope": "user",
+        "contributes": {
+          "brushes": [
+            {
+              "id": "soft",
+              "label": "Soft",
+              "base": "pen"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-duplicate-permission",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.dup-perm",
+        "name": "Duplicate permission",
+        "version": "1.0.0",
+        "scope": "system",
+        "permissions": [
+          "scene.read",
+          "scene.read"
+        ],
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-v1-with-permissions",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.v1-perm",
+        "name": "V1 permissions",
+        "version": "1.0.0",
+        "scope": "system",
+        "permissions": [
+          "scene.read"
+        ],
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-v2-without-api-version",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "id": "fixture.no-api",
+        "name": "Missing apiVersion",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-v2-unsupported-api-version",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 2,
+        "id": "fixture.api2",
+        "name": "Unsupported apiVersion",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-main-not-main-js",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.main",
+        "name": "Wrong entry point",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "index.js",
+        "contributes": {}
+      }
+    },
+    {
+      "name": "reject-command-without-main",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.command-no-main",
+        "name": "Command without program",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {
+          "commands": [
+            {
+              "id": "run",
+              "label": "Run"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-bad-shortcut",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.shortcut",
+        "name": "Unsupported shortcut",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "contributes": {
+          "commands": [
+            {
+              "id": "run",
+              "label": "Run",
+              "shortcut": "Ctrl+1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-resource-outside-assets",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.resource",
+        "name": "Resource outside assets",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "contributes": {
+          "commands": [
+            {
+              "id": "run",
+              "label": "Run",
+              "resource": "card.json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-user-command-resource",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.user-resource",
+        "name": "User scope resource",
+        "version": "1.0.0",
+        "scope": "user",
+        "main": "main.js",
+        "permissions": [
+          "ui.preview"
+        ],
+        "contributes": {
+          "commands": [
+            {
+              "id": "run",
+              "label": "Run",
+              "resource": "assets/card.json"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-empty-palette-colors",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.empty-colors",
+        "name": "Empty palette",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {
+          "palettes": [
+            {
+              "id": "empty",
+              "label": "Empty",
+              "colors": []
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-short-color",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.short-color",
+        "name": "Short color",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {
+          "palettes": [
+            {
+              "id": "pal",
+              "label": "Pal",
+              "colors": [
+                "#FFF"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-brush-size-out-of-range",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.brush-size",
+        "name": "Brush too large",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {
+          "brushes": [
+            {
+              "id": "huge",
+              "label": "Huge",
+              "base": "pen",
+              "size": 31
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-unknown-brush-base",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.brush-base",
+        "name": "Unknown brush base",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {
+          "brushes": [
+            {
+              "id": "spray",
+              "label": "Spray",
+              "base": "spray"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-duplicate-command-id",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.dup-command",
+        "name": "Duplicate command id",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "contributes": {
+          "commands": [
+            {
+              "id": "run",
+              "label": "Run"
+            },
+            {
+              "id": "run",
+              "label": "Run again"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "reject-missing-contributes",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.no-contributes",
+        "name": "Missing contributes",
+        "version": "1.0.0",
+        "scope": "system"
+      }
+    },
+    {
+      "name": "v2-state-schema",
+      "expect": {
+        "go": "accept",
+        "frontend": "accept"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.state",
+        "name": "State plugin",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "permissions": [
+          "storage.shared",
+          "ui.preview"
+        ],
+        "contributes": {
+          "commands": [
+            {
+              "id": "bump",
+              "label": "Bump"
+            }
+          ]
+        },
+        "stateSchemaVersion": 2
+      }
+    },
+    {
+      "name": "v2-state-schema-without-storage",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.state",
+        "name": "State plugin",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "permissions": [
+          "ui.preview"
+        ],
+        "contributes": {
+          "commands": [
+            {
+              "id": "bump",
+              "label": "Bump"
+            }
+          ]
+        },
+        "stateSchemaVersion": 2
+      }
+    },
+    {
+      "name": "v2-state-schema-too-high",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 2,
+        "apiVersion": 1,
+        "id": "fixture.state",
+        "name": "State plugin",
+        "version": "1.0.0",
+        "scope": "system",
+        "main": "main.js",
+        "permissions": [
+          "storage.shared",
+          "ui.preview"
+        ],
+        "contributes": {
+          "commands": [
+            {
+              "id": "bump",
+              "label": "Bump"
+            }
+          ]
+        },
+        "stateSchemaVersion": 1001
+      }
+    },
+    {
+      "name": "v1-state-schema",
+      "expect": {
+        "go": "reject",
+        "frontend": "reject"
+      },
+      "manifest": {
+        "manifestVersion": 1,
+        "id": "fixture.state",
+        "name": "State plugin",
+        "version": "1.0.0",
+        "scope": "system",
+        "contributes": {},
+        "stateSchemaVersion": 1
+      }
+    }
+  ],
+  "divergences": [
+    {
+      "name": "duplicate-json-key",
+      "expect": {
+        "go": "reject",
+        "frontend": "accept"
+      },
+      "reason": "The Go validator walks the raw JSON token stream and rejects duplicate keys (case-insensitive). The browser parser consumes JSON.parse output, where a duplicate key has already collapsed to the last value. This is deliberate defence in depth: catalog documents are produced by the Go server, never authored by the client, so the frontend relies on the server-side walk and only validates shape/semantics.",
+      "rawManifest": "{\"manifestVersion\":1,\"id\":\"fixture.dup-key\",\"name\":\"One\",\"name\":\"Two\",\"version\":\"1.0.0\",\"scope\":\"system\",\"contributes\":{}}"
+    }
+  ]
+}

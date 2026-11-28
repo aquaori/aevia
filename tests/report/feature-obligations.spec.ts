@@ -105,7 +105,8 @@ describe("feature obligation catalog", () => {
 			return result;
 		}, {} as Record<string, Set<string>>);
 
-		expect(counts.http?.size).toBe(40);
+		// 40 pre-APG routes plus the four /api/apg/* surfaces.
+		expect(counts.http?.size).toBe(44);
 		expect(counts.ws?.size).toBe(16);
 		expect(counts.scene?.size).toBe(9);
 		expect(counts.frontend?.size).toBe(17);

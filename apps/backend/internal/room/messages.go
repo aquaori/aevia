@@ -30,6 +30,13 @@ type clientEventMessage struct {
 	Frame    []byte
 }
 
+// Server-originated notification, not a client WebSocket event.
+type apgStateNotice struct {
+	PluginID string
+	Digest   string
+	Revision int64
+}
+
 type pageChangeMessage struct {
 	ClientID ClientID
 	Request  PageChangeRequest
@@ -91,3 +98,4 @@ func (pageReviewRequest) isActorMessage()        {}
 func (causalDiagnosticsRequest) isActorMessage() {}
 func (drainingMessage) isActorMessage()          {}
 func (shutdownMessage) isActorMessage()          {}
+func (apgStateNotice) isActorMessage()           {}

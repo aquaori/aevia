@@ -176,6 +176,7 @@ const SENTINEL_ONLY_CONTRACT = (checkPageErrors: boolean): CaseLabContract => ({
 });
 
 const CASE_CONTRACTS: Record<string, CaseLabContract> = {
+	[EXTERNAL_CASES.apgBusiness.id]: SENTINEL_ONLY_CONTRACT(true),
 	[EXTERNAL_CASES.harnessHealth.id]: SENTINEL_ONLY_CONTRACT(true),
 	[EXTERNAL_CASES.correctnessSmoke.id]: SENTINEL_ONLY_CONTRACT(true),
 	[EXTERNAL_CASES.concurrentCrossing.id]: SENTINEL_ONLY_CONTRACT(true),

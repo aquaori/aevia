@@ -45,8 +45,23 @@ func newTestServerAtPath(t *testing.T, dbPath string) (*httptest.Server, func())
 }
 
 func newTestGatewayAtPath(t *testing.T, dbPath string) (http.Handler, func()) {
+	return newTestGatewayAtPathWithAPG(t, dbPath, filepath.Join(t.TempDir(), "apg"))
+}
+
+func newTestServerAtPathWithAPG(t *testing.T, dbPath, apgDir string) (*httptest.Server, func()) {
+	t.Helper()
+	handler, closeGateway := newTestGatewayAtPathWithAPG(t, dbPath, apgDir)
+	server := httptest.NewServer(handler)
+	closeServer := func() { server.Close(); closeGateway() }
+	t.Cleanup(closeServer)
+	return server, closeServer
+}
+
+func newTestGatewayAtPathWithAPG(t *testing.T, dbPath, apgDir string) (http.Handler, func()) {
 	t.Helper()
 	cfg := config.Config{
+		APGDir:                 apgDir,
+		APGTrustPolicy:         "allow-unsigned",
 		DBPath:                 dbPath,
 		JWTSecret:              "test-secret",
 		SessionTTL:             30 * time.Minute,

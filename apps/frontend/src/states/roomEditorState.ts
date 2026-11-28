@@ -8,6 +8,7 @@ export const createRoomEditorState = () => {
 	const currentStrokePattern = ref<StrokePattern>("solid");
 	const currentSticker = ref("✨");
 	const currentColor = ref("#000000");
+	const currentBrushOpacity = ref<number | undefined>(undefined);
 	const penSize = ref(5);
 	const eraserSize = ref(15);
 	const userId = ref("");
@@ -32,6 +33,7 @@ export const createRoomEditorState = () => {
 		currentStrokePattern,
 		currentSticker,
 		currentColor,
+		currentBrushOpacity,
 		penSize,
 		eraserSize,
 		currentSize,

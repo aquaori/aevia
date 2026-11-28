@@ -41,6 +41,7 @@ import { withDeadline } from "./deadline";
 import { resolveLabPolicy } from "./lab/policy";
 import type { LabCaseEvaluation, LabPageSnapshot, LabPolicy, LabSpanViolation } from "./lab/types";
 import { caseKeyOf, isCaseSelected } from "./lab/select";
+import { runApgBusiness } from "./apg-business";
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -1232,6 +1233,7 @@ export const runCorrectnessSmoke = async (context: SuiteContext): Promise<CaseRe
 
 export const runCorrectnessFull = async (context: SuiteContext): Promise<CaseResult[]> => [
 	...(await runCorrectnessSmoke(context)),
+	...(await optionalCase(context, EXTERNAL_CASES.apgBusiness.id, () => runApgBusiness(context))),
 	...(await optionalCase(context, EXTERNAL_CASES.concurrentCrossing.id, async () => {
 		const dir = artifactDir(context, EXTERNAL_CASES.concurrentCrossing.id);
 		const { users } = await createRoomWithUsers(context.config, ["CrossA", "CrossB"]);

@@ -113,7 +113,7 @@ func TestWithCORSHandlesPreflight(t *testing.T) {
 		t.Fatalf("expected 204 for DELETE preflight, got %d", deleteRecorder.Code)
 	}
 	allowMethods := deleteRecorder.Header().Get("Access-Control-Allow-Methods")
-	for _, method := range []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"} {
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
 		if !strings.Contains(allowMethods, method) {
 			t.Fatalf("expected %q in Access-Control-Allow-Methods, got %q", method, allowMethods)
 		}

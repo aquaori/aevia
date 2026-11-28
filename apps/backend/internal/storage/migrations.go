@@ -138,6 +138,16 @@ CREATE TABLE IF NOT EXISTS commands (
   FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS apg_room_state (
+  room_id TEXT NOT NULL,
+  plugin_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL DEFAULT 0,
+  value TEXT NOT NULL,
+  PRIMARY KEY(room_id,plugin_id),
+  FOREIGN KEY(room_id) REFERENCES rooms(room_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS server_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -148,5 +158,18 @@ CREATE INDEX IF NOT EXISTS idx_commands_room_id_id ON commands(room_id, id);
 CREATE INDEX IF NOT EXISTS idx_commands_room_id_cmd_id ON commands(room_id, cmd_id);
 CREATE INDEX IF NOT EXISTS idx_commands_room_page ON commands(room_id, page_id);
 `)
-	return err
+	if err != nil {
+		return err
+	}
+	// Existing deployments predate shared-state schema versioning; add the column in place.
+	var hasColumn int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('apg_room_state') WHERE name='schema_version'").Scan(&hasColumn); err != nil {
+		return err
+	}
+	if hasColumn == 0 {
+		if _, err := s.db.ExecContext(ctx, "ALTER TABLE apg_room_state ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	return nil
 }

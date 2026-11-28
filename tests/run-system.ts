@@ -29,6 +29,7 @@ import {
 } from "./lab/evidence-plan";
 import { isLiveConsoleEnabled, startLiveConsole, type LiveConsole } from "./lab/live-console";
 import { describeSourceDrift, describeSourceDriftLines } from "./lab/source-drift";
+import { provisionApgFixture } from "./lab/apg-fixture";
 
 type Step = {
 	title: string;
@@ -270,6 +271,7 @@ const startExternalServices = async (diagnostics?: { outDir: string; pprof: bool
 	const pprofPort = diagnostics?.pprof ? await findAvailablePort() : undefined;
 	const pprofUrl = pprofPort ? `http://127.0.0.1:${pprofPort}/debug/pprof` : undefined;
 	const databasePath = path.join(testTempDir, `aevia-system-${process.pid}-${randomUUID()}.sqlite`);
+	const apgDir = databasePath + ".apg-dir";
 	activeServicesDbPath = databasePath;
 	const backendExecutable = path.join(
 		testTempDir,
@@ -297,6 +299,14 @@ const startExternalServices = async (diagnostics?: { outDir: string; pprof: bool
 			`Unable to build the isolated test backend: ${backendBuild.error?.message || backendBuild.stderr || `exit ${backendBuild.status}`}`
 		);
 	}
+	const apgFixture = process.env.AEVIA_TEST_APG === "off" ? undefined : provisionApgFixture(canonicalRootDir, apgDir, goEnv);
+	if (apgFixture) {
+		process.env.AEVIA_TEST_APG_BINARY = apgFixture.binary;
+		process.env.AEVIA_TEST_APG_DIR = apgDir;
+	} else {
+		delete process.env.AEVIA_TEST_APG_BINARY;
+		delete process.env.AEVIA_TEST_APG_DIR;
+	}
 
 	const vite = path.join(canonicalRootDir, "node_modules", "vite", "bin", "vite.js");
 	const frontendEnv = { ...process.env, BROWSERSLIST_IGNORE_OLD_DATA: "1", VITE_API_URL: apiUrl, VITE_WS_URL: wsUrl };
@@ -318,6 +328,9 @@ const startExternalServices = async (diagnostics?: { outDir: string; pprof: bool
 			HOST: "127.0.0.1",
 			PORT: String(backendPort),
 			DB_PATH: databasePath,
+			APG_DIR: apgDir,
+			APG_TRUST_STORE: path.join(apgDir, "trust.json"),
+			APG_TRUST_POLICY: "require-signed",
 			...(diagnostics ? { PPROF_ADDR: pprofPort ? `127.0.0.1:${pprofPort}` : "" } : {}),
 			...(diagnostics?.controlDir ? { AEVIA_PROFILE_CONTROL: diagnostics.controlDir } : {}),
 			LOG_FORMAT: "console",
@@ -347,6 +360,7 @@ const startExternalServices = async (diagnostics?: { outDir: string; pprof: bool
 		if (stopped) return;
 		stopped = true;
 		await Promise.all(managedServices.map(stopManagedService));
+		rmSync(apgDir, { recursive: true, force: true });
 		for (const suffix of ["", "-wal", "-shm"]) {
 			try {
 				rmSync(`${databasePath}${suffix}`, { force: true });

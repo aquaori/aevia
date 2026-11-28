@@ -120,6 +120,7 @@ interface RoomCollabTransportOptions {
 	notifyRemoteTextPatch?: (elementId: string) => void;
 	persistSessionAuth?: (payload: { sessionToken: string; expiresAt: number | null }) => void;
 	onRoomRoleChanged?: (role: string) => void;
+	onApgStateChanged?: (notice: unknown) => void;
 	onSessionExpired?: () => void;
 	onInitialSceneReady?: () => void;
 	recoverRenderer?: () => Promise<boolean>;
@@ -919,6 +920,10 @@ export const createRoomCollabTransport = (options: RoomCollabTransportOptions) =
 							applyServerPressurePolicy(msg.data);
 							return;
 						}
+							if (msg.type === "apg.state.changed") {
+								options.onApgStateChanged?.(msg.data);
+								return;
+							}
 						if (msg.type === "server.draining") {
 							handleServerDraining();
 							return;

@@ -1,0 +1,22 @@
+{
+  "shapes": [
+    {
+      "kind": "shape.create",
+      "shape": "rounded-rectangle",
+      "start": { "x": 0.25, "y": 0.25 },
+      "end": { "x": 0.65, "y": 0.5 },
+      "color": "#2563EB",
+      "fillColor": "#DBEAFE",
+      "size": 3
+    },
+    {
+      "kind": "shape.create",
+      "shape": "rectangle",
+      "start": { "x": 0.25, "y": 0.25 },
+      "end": { "x": 0.65, "y": 0.29 },
+      "color": "#1D4ED8",
+      "fillColor": "#1D4ED8",
+      "size": 1
+    }
+  ]
+}

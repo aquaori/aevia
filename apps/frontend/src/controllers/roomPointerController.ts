@@ -61,6 +61,7 @@ interface PendingStrokeStart {
 interface RoomPointerControllerOptions {
 	currentTool: Ref<Tool>;
 	currentColor: Ref<string>;
+	currentBrushOpacity: Ref<number | undefined>;
 	currentSize: Ref<number>;
 	currentStrokePattern: Ref<StrokePattern>;
 	currentSticker: Ref<string>;
@@ -680,6 +681,9 @@ export const createRoomPointerController = (options: RoomPointerControllerOption
 			color: options.currentColor.value,
 			size: options.currentSize.value,
 			strokePattern: "solid",
+			...(options.currentBrushOpacity.value !== undefined
+				? { opacity: options.currentBrushOpacity.value }
+				: {}),
 		});
 		const startResult = pushSceneCreate(id, descriptor, [p0]);
 		if (!startResult?.ok) {

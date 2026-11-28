@@ -24,6 +24,7 @@
 		Shapes,
 	} from "lucide-vue-next";
 	import type { EditorTool, StrokePattern } from "@collaborative-whiteboard/shared";
+	import type { ApgBrushView, ApgPaletteView } from "../service/apgCatalog";
 	import { builtinToolRegistry } from "../scene/toolRegistry";
 	import { stickerAssets } from "../scene/stickerAssets";
 	type Tool = EditorTool;
@@ -56,12 +57,16 @@
 		currentSize: number;
 		currentStrokePattern: StrokePattern;
 		currentSticker: string;
+		apgPalettes?: ApgPaletteView[];
+		apgBrushes?: ApgBrushView[];
 		isFullscreen: boolean;
 		isToolbarCollapsed: boolean;
 		toggleFullscreen: () => void;
 		toggleMenu: (menu: "pen" | "eraser" | "color" | "more") => void;
 		setTool: (tool: Tool) => void;
 		setColor: (color: string) => void;
+		activateApgBrush?: (brush: ApgBrushView) => void;
+		toggleApgPalette?: (pluginId: string, enabled: boolean) => void;
 		setStrokePattern: (pattern: StrokePattern) => void;
 		setSticker: (sticker: string) => void;
 		clearCanvas: () => void;
@@ -238,6 +243,18 @@
 									:class="props.currentTool === tool.id ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:bg-slate-50'"
 								>{{ tool.label }}</button>
 							</div>
+								<div v-if="props.apgBrushes?.length" class="mb-3 border-t border-slate-100 pt-2">
+									<div class="mb-1.5 text-[10px] font-semibold text-slate-400">插件画笔</div>
+									<div class="grid grid-cols-2 gap-1">
+										<button
+											v-for="brush in props.apgBrushes"
+											:key="brush.pluginId + ':' + brush.id"
+											@click="props.activateApgBrush?.(brush)"
+											class="rounded-lg bg-slate-50 px-2 py-1.5 text-left text-[10px] font-medium text-slate-600 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
+											:title="brush.pluginName"
+										>{{ brush.label }}</button>
+									</div>
+								</div>
 							<div
 								class="text-[10px] hmd:text-xs font-bold text-slate-400 mb-1.5 hmd:mb-2 flex justify-between"
 							>
@@ -259,6 +276,8 @@
 					</transition>
 					<button
 						@click="props.toggleMenu('pen')"
+						title="画笔工具"
+						aria-label="画笔工具"
 						class="p-2 hmd:p-3 cursor-pointer rounded-xl transition-all relative z-10"
 						:class="
 							['pen', 'pencil', 'highlighter'].includes(props.currentTool) && props.activeMenu !== 'more'
@@ -412,29 +431,65 @@
 					>
 						<div
 							v-if="props.activeMenu === 'color'"
-							class="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 p-2 hmd:p-3 bg-white/90 backdrop-blur-sm border border-white rounded-xl shadow-xl w-48 hmd:w-64 origin-bottom grid grid-cols-6 gap-1.5 hmd:gap-2"
+								class="absolute bottom-full left-1/2 -translate-x-1/2 mb-4 max-h-80 w-60 hmd:w-72 origin-bottom overflow-y-auto rounded-xl border border-white bg-white/95 p-2 hmd:p-3 shadow-xl backdrop-blur-sm"
 						>
-							<button
-								v-for="c in COLORS"
-								:key="c"
-								@click="props.setColor(c)"
-								class="w-6 h-6 cursor-pointer hmd:w-8 hmd:h-8 rounded-full border border-slate-100 shadow-sm hover:scale-110 transition-transform relative"
-								:style="{ backgroundColor: c }"
-							>
-								<div
-									v-if="props.currentColor === c"
-									class="absolute inset-0 flex items-center justify-center"
+								<div class="grid grid-cols-6 gap-1.5 hmd:gap-2">
+									<button
+										v-for="c in COLORS"
+										:key="c"
+										@click="props.setColor(c)"
+										class="relative h-7 w-7 cursor-pointer rounded-full border border-slate-100 shadow-sm transition-transform hover:scale-110 hmd:h-8 hmd:w-8"
+										:style="{ backgroundColor: c }"
 								>
 									<div
-										class="w-2 h-2 hmd:w-2.5 hmd:h-2.5 bg-white rounded-full shadow-sm"
-										:class="{ 'bg-black': c === '#ffffff' }"
-									></div>
+											v-if="props.currentColor === c"
+											class="absolute inset-0 flex items-center justify-center"
+										>
+											<div
+												class="w-2 h-2 hmd:w-2.5 hmd:h-2.5 bg-white rounded-full shadow-sm"
+												:class="{ 'bg-black': c === '#ffffff' }"
+											></div>
+										</div>
+									</button>
 								</div>
-							</button>
+								<div
+									v-for="palette in props.apgPalettes || []"
+									:key="palette.pluginId + ':' + palette.id"
+									class="mt-2 border-t border-slate-100 pt-2"
+								>
+									<div class="mb-1.5 flex items-center justify-between gap-2">
+										<div class="min-w-0">
+											<div class="truncate text-[10px] font-semibold text-slate-500">{{ palette.label }}</div>
+											<div class="truncate text-[9px] text-slate-400">{{ palette.pluginName }}</div>
+										</div>
+										<button
+											v-if="palette.toggleable"
+											@click.stop="props.toggleApgPalette?.(palette.pluginId, !palette.enabled)"
+											class="shrink-0 rounded-md px-1.5 py-1 text-[9px] font-medium transition-colors"
+											:class="palette.enabled ? 'bg-indigo-50 text-indigo-600' : 'bg-slate-100 text-slate-400'"
+										>{{ palette.enabled ? '已启用' : '已停用' }}</button>
+									</div>
+									<div v-if="palette.enabled" class="grid grid-cols-6 gap-1.5 hmd:gap-2">
+										<button
+											v-for="c in palette.colors"
+											:key="c"
+											@click="props.setColor(c)"
+											:aria-label="'调色板颜色 ' + c"
+											class="relative h-7 w-7 cursor-pointer rounded-full border border-slate-100 shadow-sm transition-transform hover:scale-110 hmd:h-8 hmd:w-8"
+											:style="{ backgroundColor: c }"
+										>
+											<div v-if="props.currentColor === c" class="absolute inset-0 flex items-center justify-center">
+												<div class="h-2 w-2 rounded-full bg-white shadow-sm hmd:h-2.5 hmd:w-2.5" :class="{ 'bg-black': c === '#ffffff' }"></div>
+											</div>
+										</button>
+									</div>
+								</div>
 						</div>
 					</transition>
 					<button
 						@click="props.toggleMenu('color')"
+						title="颜色"
+						aria-label="颜色"
 						class="p-2 hmd:p-3 cursor-pointer rounded-xl transition-all relative z-10 hover:bg-slate-50 group"
 					>
 						<div

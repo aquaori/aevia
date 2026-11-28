@@ -23,6 +23,17 @@ type Server struct {
 	authLimiter     *keyedBuckets
 	connectionLimit *connectionLimiter
 	ipResolver      *clientIPResolver
+	// APG catalog and asset endpoints are unauthenticated reads of
+	// deployment-owned files, so they get their own per-client budgets. The
+	// budgets bound how fast one client can make the server re-scan the
+	// package directory or stream archived assets; they never grant anything.
+	apgCatalogBudget *keyedBuckets
+	apgAssetBudget   *keyedBuckets
+	// Room shared state is authenticated, but a plugin can still drive a write
+	// loop; separate read and write budgets keep a noisy plugin from hammering
+	// CAS queries and state-changed broadcasts for everyone in the room.
+	apgStateReadBudget  *keyedBuckets
+	apgStateWriteBudget *keyedBuckets
 }
 
 // NewServer wires the HTTP/WS gateway. sessionEpoch is the unix-second boundary
@@ -46,6 +57,16 @@ func NewServer(cfg config.Config, store *storage.Store, registry *room.Registry,
 		),
 		connectionLimit: newConnectionLimiter(cfg),
 		ipResolver:      newClientIPResolver(cfg),
+		// 40 catalog reads with a refill of 2/s tolerate a page refresh and the
+		// 15s poll from several tabs while still stopping a directory-scan loop.
+		apgCatalogBudget: newKeyedBuckets(2, 40, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys),
+		// Assets are content-addressed and cached by the browser, but one
+		// template can load several; allow bursts while keeping a ceiling.
+		apgAssetBudget: newKeyedBuckets(10, 120, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys),
+		// Reads are cheap and happen on every command; writes are rarer, so they
+		// get a smaller burst and a slower refill.
+		apgStateReadBudget:  newKeyedBuckets(20, 60, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys),
+		apgStateWriteBudget: newKeyedBuckets(4, 12, cfg.RateLimitIdleTTL, cfg.RateLimitMaxKeys),
 	}
 }
 
@@ -54,6 +75,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
 	mux.HandleFunc("GET /debug/metrics", s.metrics)
+	mux.HandleFunc("GET /api/apg/catalog", s.apgCatalog)
+	mux.HandleFunc("GET /api/apg/state/{id}", s.withSession(s.apgState))
+	mux.HandleFunc("PUT /api/apg/state/{id}", s.withSession(s.apgState))
+	mux.HandleFunc("GET /api/apg/asset/{digest}/{name...}", s.apgAsset)
 	mux.HandleFunc("POST /create-room", s.createRoom)
 	mux.HandleFunc("GET /check-room", s.checkRoom)
 	mux.HandleFunc("GET /generate-room-id", s.generateRoomID)

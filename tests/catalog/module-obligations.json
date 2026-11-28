@@ -31,6 +31,19 @@
       ]
     },
     {
+      "id": "frontend:apps/frontend/src/components/ApgPanel.vue",
+      "kind": "frontend",
+      "path": "apps/frontend/src/components/ApgPanel.vue",
+      "state": "covered",
+      "owner": "apps/frontend/tests/e2e/external/apg-business.ts",
+      "evidence": [
+        {
+          "kind": "external",
+          "caseId": "apg-official-business"
+        }
+      ]
+    },
+    {
       "id": "frontend:apps/frontend/src/components/RoomConnectionOverlays.vue",
       "kind": "frontend",
       "path": "apps/frontend/src/components/RoomConnectionOverlays.vue",
@@ -629,6 +642,122 @@
         {
           "kind": "vitest",
           "file": "apps/frontend/src/scene/toolRegistry.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgCatalog.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgCatalog.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/apgCatalog.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgCatalog.unit.spec.ts",
+          "level": "module"
+        },
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgManifestContract.unit.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgErrorText.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgErrorText.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/apgErrorText.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgErrorText.unit.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgRuntime.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgRuntime.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/apgSandbox.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgSandbox.unit.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgSandbox.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgSandbox.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/apgSandbox.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgSandbox.unit.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgSandbox.worker.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgSandbox.worker.ts",
+      "state": "covered",
+      "owner": "apps/frontend/tests/e2e/external/apg-business.ts",
+      "evidence": [
+        {
+          "kind": "external",
+          "caseId": "apg-official-business"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgSceneCompiler.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgSceneCompiler.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/apgSandbox.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgSandbox.unit.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgSceneSnapshot.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgSceneSnapshot.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/apgSceneSnapshot.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgSceneSnapshot.unit.spec.ts",
+          "level": "module"
+        }
+      ]
+    },
+    {
+      "id": "frontend:apps/frontend/src/service/apgStateNotice.ts",
+      "kind": "frontend",
+      "path": "apps/frontend/src/service/apgStateNotice.ts",
+      "state": "covered",
+      "owner": "apps/frontend/src/service/apgStateNotice.unit.spec.ts",
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "apps/frontend/src/service/apgStateNotice.unit.spec.ts",
           "level": "module"
         }
       ]
@@ -1309,6 +1438,180 @@
       ]
     },
     {
+      "id": "go:apps/backend/cmd/apg/lock.go",
+      "kind": "go",
+      "path": "apps/backend/cmd/apg/lock.go",
+      "state": "covered",
+      "owner": "apps/backend/cmd/apg/main_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/apg",
+          "file": "apps/backend/cmd/apg/main_test.go",
+          "runPattern": "TestAPGLockRecordsOwnerAndRejectsConcurrentWriter"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/cmd/apg/lock_unix.go",
+      "kind": "go",
+      "path": "apps/backend/cmd/apg/lock_unix.go",
+      "state": "covered",
+      "owner": "apps/backend/cmd/apg/main_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/apg",
+          "file": "apps/backend/cmd/apg/main_test.go",
+          "runPattern": "TestAPGDeadOwnerLockIsReclaimed"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/cmd/apg/lock_windows.go",
+      "kind": "go",
+      "path": "apps/backend/cmd/apg/lock_windows.go",
+      "state": "covered",
+      "owner": "apps/backend/cmd/apg/main_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/apg",
+          "file": "apps/backend/cmd/apg/main_test.go",
+          "runPattern": "TestAPGDeadOwnerLockIsReclaimed"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/cmd/apg/main.go",
+      "kind": "go",
+      "path": "apps/backend/cmd/apg/main.go",
+      "state": "covered",
+      "owner": "apps/backend/cmd/apg/main_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/apg",
+          "file": "apps/backend/cmd/apg/main_test.go",
+          "runPattern": "TestAPGOfficialPackageLifecycle"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/cmd/apg/scaffold.go",
+      "kind": "go",
+      "path": "apps/backend/cmd/apg/scaffold.go",
+      "state": "covered",
+      "owner": "apps/backend/cmd/apg/main_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/apg",
+          "file": "apps/backend/cmd/apg/main_test.go",
+          "runPattern": "TestAPGInitScaffoldsAPackablePackage"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/cmd/apg/state.go",
+      "kind": "go",
+      "path": "apps/backend/cmd/apg/state.go",
+      "state": "covered",
+      "recommendedEvidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/apg",
+          "file": "apps/backend/cmd/apg/main_test.go",
+          "level": "unit"
+        }
+      ],
+      "owner": "apps/backend/cmd/apg/main_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./cmd/apg",
+          "file": "apps/backend/cmd/apg/main_test.go",
+          "runPattern": "TestAPGStateCommandListsAndClearsRoomState"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/apg/archive.go",
+      "kind": "go",
+      "path": "apps/backend/internal/apg/archive.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/apg/catalog_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/apg",
+          "file": "apps/backend/internal/apg/catalog_test.go",
+          "runPattern": "TestLoadCatalogIgnoresDisabledAndFailsClosed"
+        },
+        {
+          "kind": "feature",
+          "obligationId": "http.apg.asset"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/apg/catalog.go",
+      "kind": "go",
+      "path": "apps/backend/internal/apg/catalog.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/apg/catalog_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/apg",
+          "file": "apps/backend/internal/apg/catalog_test.go",
+          "runPattern": "TestValidateManifestJSONRejectsDuplicateKeysCaseInsensitively"
+        },
+        {
+          "kind": "go",
+          "package": "./internal/apg",
+          "file": "apps/backend/internal/apg/catalog_test.go",
+          "runPattern": "TestLoadCatalogIgnoresDisabledAndFailsClosed"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/apg/package.go",
+      "kind": "go",
+      "path": "apps/backend/internal/apg/package.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/apg/catalog_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/apg",
+          "file": "apps/backend/internal/apg/catalog_test.go",
+          "runPattern": "TestReadPackageAcceptsStrictManifest"
+        },
+        {
+          "kind": "go",
+          "package": "./internal/apg",
+          "file": "apps/backend/internal/apg/catalog_test.go",
+          "runPattern": "TestReadPackageRejectsContractViolations"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/apg/reauth.go",
+      "kind": "go",
+      "path": "apps/backend/internal/apg/reauth.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/apg/reauth_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/apg",
+          "file": "apps/backend/internal/apg/reauth_test.go",
+          "runPattern": "TestReauthorizationChanges"
+        }
+      ]
+    },
+    {
       "id": "go:apps/backend/internal/auth/password.go",
       "kind": "go",
       "path": "apps/backend/internal/auth/password.go",
@@ -1446,6 +1749,35 @@
           "package": "./internal/gateway",
           "file": "apps/backend/internal/gateway/account_handlers_test.go",
           "level": "unit"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/apg_handler.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/apg_handler.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/apg_handler_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/gateway",
+          "file": "apps/backend/internal/gateway/apg_handler_test.go"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/gateway/apg_state_handler.go",
+      "kind": "go",
+      "path": "apps/backend/internal/gateway/apg_state_handler.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/apg_business_test.go",
+      "evidence": [
+        {
+          "kind": "go",
+          "package": "./internal/gateway",
+          "file": "apps/backend/internal/gateway/apg_business_test.go",
+          "runPattern": "TestAPGSharedStateAuthorizationAndCAS"
         }
       ]
     },
@@ -2091,6 +2423,19 @@
           "package": "./internal/storage",
           "file": "apps/backend/internal/storage/read_snapshot_test.go",
           "level": "unit"
+        }
+      ]
+    },
+    {
+      "id": "go:apps/backend/internal/storage/apg_state.go",
+      "kind": "go",
+      "path": "apps/backend/internal/storage/apg_state.go",
+      "state": "covered",
+      "owner": "apps/backend/internal/gateway/apg_business_test.go",
+      "evidence": [
+        {
+          "kind": "feature",
+          "obligationId": "http.apg.state.write"
         }
       ]
     },

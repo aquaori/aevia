@@ -44,6 +44,7 @@ describe("room UI controllers", () => {
 		const pointerController = ref<{ setTool: (tool: EditorTool) => void; setColor: (color: string) => void; finalizeDrop: () => void } | null>(null);
 		const currentTool = ref<EditorTool>("pen");
 		const currentColor = ref("#000");
+			const currentBrushOpacity = ref<number | undefined>(0.5);
 		const transformingCmdIds = ref(new Set(["c1"]));
 		const transformAnim = ref<TransformAnimState | null>({ phase: "dragging", progress: 1, initialBox: null });
 		const selectionRect = ref<{ x: number; y: number; w: number; h: number } | null>({ x: 0, y: 0, w: 1, h: 1 });
@@ -66,6 +67,7 @@ describe("room UI controllers", () => {
 					pointerController,
 					currentTool,
 					currentColor,
+						currentBrushOpacity,
 					activeMenu,
 					transformingCmdIds,
 					transformAnim,
@@ -88,6 +90,7 @@ describe("room UI controllers", () => {
 
 		// Fallback paths (no pointerController yet)
 		edCtrl.setTool("pen");
+			expect(currentBrushOpacity.value).toBeUndefined();
 		expect(selectionRect.value).toBeNull();
 		expect(interactionMode.value).toBe("none");
 		edCtrl.setColor("#ff0000");

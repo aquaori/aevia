@@ -1,0 +1,19 @@
+{
+  "elements": [
+    {
+      "kind": "sticky.create",
+      "box": { "x": 0.68, "y": 0.34, "width": 0.24, "height": 0.2 },
+      "text": "APG note",
+      "color": "#3F2E12",
+      "fillColor": "#FFF7CC",
+      "fontSize": 16
+    },
+    {
+      "kind": "text.create",
+      "box": { "x": 0.68, "y": 0.56, "width": 0.24, "height": 0.06 },
+      "text": "Placed by a plugin",
+      "color": "#334155",
+      "fontSize": 14
+    }
+  ]
+}

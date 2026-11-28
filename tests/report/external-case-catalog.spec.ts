@@ -12,6 +12,7 @@ describe("external case catalog", () => {
 			"concurrent-crossing-visual-consistency",
 			"late-joiner-visual-consistency",
 			"protocol-multipage-isolation",
+			"apg-official-business",
 		]);
 		expect(Object.values(EXTERNAL_CASES).length).toBeGreaterThanOrEqual(CI_REQUIRED_EXTERNAL_CASE_IDS.length);
 	});

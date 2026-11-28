@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 2,
+  "apiVersion": 1,
+  "id": "aevia.shared-counter",
+  "name": "Room Counter",
+  "version": "1.0.0",
+  "scope": "system",
+  "main": "main.js",
+  "permissions": [
+    "storage.shared",
+    "ui.preview"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "increment",
+        "label": "Increment Counter"
+      },
+      {
+        "id": "read",
+        "label": "Read Counter"
+      }
+    ]
+  },
+  "stateSchemaVersion": 1
+}

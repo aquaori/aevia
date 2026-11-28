@@ -37,6 +37,12 @@ export const EXTERNAL_CASES = {
 		oracle: "the expected page region is nonblank while the other page's region remains blank, then the checks reverse after navigation",
 		ciRequired: true,
 	},
+	apgBusiness: {
+		id: "apg-official-business",
+		capability: "signed official APG execution, CAS state and plugin-independent replay",
+		oracle: "two browsers observe native template pixels and shared state, then a late joiner reproduces the canvas after the template plugin is disabled",
+		ciRequired: true,
+	},
 	networkRecovery: {
 		id: "resilience-network-recovery",
 		capability: "reconnection after network interruption",

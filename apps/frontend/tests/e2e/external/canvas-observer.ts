@@ -250,6 +250,34 @@ export const captureCanvasSample = async (
 	};
 };
 
+export type InkColor = { r: number; g: number; b: number; coverage: number };
+
+/** Mean colour of the pixels that changed between two samples of the same region, i.e. of the
+ * ink a stroke actually put down. Comparing against a baseline keeps dark board backgrounds and
+ * pre-existing content from being mistaken for ink. */
+export const measureInk = (before: CanvasSample, after: CanvasSample): InkColor => {
+	const previous = before.pixels ?? [];
+	const current = after.pixels ?? [];
+	const length = Math.min(previous.length, current.length);
+	let r = 0, g = 0, b = 0, changed = 0;
+	for (let index = 0; index < length; index += 4) {
+		if ((current[index + 3] ?? 0) === 0) continue;
+		const delta =
+			Math.abs((previous[index] ?? 0) - (current[index] ?? 0)) +
+			Math.abs((previous[index + 1] ?? 0) - (current[index + 1] ?? 0)) +
+			Math.abs((previous[index + 2] ?? 0) - (current[index + 2] ?? 0));
+		if (delta <= 40) continue;
+		r += current[index] ?? 0;
+		g += current[index + 1] ?? 0;
+		b += current[index + 2] ?? 0;
+		changed += 1;
+	}
+	const total = Math.max(1, length / 4);
+	return changed
+		? { r: Math.round(r / changed), g: Math.round(g / changed), b: Math.round(b / changed), coverage: changed / total }
+		: { r: -1, g: -1, b: -1, coverage: 0 };
+};
+
 export const saveCanvasPng = async (page: Page, filePath: string, roi?: Roi) => {
 	ensureDir(path.dirname(filePath));
 	const buffer = await captureCanvasPng(page, roi);
@@ -320,7 +348,7 @@ export const waitForCanvasChange = async (
 
 export const waitForNonBlankCanvas = async (
 	page: Page,
-	options: { timeoutMs: number; minNonBlankRatio?: number; roi?: Roi; includeOverlay?: boolean; sampleSize?: number }
+	options: { timeoutMs: number; minNonBlankRatio?: number; roi?: Roi; includeOverlay?: boolean; sampleSize?: number } = { timeoutMs: 15000 }
 ) => {
 	await ensureCanvasObserver(page);
 	return page.evaluate(

@@ -152,6 +152,11 @@ export const openRoomPage = async (
 ): Promise<BrowserPage> => {
 	const roomPage = await createRoomPage(browser, config);
 	const { page } = roomPage;
+	const errors: string[] = [];
+	page.on("pageerror", error => errors.push(error.message));
+	page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+	page.on("requestfailed", request => errors.push(request.url() + ": " + request.failure()?.errorText));
+	try {
 	await beforeNavigation?.(page);
 
 	await page.goto(config.frontendUrl);
@@ -163,6 +168,12 @@ export const openRoomPage = async (
 	await page.locator("canvas").first().waitFor({ timeout: 30000 });
 	await page.locator('[role="status"]').filter({ hasText: "正在准备画布" }).waitFor({ state: "hidden", timeout: 30000 });
 	await installCanvasObserver(page);
+	} catch (error) {
+		const detail = await page.locator("body").innerText({ timeout: 1500 }).catch(() => "");
+		const url = page.url();
+		await roomPage.close().catch(() => {});
+		throw new Error(String(error) + "\nRoom URL: " + url + "\nBrowser errors: " + errors.slice(-12).join("\n") + "\nPage: " + detail.slice(0, 1200), { cause: error });
+	}
 
 	return {
 		page,

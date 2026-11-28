@@ -17,6 +17,7 @@ interface RoomEditorControllerOptions {
 	pointerController: Ref<PointerControllerLike | null>;
 	currentTool: Ref<Tool>;
 	currentColor: Ref<string>;
+	currentBrushOpacity: Ref<number | undefined>;
 	activeMenu: Ref<ActiveMenu>;
 	transformingCmdIds: Ref<Set<string>>;
 	transformAnim: Ref<TransformAnimState | null>;
@@ -28,6 +29,9 @@ interface RoomEditorControllerOptions {
 export const createRoomEditorController = (options: RoomEditorControllerOptions) => {
 	const emitHook = useRoomSessionEmitHook();
 	const setTool = (tool: Tool) => {
+		if (tool === "pen" || tool === "pencil" || tool === "highlighter") {
+			options.currentBrushOpacity.value = undefined;
+		}
 		if (options.pointerController.value) {
 			options.pointerController.value.setTool(tool);
 			emitHook("tool:changed", { tool });

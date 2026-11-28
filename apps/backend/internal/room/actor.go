@@ -467,6 +467,8 @@ func (a *Actor) handle(msg actorMessage) bool {
 		}
 	case clientEventMessage:
 		a.handleClientEvent(m)
+	case apgStateNotice:
+		a.broadcastAll(Envelope{Type: "apg.state.changed", Data: map[string]any{"pluginId": m.PluginID, "digest": m.Digest, "revision": m.Revision}}, nil)
 	case pageChangeMessage:
 		a.handlePageChange(m)
 	case snapshotRequest:

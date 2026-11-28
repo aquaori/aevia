@@ -3,6 +3,49 @@
 	"scope": "Backend HTTP routes, WebSocket event types, accepted scene-operation kinds, frontend routes and built-in tool IDs; per-tool interaction scenarios and full product coverage are not yet complete.",
 	"obligations": [
 		{
+			"id": "http.apg.state.read",
+			"kind": "http",
+			"surface": "GET /api/apg/state/{id}",
+			"state": "obligation_verified",
+			"oracle": "Session, enabled package digest, system scope and shared-state permission are required; two real browsers read the same persisted revision after one of them writes.",
+			"evidence": [
+				"go:TestAPGSharedStateAuthorizationAndCAS",
+				"external:apg-official-business"
+			]
+		},
+		{
+			"id": "http.apg.state.write",
+			"kind": "http",
+			"surface": "PUT /api/apg/state/{id}",
+			"state": "obligation_verified",
+			"oracle": "Current editor role, matching digest and a matching revision are required; a stale revision is rejected and the acknowledged revision is the caller's revision + 1.",
+			"evidence": [
+				"go:TestAPGSharedStateAuthorizationAndCAS",
+				"external:apg-official-business"
+			]
+		},
+		{
+			"id": "http.apg.asset",
+			"kind": "http",
+			"surface": "GET /api/apg/asset/{digest}/{name...}",
+			"state": "obligation_verified",
+			"oracle": "Archived package bytes are served as inert content-addressed resources (octet-stream, attachment, sandbox CSP) and a system plugin consumes an assets/*.json resource through this route.",
+			"evidence": [
+				"go:TestAPGArchivedResourceIsInert",
+				"external:apg-official-business"
+			]
+		},
+		{
+			"id": "http.apg.catalog",
+			"kind": "http",
+			"surface": "GET /api/apg/catalog",
+			"state": "obligation_verified",
+			"oracle": "The deployment catalog reloads enabled packages and fails closed on invalid packages.",
+			"evidence": [
+				"go:TestAPGCatalogEndpointReloadsAndFailsClosed"
+			]
+		},
+		{
 			"id": "http.health.live",
 			"kind": "http",
 			"surface": "GET /health/live",

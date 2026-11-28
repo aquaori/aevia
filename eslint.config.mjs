@@ -87,6 +87,14 @@ export default defineConfig(
 		},
 	},
 	{
+		// Plugin programs are evaluated by the QuickJS guest, which injects a frozen
+		// `apg` global; they never see Node or browser globals.
+		files: ["plugins/**/*.js"],
+		languageOptions: {
+			globals: { apg: "readonly" },
+		},
+	},
+	{
 		files: ["**/*.{js,cjs,mjs}"],
 		rules: {
 			"no-unused-vars": [

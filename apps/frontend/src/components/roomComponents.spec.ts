@@ -405,5 +405,35 @@ describe("Room Vue components", () => {
 		await collapsed.find("button").trigger("click");
 		expect(baseToolbarProps.onToggleCollapsed).toHaveBeenCalledWith(false);
 		collapsed.unmount();
+
+			const activateApgBrush = vi.fn();
+			const brushToolbar = mount(RoomToolbar, {
+				props: {
+					...baseToolbarProps,
+					activeMenu: "pen",
+					apgBrushes: [{ pluginId: "acme.tools", pluginName: "Acme", id: "marker", label: "Marker", base: "highlighter", opacity: 0.5 }],
+					activateApgBrush,
+				},
+			});
+			const markerButton = brushToolbar.findAll("button").find((button) => button.text() === "Marker");
+			expect(markerButton).toBeTruthy();
+			await markerButton!.trigger("click");
+			expect(activateApgBrush).toHaveBeenCalledWith(expect.objectContaining({ id: "marker", base: "highlighter" }));
+			brushToolbar.unmount();
+
+			const toggleApgPalette = vi.fn();
+			const paletteToolbar = mount(RoomToolbar, {
+				props: {
+					...baseToolbarProps,
+					activeMenu: "color",
+					apgPalettes: [{ pluginId: "acme.colors", pluginName: "Acme Colors", id: "pastel", label: "Pastel", colors: ["#AABBCC"], scope: "user", enabled: false, toggleable: true }],
+					toggleApgPalette,
+				},
+			});
+			expect(paletteToolbar.text()).toContain("Pastel");
+			const paletteToggle = paletteToolbar.findAll("button").find((button) => button.text() === "已停用");
+			await paletteToggle!.trigger("click");
+			expect(toggleApgPalette).toHaveBeenCalledWith("acme.colors", true);
+			paletteToolbar.unmount();
 	});
 });

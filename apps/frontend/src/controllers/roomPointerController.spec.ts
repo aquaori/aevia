@@ -82,6 +82,7 @@ describe("createRoomPointerController", () => {
 		const opts = {
 			currentTool: ref<EditorTool>("pen"),
 			currentColor: ref("#111111"),
+				currentBrushOpacity: ref<number | undefined>(undefined),
 			currentSize: ref(4),
 			currentStrokePattern: ref<StrokePattern>("solid"),
 			currentSticker: ref("✨"),
@@ -142,12 +143,17 @@ describe("createRoomPointerController", () => {
 		const { controller, opts, pushCommand } = makeController();
 		controller.setColor("#ff0000");
 		controller.setTool("pen");
+			opts.currentBrushOpacity.value = 0.42;
 		expect(opts.onToolStateUpdated).toHaveBeenCalled();
 
 		await controller.startDrawing(makeMockPointerEvent("pointerdown", 100, 100));
 		controller.draw(makeMockPointerEvent("pointermove", 200, 200));
 		await controller.stopDrawing(makeMockPointerEvent("pointerup", 250, 250));
 		expect(pushCommand).toHaveBeenCalled();
+			const createCall = pushCommand.mock.calls.find(([cmd]) => cmd.sceneOperation?.kind === "element.create")?.[0];
+			expect(createCall?.sceneOperation?.payload).toEqual(expect.objectContaining({
+				descriptor: expect.objectContaining({ style: expect.objectContaining({ opacity: 0.42 }) }),
+			}));
 		expect(opts.isDrawing.value).toBe(false);
 
 		// Start again and cancel mid-stroke

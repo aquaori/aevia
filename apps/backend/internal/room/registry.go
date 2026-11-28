@@ -105,6 +105,14 @@ func (r *Registry) Delete(ctx context.Context, roomID string) error {
 }
 
 // lookup returns a live actor for roomID, clearing out one that has stopped.
+// NotifyAPGState is an invalidation hint, never an authoritative state update.
+// Durable CAS state is recovered via the HTTP endpoint if delivery is missed.
+func (r *Registry) NotifyAPGState(roomID, pluginID, digest string, revision int64) {
+	if actor := r.lookup(roomID); actor != nil {
+		_ = actor.sendReliable(apgStateNotice{PluginID: pluginID, Digest: digest, Revision: revision})
+	}
+}
+
 func (r *Registry) lookup(roomID string) *Actor {
 	r.mu.Lock()
 	defer r.mu.Unlock()

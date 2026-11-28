@@ -15,6 +15,7 @@ const TASKS = {
 	vet: ["vet", "./..."],
 	test: ["test", "./..."],
 	start: ["run", "./cmd/aevia-backend"],
+	apg: ["run", "./cmd/apg"],
 };
 
 const task = process.argv[2];

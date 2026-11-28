@@ -25,6 +25,7 @@
 		renderWithPoints,
 		renderSceneCommands,
 		hasPendingSceneDependencies,
+		getFallbackRenderIR,
 		quarantineSceneMissingElements,
 		hitTestScene,
 		querySceneElements,
@@ -74,7 +75,26 @@
 	import { toast } from "vue-sonner";
 	import { apiUrl } from "../config/endpoints";
 	import RoomTextEditor from "../components/RoomTextEditor.vue";
+	import ApgPanel from "../components/ApgPanel.vue";
+	import { createApgRuntime } from "../service/apgRuntime";
+	import { compileApgSceneMutations } from "../service/apgSceneCompiler";
+	import { useLamportStore } from "../store/lamportStore";
+	import { v4 as apgUuid } from "uuid";
 	import { fetchPageOverview, type PageOverviewItem } from "../service/pageOverviewService";
+		import {
+			buildApgContributionIndex,
+			watchApgCatalog,
+			type ApgCatalog,
+			isUserPaletteEnabled,
+			setUserPaletteEnabled,
+			isApgBrushCurrent,
+			resolveApgBrushSelection,
+			watchApgPalettePreferences,
+			type ApgBrushView,
+		} from "../service/apgCatalog";
+	import { acceptApgStateNotice } from "../service/apgStateNotice";
+	import { describeApgCommandError } from "../service/apgErrorText";
+	import { selectApgSceneSnapshot } from "../service/apgSceneSnapshot";
 	import type { SelectionState } from "../utils/editorTypes";
 	import type { Command, FlatPoint, Point } from "@collaborative-whiteboard/shared";
 
@@ -143,6 +163,7 @@
 		memberList,
 		currentTool,
 		currentColor,
+			currentBrushOpacity,
 		currentStrokePattern,
 		currentSticker,
 		currentSize,
@@ -151,6 +172,24 @@
 		totalPages,
 		remoteCursors,
 	} = createRoomEditorState();
+		const apgCatalog = ref<ApgCatalog>({ version: 1, plugins: [] });
+	const apgBusy = ref("");
+	const apgPreview = ref<{ pluginId: string; text: string } | null>(null);
+	const apgStateRevisions = ref<Record<string, number>>({});
+	const apgPreferenceRevision = ref(0);
+	const apgEnabled = (id: string) => {
+		void apgPreferenceRevision.value;
+		const plugin = apgCatalog.value.plugins.find(p => p.manifest.id === id);
+		return !!plugin && (plugin.manifest.scope === "system" || isUserPaletteEnabled(id, userId.value));
+	};
+	// Single source of truth for host-visible APG contributions; rebuilt from the
+	// catalog snapshot plus the user's own preferences, so revocation is implicit.
+	const apgContributionIndex = computed(() => {
+		void apgPreferenceRevision.value;
+		return buildApgContributionIndex(apgCatalog.value, apgEnabled, userId.value);
+	});
+	const apgPalettes = computed(() => apgContributionIndex.value.palettes);
+	const apgBrushes = computed(() => apgContributionIndex.value.brushes);
 
 	const commandStore = useCommandStore();
 	const textEditorRef = ref<InstanceType<typeof RoomTextEditor> | null>(null);
@@ -358,6 +397,7 @@
 		pointerController: roomPointerControllerRef,
 		currentTool,
 		currentColor,
+		currentBrushOpacity,
 		activeMenu,
 		transformingCmdIds,
 		transformAnim,
@@ -365,6 +405,43 @@
 		selectionRect,
 		interactionMode,
 	});
+	const activateApgBrush = (brush: ApgBrushView) => {
+		if (!initialSceneReady.value || userStore.roomRole === "viewer") return;
+		if (!isApgBrushCurrent(brush, apgBrushes.value)) return;
+		const selection = resolveApgBrushSelection(brush);
+		roomEditorController.setTool(selection.base);
+		if (selection.color !== undefined) roomEditorController.setColor(selection.color);
+		if (selection.size !== undefined) currentSize.value = selection.size;
+		currentBrushOpacity.value = selection.opacity;
+	};
+	const toggleApgPalette = (pluginId: string, enabled: boolean) => {
+		if (!apgPalettes.value.some(p => p.pluginId === pluginId && p.toggleable)) return;
+		setUserPaletteEnabled(pluginId, enabled, userId.value);
+		apgPreferenceRevision.value++;
+		apgRuntime.reconcile(apgCatalog.value);
+		if (!enabled && apgPreview.value?.pluginId === pluginId) apgPreview.value = null;
+	};
+	let apgCatalogWatch: ReturnType<typeof watchApgCatalog> | undefined;
+	let apgPreferenceWatch: (() => void) | undefined;
+	// Another tab toggled a user-level plugin: adopt the change instead of waiting for a reload.
+	const handleApgPreferenceChanged = (pluginId: string | null) => {
+		if (roomDisposed) return;
+		apgPreferenceRevision.value++;
+		apgRuntime.reconcile(apgCatalog.value);
+		if (pluginId === null || !isUserPaletteEnabled(pluginId, userId.value)) {
+			if (apgPreview.value && (pluginId === null || apgPreview.value.pluginId === pluginId)) apgPreview.value = null;
+		}
+	};
+	const applyApgCatalogSnapshot = (catalog: ApgCatalog) => {
+		if (roomDisposed) return;
+		apgCatalog.value = catalog;
+		apgStateRevisions.value = {};
+		apgRuntime.reconcile(catalog);
+		apgPreview.value = null;
+		// A revoked preset must not retain privileged configuration. Native strokes
+		// already committed remain ordinary V2 operations and require no plugin.
+		currentBrushOpacity.value = undefined;
+	};
 
 	const startDrawing = (e: PointerEvent) => {
 		textEditorRef.value?.submit();
@@ -470,6 +547,13 @@
 			userStore.setSessionExpiresAt(expiresAt);
 		},
 		onRoomRoleChanged: (role) => userStore.setRoomRole(role),
+		onApgStateChanged: (notice) => {
+			const accepted = acceptApgStateNotice(notice, apgCatalog.value, apgStateRevisions.value);
+			if (!accepted) return;
+			apgStateRevisions.value = { ...apgStateRevisions.value, [accepted.pluginId]: accepted.revision };
+			// Clear stale derived UI; the next command reads the authoritative state.
+			if (apgPreview.value?.pluginId === accepted.pluginId) apgPreview.value = null;
+		},
 		onSessionExpired: () => {
 			userStore.clearAll();
 		},
@@ -502,6 +586,95 @@
 		localCommandService,
 		activeMenu,
 	});
+	const apgCanEdit = () => !roomDisposed && initialSceneReady.value && !isReconnecting.value && userStore.roomRole !== "viewer" && roomCollabTransport.isPageHistoryReady(currentPageId.value);
+	const apgRuntime = createApgRuntime({
+		contextKey: () => JSON.stringify([roomId.value, userId.value, currentPageId.value, userStore.roomRole, isReconnecting.value, roomDisposed]),
+		canEdit: apgCanEdit,
+		readScene: async () => {
+			if (roomDisposed || !initialSceneReady.value || isReconnecting.value) throw new Error("Scene unavailable");
+			const frame = await workerBridge.requestRenderIR();
+			// Offscreen rendering may be unavailable (no worker or no OffscreenCanvas);
+			// the fallback engine is the authoritative scene there, so plugins are not
+			// silently blind on that render path.
+			return selectApgSceneSnapshot(frame, workerBridge.isOffscreenEnabled(), getFallbackRenderIR());
+		},
+		mutate: (_pluginId, request) => {
+			if (!apgCanEdit()) throw new Error("Scene mutation denied");
+			// A bundle shares one host history group, so undo removes the whole template. Each
+			// element is still an ordinary scene operation; the guest never sees ids or clocks.
+			const commands = compileApgSceneMutations(request, { actorId: userId.value, roomId: roomId.value, pageId: currentPageId.value, allocateId: apgUuid, nextLamport: () => useLamportStore().getNextLamport() });
+			for (const command of commands) if (!roomCommandController.pushCommand(command).ok) throw new Error("Scene mutation failed");
+		},
+		preview: (pluginId, text) => { apgPreview.value = { pluginId, text }; },
+		download: (_pluginId, file) => {
+			// The host writes the export: the guest hands over inert text and a safe name,
+			// and never receives a file handle, a DOM node or a URL of its own.
+			const bytes = new TextEncoder().encode(file.text);
+			if (bytes.length > 65536) throw new Error("APG download too large");
+			const url = URL.createObjectURL(new Blob([bytes], { type: file.mime }));
+			try {
+				const link = document.createElement("a");
+				link.href = url;
+				link.download = file.name;
+				link.rel = "noopener";
+				document.body.appendChild(link);
+				link.click();
+				link.remove();
+			} finally { setTimeout(() => URL.revokeObjectURL(url), 1000); }
+		},
+		readSharedState: async (plugin) => {
+			const response = await axios.get(apiUrl("/api/apg/state/" + encodeURIComponent(plugin.manifest.id)), { params: { digest: plugin.digest }, headers: { Authorization: "Bearer " + token.value }, timeout: 5000 });
+			if (!Number.isSafeInteger(response.data.data?.revision) || response.data.data.revision < 0) throw new Error("Invalid APG state revision");
+			const state = response.data.data;
+			apgStateRevisions.value = { ...apgStateRevisions.value, [plugin.manifest.id]: Math.max(apgStateRevisions.value[plugin.manifest.id] ?? 0, state.revision) };
+			return state;
+		},
+		writeSharedState: async (plugin, revision, value) => {
+			if (!apgCanEdit()) throw new Error("Shared state write denied");
+			const response = await axios.put(apiUrl("/api/apg/state/" + encodeURIComponent(plugin.manifest.id)), { revision, value }, { params: { digest: plugin.digest }, headers: { Authorization: "Bearer " + token.value }, timeout: 5000 });
+			if (response.data.data?.revision !== revision + 1) throw new Error("Invalid APG state acknowledgement");
+			apgStateRevisions.value = { ...apgStateRevisions.value, [plugin.manifest.id]: Math.max(apgStateRevisions.value[plugin.manifest.id] ?? 0, revision + 1) };
+		},
+		readResource: async (plugin, path) => {
+			if (!plugin.digest || plugin.manifest.scope !== "system" || !plugin.manifest.contributes.commands?.some(c => c.resource === path)) throw new Error("Resource denied");
+			const response = await axios.get(apiUrl("/api/apg/asset/" + plugin.digest + "/" + path.split("/").map(encodeURIComponent).join("/")), { responseType: "text", timeout: 5000 });
+			if (typeof response.data !== "string" || new TextEncoder().encode(response.data).length > 16384) throw new Error("Invalid resource");
+			return JSON.parse(response.data);
+		},
+		cleanup: (id) => { if (apgPreview.value?.pluginId === id) apgPreview.value = null; },
+	});
+	const toggleApgPlugin = (id: string, enabled: boolean) => {
+		if (!apgCatalog.value.plugins.some(p => p.manifest.id === id && p.manifest.scope === "user")) return;
+		setUserPaletteEnabled(id, enabled, userId.value);
+		apgPreferenceRevision.value++;
+		apgRuntime.reconcile(apgCatalog.value);
+		if (!enabled && apgPreview.value?.pluginId === id) apgPreview.value = null;
+	};
+	const runApgCommand = async (id: string, command: string) => {
+		if (apgBusy.value || !initialSceneReady.value || isReconnecting.value) return;
+		apgBusy.value = id;
+		try { await apgRuntime.run(id, command); }
+		catch (error) { console.warn("[APG] Command failed", id, command, error); if (!roomDisposed) toast.error(describeApgCommandError(error)); }
+		finally { apgBusy.value = ""; }
+	};
+	const handleApgShortcut = (event: KeyboardEvent) => {
+		if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey || event.repeat || event.isComposing || !/^Digit[0-9]$/.test(event.code)) return;
+		if (event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest("input,textarea,select,[role=textbox]"))) return;
+		const shortcut = "Alt+Shift+" + event.code.slice(-1);
+		// `null` means several enabled plugins claim the same chord: refuse rather
+		// than silently running whichever one happens to be listed first.
+		const binding = apgContributionIndex.value.shortcuts.get(shortcut);
+		if (!binding) return;
+		event.preventDefault();
+		void runApgCommand(binding.pluginId, binding.command);
+	};
+	watch([roomId, currentPageId, isReconnecting, () => userStore.roomRole], () => {
+		apgRuntime.reconcile({ version: 1, plugins: [] });
+		apgRuntime.reconcile(apgCatalog.value);
+		apgPreview.value = null;
+		apgStateRevisions.value = {};
+		if (!isReconnecting.value) void apgCatalogWatch?.refresh();
+	}, { flush: "sync" });
 
 	const roomPageService = createRoomPageService({
 		currentPageId,
@@ -560,6 +733,7 @@
 	roomPointerControllerRef.value = createRoomPointerController({
 		currentTool,
 		currentColor,
+		currentBrushOpacity,
 		currentSize,
 		currentStrokePattern,
 		currentSticker,
@@ -723,17 +897,25 @@
 
 	const handleVisibilityChange = () => {
 		if (document.visibilityState !== "visible") return;
+		void apgCatalogWatch?.refresh();
 		refreshWorkerScene();
 		roomCanvasOverlay.render();
 	};
 
 	onMounted(() => {
+		apgCatalogWatch = watchApgCatalog(applyApgCatalogSnapshot);
+		apgPreferenceWatch = watchApgPalettePreferences(handleApgPreferenceChanged);
 		roomLifecycleController.mount();
 		document.addEventListener("visibilitychange", handleVisibilityChange);
+		document.addEventListener("keydown", handleApgShortcut);
 	});
 	onUnmounted(() => {
+		apgCatalogWatch?.dispose();
+		apgPreferenceWatch?.();
+		apgRuntime.dispose();
 		if (dependencyTimer) clearTimeout(dependencyTimer);
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
+		document.removeEventListener("keydown", handleApgShortcut);
 		roomLifecycleController.unmount();
 	});
 
@@ -911,6 +1093,10 @@
 			:toggle-menu="roomToolController.toggleMenu"
 			:set-tool="roomEditorController.setTool"
 			:set-color="roomEditorController.setColor"
+				:apg-palettes="apgPalettes"
+				:apg-brushes="apgBrushes"
+				:activate-apg-brush="activateApgBrush"
+				:toggle-apg-palette="toggleApgPalette"
 			:set-stroke-pattern="roomToolController.setStrokePattern"
 			:set-sticker="roomToolController.setSticker"
 			:clear-canvas="roomCommandController.clearCanvas"
@@ -920,6 +1106,7 @@
 			:set-size-preview="roomToolController.setSizePreview"
 			:on-toggle-collapsed="(collapsed) => (isToolbarCollapsed = collapsed)"
 		/>
+		<ApgPanel :catalog="apgCatalog" :enabled="apgEnabled" :busy="apgBusy" :preview="apgPreview" :ready="initialSceneReady && !isReconnecting" @toggle="toggleApgPlugin" @run="runApgCommand" @close="apgPreview = null" />
 		<div v-if="!initialSceneReady" class="fixed inset-0 z-[60] flex items-center justify-center bg-white/30" role="status" aria-live="polite">
 			<div class="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">正在准备画布…</div>
 		</div>
