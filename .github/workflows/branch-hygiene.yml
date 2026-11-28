@@ -1,0 +1,35 @@
+name: Branch hygiene report
+
+on:
+  schedule:
+    - cron: "17 1 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Branch inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Summarise branches
+        run: |
+          node scripts/branch-status.mjs | tee branch-status.txt
+          {
+            echo "## Branch inventory"
+            echo
+            echo '```'
+            cat branch-status.txt
+            echo '```'
+            echo
+            echo "Merged branches can be deleted after tagging their checkpoint;"
+            echo "stale branches need a decision, not automatic deletion. See docs/git-workflow.md."
+          } >> "$GITHUB_STEP_SUMMARY"
